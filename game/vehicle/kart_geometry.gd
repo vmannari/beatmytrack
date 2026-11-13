@@ -131,10 +131,6 @@ static func loft_station(profile: Array[Vector4], t: float) -> Vector4:
 	result.w = maxf(0.001,result.w)
 	return result
 
-static func loft_top(profile: Array[Vector4], x: float, t: float, exponent: float = 0.65) -> Vector3:
-	var p: Vector4 = loft_station(profile,t)
-	return Vector3(x,p.z+p.w*pow(maxf(0,1-pow(absf(x)/p.y,2/exponent)),exponent*0.5)+0.0015,p.x)
-
 static func lathe(parent: Node3D, label: String, profile: Array[Vector2], material: Material, simple: bool) -> MeshInstance3D:
 	var sample := func(u: float,v: float) -> Vector3:
 		var at: float = v*(profile.size()-1)

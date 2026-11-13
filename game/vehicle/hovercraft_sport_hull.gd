@@ -99,6 +99,9 @@ static func canopy_point(t: float,across: float) -> Vector3:
 	return Vector3(x,deck_y(x,z)+height,z)
 
 static func _cockpit(parent: Node3D,paint: Material,accent: Material,seam: Material,glass: Material,simple: bool) -> void:
+	var frame := CompactFinish.alloy(Color("414f54"))
+	frame.roughness = 0.56
+	frame.metallic = 0.38
 	# Painted base and fitted dark gasket wrap a single low, raked canopy.
 	Surface.surface(parent,"SportCockpitBase",16 if simple else 32,20 if simple else 40,
 		func(u: float,v: float) -> Vector3: return canopy_point(v,u*2.0-1.0),
@@ -116,9 +119,9 @@ static func _cockpit(parent: Node3D,paint: Material,accent: Material,seam: Mater
 			return canopy_point(lerpf(0.46,0.93,v),lerpf(-width,width,u))+Vector3(0,0.008,0),
 		func(_u: float,_v: float) -> Vector3: return Vector3.UP,accent,simple)
 	Surface.tube(parent,"SportCanopyFrame",func(u: float) -> Vector3:
-		return canopy_point(lerpf(0.04,0.96,u),-0.94)+Vector3(0,0.006,0),0.005,20 if simple else 40,seam,simple)
+		return canopy_point(lerpf(0.04,0.96,u),-0.94)+Vector3(0,0.006,0),0.005,20 if simple else 40,frame,simple)
 	Surface.tube(parent,"SportCanopyFrameRight",func(u: float) -> Vector3:
-		return canopy_point(lerpf(0.04,0.96,u),0.94)+Vector3(0,0.006,0),0.005,20 if simple else 40,seam,simple)
+		return canopy_point(lerpf(0.04,0.96,u),0.94)+Vector3(0,0.006,0),0.005,20 if simple else 40,frame,simple)
 
 static func _headlamp_curve(side: float,u: float) -> Vector3:
 	var z: float = lerpf(-1.92,-1.41,u)

@@ -8,9 +8,11 @@ const MIN_VISIBLE_ALPHA: float = 0.28
 const MAX_VISIBLE_ALPHA: float = 0.82
 const GLASS_TEXTURE: Texture2D = preload("res://assets/textures/impact_glass_v1.png")
 const GLASS_SHADER: Shader = preload("res://camera/impact_glass.gdshader")
+const NIGHT_TINT: Color = Color(0.34, 0.40, 0.50)
 
 var strength: float = 0.0
 var side_damage: Vector4 = Vector4.ZERO # left, right, top, bottom
+var glass_tint: Color = Color.WHITE
 
 
 func _ready() -> void:
@@ -23,7 +25,14 @@ func _ready() -> void:
 	var glass_material := ShaderMaterial.new()
 	glass_material.shader = GLASS_SHADER
 	material = glass_material
+	_update_material()
 	visible = false
+
+
+func configure(theme: String) -> void:
+	# Canvas glass does not receive the world's biome lighting.
+	glass_tint = NIGHT_TINT if theme == "night_city" else Color.WHITE
+	_update_material()
 
 
 func show_impact(resolved_velocity_change: Vector2) -> void:
@@ -80,6 +89,7 @@ func _update_material() -> void:
 		glass_material.shader = GLASS_SHADER
 		material = glass_material
 	(material as ShaderMaterial).set_shader_parameter("side_damage", side_damage)
+	(material as ShaderMaterial).set_shader_parameter("glass_tint", glass_tint)
 
 
 func clear_effect() -> void:

@@ -86,7 +86,7 @@ func run() -> void:
 		check(effect.smudge == 0.0 and effect.dirt_amount == 0.0 and not effect.installed, id + " clean car snow melts without inventing dirt")
 		car.queue_free()
 		await process_frame
-	check(records.settings.vehicle_conditions.size() == 5 and records.records.is_empty(), "five independent cars; no PB writes")
+	check(records.settings.vehicle_conditions.size() == VehicleCatalog.IDS.size() and records.records.is_empty(), "all catalogue cars remain independent; no PB writes")
 	var invalid: Dictionary = records.settings.vehicle_conditions.duplicate(true)
 	invalid.compact.dirt = INF
 	check(not VehicleCondition.valid_collection(invalid), "reject nonfinite local dirt")
@@ -259,13 +259,21 @@ func app_capture() -> void:
 	await settle()
 	var page: GaragePage = app.root_ui.find_child("GaragePage", true, false)
 	page.open_car(0)
+	while page.showroom==null or not page.showroom.showroom_ready or not page.showroom.car.model_ready: await process_frame
+	while page.progressive_entry and page.showroom.preparing and not page.showroom.interaction_ready: await process_frame
 	page._show_section("care")
 	# The incoming action row takes 0.32 seconds, independent of frame rate.
 	while page._menu_motion != null and page._menu_motion.is_running(): await process_frame
 	await settle()
-	var button: Button = app.root_ui.find_child("GarageWash", true, false)
+	# Menu action rows can be retained outside root_ui during the page move.
+	# Use the current page's actual bound action, after its live car is ready.
+	var button: Button = page.wash_button
+	check(button!=null and button.name=="GarageWash","real care action is available")
+	if button==null:
+		app.queue_free()
+		return
 	button.pressed.emit()
-	var view: CarShowroom = app.root_ui.find_child("GarageShowroom", true, false)
+	var view: CarShowroom = page.showroom
 	check(view.wash_mode, "real app enters Wash")
 	var swipe: Node = app.root_ui.get_node("MenuPageSwipe")
 	check(swipe._owns_gesture(app.root_ui, view.get_global_rect().get_center()), "wash owns gestures over menu paging")

@@ -1,4 +1,5 @@
 extends SceneTree
+const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
 ## Identical native side/rear/close cameras expose mount height and aft position.
 var output: String = "res://../docs/evidence/compact-aero-variety-2026-10-14/compatibility"
 var view: CarShowroom
@@ -51,7 +52,7 @@ func _run() -> void:
 	grid.add_theme_constant_override("v_separation",8)
 	column.add_child(grid)
 	for option: Array in VehicleCustomisation.OPTIONS.aero:
-		var card: CompactKitThumbnail = CompactKitThumbnail.make("aero",option,false,func() -> void: pass)
+		var card: OfflineKitThumbnail = OfflineKitThumbnail.make("aero",option,false,func() -> void: pass)
 		card.custom_minimum_size = Vector2(380,150)
 		grid.add_child(card)
 	await settle()

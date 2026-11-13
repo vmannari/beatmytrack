@@ -36,7 +36,9 @@ func run_turn(config: HandlingConfig, steer: float, start_kph: float, turn_ticks
 
 
 func run() -> void:
-	var kart: HandlingConfig = load("res://resources/cars/kart.tres")
+	# Historical artificial corner-speed limit, before intentional force-limited
+	# sliding. The active tire-force tune can scrub below this speed ceiling.
+	var kart: HandlingConfig = load("res://tests/fixtures/kart_momentum_slide_before.tres")
 	var control: HandlingConfig = kart.duplicate() as HandlingConfig
 	control.turn_speed_reduction = 0.0
 	check(is_equal_approx(kart.turn_speed_reduction, 1.0 / 7.0), "kart uses the requested high-speed turn reduction")

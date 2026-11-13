@@ -2,6 +2,7 @@ extends Node
 ## Authenticated rivalry adapter. All points and results come from the server.
 signal changed
 var circuit_mode: bool = false
+var circuit_vehicle: String = "compact"
 var client: Node
 var result_poll_allowed: Callable
 var appearance_provider: Callable
@@ -83,11 +84,13 @@ func _remember_snapshot(value: Dictionary) -> void:
 		snapshot_cache.remember("current",{"snapshot":value,"received_at":int(Time.get_unix_time_from_system())})
 
 func vehicle() -> String:
-	return "compact" if circuit_mode else VehicleCatalog.selected
+	return circuit_vehicle if circuit_mode else VehicleCatalog.selected
 
-func set_circuit_mode(enabled: bool) -> void:
-	if circuit_mode == enabled and (not enabled or not test_population): return
+func set_circuit_mode(enabled: bool, selected_car: String = "compact") -> void:
+	selected_car = VehicleCatalog.valid_id(selected_car)
+	if circuit_mode == enabled and (not enabled or (not test_population and circuit_vehicle == selected_car)): return
 	circuit_mode = enabled
+	if enabled: circuit_vehicle = selected_car
 	if enabled: test_population = false
 	reset()
 	changed.emit()

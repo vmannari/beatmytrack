@@ -4,9 +4,9 @@ const Icons = preload("res://ui/header_car_icons.gd")
 var app: Node
 var checks: int = 0
 var failures: int = 0
-var cover_starts: int = 0
-var cover_draws: int = 0
-var capture_cover_draws: int = 0
+var capture_starts: int = 0
+var menu_draws: int = 0
+var capture_menu_draws: int = 0
 var cancel_next: bool = false
 var output: String
 func _initialize() -> void: run.call_deferred()
@@ -27,17 +27,16 @@ func shot(label: String) -> void:
 	await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"native view "+label)
 func capture_started(_vehicle: String) -> void:
-	cover_starts += 1
-	check(is_instance_valid(app._header_capture_cover) and app._header_capture_cover.is_visible_in_tree(),"production capture has a visible cover")
-	check(app.header_car_cache.canvas==null,"cover is installed before renderer construction")
-	capture_cover_draws = cover_draws
-	if cancel_next: app._show_screen.call_deferred("tracks")
+	capture_starts += 1
+	check(app.screen!="garage" and not app._retained_garage.is_visible_in_tree(),"production capture waits until Garage has left the screen")
+	check(app.header_car_cache.canvas==null,"settled menu draw precedes renderer construction")
+	capture_menu_draws = menu_draws
+	if cancel_next: app._show_screen.call_deferred("garage")
 func after_draw() -> void:
 	if not is_instance_valid(app): return
-	if is_instance_valid(app._header_capture_cover):
-		cover_draws += 1
-		if app.header_car_cache.canvas!=null:
-			check(cover_draws>capture_cover_draws+1,"cover drew before the first native construction")
+	menu_draws += 1
+	if app.header_car_cache.canvas!=null:
+		check(menu_draws>capture_menu_draws+1,"settled menu drew before the first native construction")
 func run() -> void:
 	create_timer(180,true,false,true).timeout.connect(func() -> void: printerr("DEFERRED_HEADER_TIMEOUT"); quit(1))
 	output = OS.get_environment("BMT_GRAPHICS_EVIDENCE")
@@ -93,17 +92,21 @@ func run() -> void:
 		RenderingServer.frame_post_draw.connect(after_draw)
 		app._show_screen("garage")
 		var deadline: int = Time.get_ticks_msec()+100000
-		while cache.captures==0 and Time.get_ticks_msec()<deadline:
+		while (not app._retained_garage.showroom.showroom_ready or app._retained_garage.showroom.get("preparing")==true) and Time.get_ticks_msec()<deadline:
 			await frames(1)
-			if cache._stage=="cover" and cache._cover_ready: await shot("garage-cover")
+		await create_timer(1.1).timeout
+		check(cache.captures==0 and cache.canvas==null and capture_starts==0,"ready Garage keeps optional native header work deferred")
+		await shot("garage-live")
+		app._show_screen("tracks")
+		deadline = Time.get_ticks_msec()+60000
+		while cache.captures==0 and Time.get_ticks_msec()<deadline: await frames(1)
 		await wait_reads()
 		await frames(10)
-		check(cache.captures==1 and Icons.ready("compact",records),"covered ready Garage produces one exact saved picture")
-		check(cover_starts==1 and cover_draws>0 and cache.peak_worlds==1,"one bounded native world after a drawn cover")
-		check(cache.canvas==null and not is_instance_valid(app._header_capture_cover),"completed capture releases its world and cover")
-		check(not app._header_car_capture_allowed("forklift"),"unrelated car cannot trigger cold capture in the visible Garage")
+		check(cache.captures==1 and Icons.ready("compact",records),"settled menu produces one exact saved picture after leaving Garage")
+		check(capture_starts==1 and menu_draws>0 and cache.peak_worlds==1,"one bounded native world after a settled menu draw")
+		check(cache.canvas==null,"completed capture releases its world")
 		check(picture().preview.texture==Icons.texture("compact",records) and not picture()._placeholder.visible,"finished picture replaces the silhouette")
-		await shot("garage-ready")
+		await shot("menu-header-ready")
 		var first: PackedByteArray = Icons.texture("compact",records).get_image().get_data()
 		Icons.customized.clear()
 		cache.bind_records(null)
@@ -117,9 +120,9 @@ func run() -> void:
 		check(records.save_records()==OK,"save next isolated appearance")
 		check(picture().preview.texture==null and picture()._placeholder.visible,"commit immediately clears obsolete saved paint")
 		deadline = Time.get_ticks_msec()+10000
-		while app.screen=="garage" and Time.get_ticks_msec()<deadline: await frames(1)
+		while app.screen=="tracks" and Time.get_ticks_msec()<deadline: await frames(1)
 		await frames(12)
-		check(app.screen=="tracks" and cache.captures==1 and cache.canvas==null and not is_instance_valid(app._header_capture_cover),"navigation during cover cancels before renderer construction")
+		check(app.screen=="garage" and cache.captures==1 and cache.canvas==null,"returning to Garage cancels optional capture before renderer construction")
 		check(not Icons.ready("compact",records),"cancelled appearance cannot publish stale pixels")
 		RenderingServer.frame_post_draw.disconnect(after_draw)
 	# Rebinding drops queued work from the old account.
@@ -133,7 +136,7 @@ func run() -> void:
 	check(cache.idle() and cache.canvas==null and cache.records==other,"account replacement drops deferred old-owner work")
 	check(not Icons.customized.has(old_key),"old owner never publishes after replacement")
 	check(picture().preview.texture==Icons.texture("compact"),"new stock account displays its own bundled picture")
-	var result: Dictionary = {"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"cover_starts":cover_starts,"cover_draws":cover_draws}
+	var result: Dictionary = {"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"capture_starts":capture_starts,"menu_draws":menu_draws}
 	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
 	app.queue_free()
 	app = null

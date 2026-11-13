@@ -24,6 +24,10 @@ class Service extends Node:
 	func request_api(path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
 		calls.append(path)
 		var captured: Dictionary = response.duplicate(true)
+		if "/lap-standings?" in path and "around=true" not in path and captured.get("ok",false) and captured.get("data",{}).get("comparison") is Dictionary:
+			# Full pages return original verified ranks; nearby rows include the candidate.
+			for item: Dictionary in captured.data.items:
+				if int(item.time_ticks) > int(captured.data.comparison.candidate_ticks): item.rank = int(item.rank)-1
 		if pending: await released
 		return captured
 
@@ -119,8 +123,25 @@ func run() -> void:
 	await settle()
 	check(result.get_node_or_null("DailyStandings") != null,"View full standings opens real dialog")
 	var dialog: Node = result.get_node("DailyStandings")
-	check(dialog._rows.get_child_count() == 2 and dialog._rows.get_child(0).find_child("PlayerCountryFlag",true,false).get_meta("country_code") == "SE","full standings display flags from the same response")
+	check(dialog._rows.get_child_count() == 3 and dialog._rows.get_child(0).find_child("PlayerCountryFlag",true,false).get_meta("country_code") == "SE","full standings retain competitors and insert the completed attempt")
+	check(dialog._rows.get_child(1).name == "DailySelfRow" and dialog._rows.get_child(2).get_child(0).get_child(0).text == "9","full board keeps candidate rank and shifts slower competitors")
+	check(dialog._own.find_child("DailyComparisonPosition",true,false).text == "#8 / 1284","full board pins the same comparison position")
+	check(dialog._rows.get_child(1).get_child(0).get_child(2).text == "0:20.823","full board preserves exact attempt milliseconds")
+	check("lap_ticks=2499" in service.calls.back(),"full standings query includes the raced lap")
 	await capture("full-standings-flags")
+	dialog._select_vehicle(1)
+	await settle()
+	check(dialog._candidate == 0.0 and "lap_ticks" not in service.calls.back(),"another car cannot inherit the raced lap")
+	dialog._select_vehicle(0)
+	await settle()
+	check(dialog._candidate == 20.823,"returning to the raced car restores the attempt")
+	service.player = {"id":"another-account"}
+	service.identity_changed.emit()
+	await settle()
+	check(dialog._candidate == 0.0,"account switch removes the private attempt")
+	service.player = {"id":"owner","display_name":"Ville","country_code":"FI"}
+	service.identity_changed.emit()
+	await settle()
 	result.get_node("DailyStandings").queue_free()
 	await settle()
 	service.response = {"ok":false,"status":503}

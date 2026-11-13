@@ -85,6 +85,7 @@ func _ready() -> void:
 		var world: Control = preload("res://ui/world_ranking_week_summary.gd").new()
 		world.client = ranking_client
 		world.week_start = int(model.world_circuit.get("week_start",0))
+		world.vehicle_id = model.vehicle_id
 		world.compact = true
 		ranking_box.add_child(world)
 		world.label.add_theme_font_size_override("font_size",14)

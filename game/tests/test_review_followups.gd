@@ -224,7 +224,7 @@ func run() -> void:
 	await cloud.flush_outbox()
 	measurements.history_2000_idle_flush_usec = Time.get_ticks_usec()-before
 	check(cloud.metadata_reads == 0,"ordinary polling reads no completed receipt metadata")
-	for index: int in range(40): check(cloud.queue_run({"ticket_id":"pending-"+str(index)},[[0,0,0]]),"pending replay is durably indexed")
+	for index: int in range(40): check((await cloud.queue_run_async({"ticket_id":"pending-"+str(index)},[[0,0,0]])),"pending replay is durably indexed")
 	cloud.metadata_reads = 0
 	await cloud.flush_outbox()
 	check(queue.submissions.size() == 16 and cloud.metadata_reads <= 16,"one poll processes at most sixteen indexed jobs")
@@ -234,9 +234,9 @@ func run() -> void:
 	check(queue.submissions.size() == 40,"pending traversal does not skip a boundary job")
 	var pinned: Dictionary = {"ticket_id":"original-owner-race","_owner_id":"fixture-player","_origin":queue.base_url()}
 	queue.clear_session()
-	check(cloud.queue_run(pinned,[[0,0,0]]),"a completed original-owner race survives session expiry")
+	check((await cloud.queue_run_async(pinned,[[0,0,0]])),"a completed original-owner race survives session expiry")
 	check(FileAccess.file_exists(directory.path_join("original-owner-race".sha256_text()+".job.json")),"expired-session race remains in the original owner's outbox")
-	check(cloud.upload_jobs().is_empty(),"Guest cannot read the previous owner's upload jobs")
+	check((await cloud.upload_history()).is_empty(),"Guest cannot read the previous owner's upload jobs")
 	cloud.free(); queue.free()
 
 	await check_expiry_and_navigation(document)

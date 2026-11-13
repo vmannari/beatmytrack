@@ -74,7 +74,11 @@ func _refresh_publication() -> void:
 	elif not request_error.is_empty():
 		_publication_value = {"category":"","title":"Track not published","message":request_error,"symbol":"warning"}
 	elif timed_out:
-		_publication_value = {"category":"","title":"Publication not confirmed","message":"Publishing is taking longer than expected. Keep the game open and online while we finish checking. Your draft and test lap are safe.","symbol":"clock"}
+		# The deadline only unlocks dismissal; verification can still be running.
+		# Keep its presentation pending until a receipt or actual failure arrives.
+		_publication_value = publication_presentation(job)
+		_publication_value.title = "Publishing track…"
+		_publication_value.symbol = "publish"
 	else:
 		_publication_value = {"category":"","title":"Publishing track…","message":"Please wait while we publish your track.","symbol":"publish"}
 	_render()
@@ -85,7 +89,7 @@ func _render() -> void:
 	message_label.text = str(_publication_value.message)
 	message_label.show()
 	warning.texture = MenuIcon.texture(str(_publication_value.symbol),true)
-	activity.visible = phase == "waiting"
+	activity.visible = phase == "waiting" or (timed_out and _publication_value.title == "Publishing track…")
 	confirm_button.disabled = phase == "waiting"
 	confirm_button.text = "Publish" if phase == "confirm" else "Publishing…" if phase == "waiting" else "OK"
 	close_button.disabled = phase == "waiting"

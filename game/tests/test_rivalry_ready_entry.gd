@@ -78,24 +78,33 @@ func arrival(id: String) -> void:
 			check(page!=null and page.track_rows.size()==5 and page.standings_ready,"first entering frame has five tracks and settled standings")
 			var cars: Array[Node] = page.find_children("RivalryPodiumCar_*","",true,false)
 			check(cars.size()==3,"first entering frame has all podium cars")
+			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
 			for car: Node in cars:
-				check(car.presentation_ready and car.viewport.size.x>1 and car.viewport.size.y>1,"podium car is prepared before entry")
-				if DisplayServer.get_name()!="headless":
-					var picture: Image = car.viewport.get_texture().get_image()
-					var pixels: int = 0
-					for y: int in range(0,picture.get_height(),4):
-						for x: int in range(0,picture.get_width(),4):
-							if picture.get_pixel(x,y).a>0.1: pixels += 1
-					check(pixels>50,"first entering frame has a rendered car image")
+				check(car.presentation_ready and car.size.x>1 and car.size.y>1,"podium car is prepared before entry")
 			await capture(id+"-first-frame")
 			inspected = true
 			break
 	check(inspected,"observe the first visible rivalry frame")
 	await settle()
+	# During the first pixels of a slide the car can still be offscreen. Inspect
+	# canvas raster once the page is fully visible, rather than an unrelated crop.
+	if DisplayServer.get_name()!="headless":
+		await RenderingServer.frame_post_draw
+		var page: Node = app.content.find_child("WeeklyRivalryPage",true,false)
+		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
+			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
+			var pixels: int = 0
+			for y: int in range(0,picture.get_height(),4):
+				for x: int in range(0,picture.get_width(),4):
+					var pixel: Color = picture.get_pixel(x,y)
+					if pixel.r>pixel.b*1.08 and pixel.r>0.4: pixels += 1
+			check(pixels>10,"fully visible page contains the rendered stock roof pigments")
 
 func run() -> void:
 	var profile: String = ProjectSettings.globalize_path("user://").replace("\\","/").simplify_path()
-	var isolated: String = ProjectSettings.globalize_path("res://../build/rivalry-ready-entry/").replace("\\","/").simplify_path().trim_suffix("/")+"/"
+	var profile_root: String = OS.get_environment("BMT_RIVALRY_READY_PROFILE_ROOT")
+	if profile_root.is_empty(): profile_root = "res://../build/rivalry-ready-entry/"
+	var isolated: String = ProjectSettings.globalize_path(profile_root).replace("\\","/").simplify_path().trim_suffix("/")+"/"
 	if not profile.begins_with(isolated):
 		check(false,"set APPDATA under build/rivalry-ready-entry")
 		quit(1)

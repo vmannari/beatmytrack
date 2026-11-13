@@ -29,6 +29,8 @@ func capture(label: String) -> Image:
 
 func run() -> void:
 	output = ProjectSettings.globalize_path("res://../docs/evidence/graphics-settings-2026-10-22/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--output="): output=ProjectSettings.globalize_path(argument.trim_prefix("--output="))
 	DirAccess.make_dir_recursive_absolute(output)
 	var directory: String = "user://graphics_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
@@ -114,7 +116,7 @@ func settings_ui() -> void:
 	check(not page._apply() and records.settings.shadow_quality == "off" and page.draft_graphics.shadow_quality == "high","failed Apply keeps the committed setting and retryable draft")
 	records.path = saved_path
 	page._reset()
-	check(page.draft_graphics == GRAPHICS.DEFAULTS and not page.draft_simple_models and records.settings.shadow_quality == "off","Reset graphics stages defaults and detailed cars")
+	check(page.draft_graphics == GRAPHICS.DEFAULTS and records.settings.shadow_quality == "off","Reset graphics stages defaults without changing the standard model policy")
 	check(page._apply() and records.settings.favorites == ["ellipse"],"Reset graphics preserves favorites")
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
 		root.size = dimensions
@@ -169,10 +171,8 @@ func settings_ui() -> void:
 				check(page.draft_graphics.shadow_quality == "high" and records.settings.shadow_quality == "auto","keyboard chooses the last shadow option without saving "+str(dimensions))
 				choice.get_popup().hide()
 				select(page,"shadow_quality","auto")
-		var toggle: CheckButton = page.find_child("SimpleCarModels",true,false)
-		scroll.ensure_control_visible(toggle)
-		await capture("graphics-bottom-"+str(dimensions.x))
-		check(toggle.size.y >= 52 and scroll.get_global_rect().encloses(toggle.get_global_rect()),"existing car detail remains reachable "+str(dimensions))
+		var models: CheckButton=page.find_child("SimpleCarModels",true,false)
+		check(models==null,"retired model selector stays absent "+str(dimensions))
 		var apply: Button = page.find_child("ApplySettings",true,false)
 		check(root.get_visible_rect().encloses(apply.get_global_rect()),"Apply remains visible "+str(dimensions))
 	app.free()

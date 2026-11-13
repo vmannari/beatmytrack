@@ -57,7 +57,8 @@ func is_clean(view: CarShowroom) -> bool:
 	_state = state
 	if geometry != _geometry:
 		_geometry = geometry
-		_sample_exterior(view)
+		if view.car.simple_model: _sample_standard_exterior(view)
+		else: _sample_exterior(view)
 	var total_residue: float = 0.0
 	var total_weight: float = 0.0
 	var missed_weight: float = 0.0
@@ -114,6 +115,32 @@ func is_clean(view: CarShowroom) -> bool:
 		var visible_mean: float = mean * (visible_slow / slow if region % 3 == 2 and slow > 0.0 else 1.0)
 		if visible_mean > SHINY_RESIDUE or region_visible[region] / region_weight[region] > MAX_VISIBLE_FRACTION: _shiny = false
 	return _clean
+
+func _sample_standard_exterior(view: CarShowroom) -> void:
+	# Cosmetic eligibility uses the standard exterior, independently of render
+	# sampling. Coarse tyre facets must not turn a washed car dirty on a quality
+	# switch. This temporary rest model is freed before any frame is drawn; only
+	# the existing bounded sample arrays remain cached until parts change.
+	var reference:=CarVisual.new()
+	reference.vehicle_id=view.vehicle_id
+	reference.simple_model=false # Eligibility retains the approved exterior sample surface.
+	reference.garage_template=true
+	reference.editable_kits=VehicleCustomisation.supported(view.vehicle_id)
+	reference.cache_rest_pose=false
+	reference.livery=view.livery.duplicate(true)
+	reference.customisation=view.customisation.duplicate(true)
+	view.car.get_parent().add_child(reference)
+	reference.transform=view.car.transform
+	if reference.model_ready:
+		var sample:=CarShowroom.new()
+		sample.vehicle_id=view.vehicle_id;sample.car=reference;sample.customisation=view.customisation.duplicate(true)
+		sample.weathering.configure(reference,"pine",VehicleCatalog.config(view.vehicle_id))
+		sample._cache_pick_meshes(reference)
+		_sample_exterior(sample)
+		sample.weathering.reset()
+		sample.free()
+	else: _sample_exterior(view)
+	reference.free()
 
 func _sample_exterior(view: CarShowroom) -> void:
 	points.clear()

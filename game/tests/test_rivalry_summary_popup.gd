@@ -44,6 +44,11 @@ func run() -> void:
 		check(app.content.find_child("RivalryNextWeek",true,false) != null,"original results screen retains Continue")
 		await finish()
 		return
+	if "--flow-only" in OS.get_cmdline_user_args():
+		await lifecycle()
+		await continue_flow()
+		await finish()
+		return
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720),Vector2i(1938,1282)]:
 		root.size = dimensions
 		for kind: String in ["champion","perfect","podium","middle","unranked","tied"]:
@@ -52,13 +57,16 @@ func run() -> void:
 			check(dialog != null and dialog.visible,kind+" automatically presents the completed weekly summary")
 			if dialog == null: continue
 			var summary: Dictionary = app.rivalry.model.finale_summary()
-			var values: Array[String] = ["—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"%d / 5" % int(summary.wins),"%d / 5" % app.rivalry.model.personal_best_slots.size()]
+			var values: Array[String] = ["%d / %d" % [int(summary.completed),summary.results.size()],str(int(summary.wins)),str(app.rivalry.model.personal_best_slots.size())]
 			for index: int in range(3): check(dialog.metric_labels[index].text == values[index],kind+" metric uses actual final facts")
 			check(dialog.ornament.tier == summary.tier,kind+" decorations match the earned achievement")
 			check(dialog.perfect.visible == (kind == "perfect"),"Perfect Week requires the actual five outright victories")
 			check(dialog.continue_button.is_visible_in_tree() and not dialog.continue_button.disabled,"reference sheet includes the explicit Continue action")
 			check(dialog.player_points.text == "%d PTS" % int(summary.points),"points comparison uses the actual player's score")
-			check(dialog.rank_label.text == ("—" if summary.rank == null else "%02d" % int(summary.rank)),"oversized position is the actual earned rank")
+			check(dialog.rank_label.text == ("—" if summary.rank == null else str(int(summary.rank))),"oversized position is the actual earned rank")
+			check(dialog.field_label.text == GameText.message("OF %d DRIVERS") % int(summary.drivers),"final position identifies the actual field size")
+			if summary.rank != null and not summary.champion:
+				check(dialog.lead_label.text == GameText.message("%d PTS BEHIND") % absi(int(dialog.summary.lead)),"completed-week gap describes the final deficit")
 			var empty_week: bool = summary.rank == null and int(summary.completed) == 0
 			check(dialog.rank_label.visible == (not empty_week),"an empty week hides the oversized missing-rank dash")
 			check(dialog.ornament.empty_week == empty_week,"an empty week omits the rank divider and finish decorations")

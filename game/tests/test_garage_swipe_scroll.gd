@@ -263,7 +263,7 @@ func _run() -> void:
 		last.grab_focus()
 		await settle()
 		check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"keyboard focus still reveals last kit")
-		check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache bound retained")
+		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
 	check(page.showroom==showroom and showroom.car==car and showroom.camera.transform==camera,"swipes and tabs retain actual car and camera")
 	check(showroom.weathering.snapshot()==condition,"swipes retain exact local condition")
 	app.queue_free()

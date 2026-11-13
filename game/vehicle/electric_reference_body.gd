@@ -199,6 +199,9 @@ static func deck_point(u: float,v: float) -> Vector3:
 	var start_y: float=lerpf(foot.y,shoulder(1.70),wing)
 	var start_correction: float=start_y-(shoulder(start_z)+0.025*(1.0-a*a))
 	var y: float=shoulder(z)+crown*(1.0-a*a)+start_correction*(1.0-smoothstep(0.0,0.90,v))
+	# Form the trailing lip in the deck itself. An overlapping strip with a
+	# different transverse grid cut through the curved sheet in visible steps.
+	y+=0.013*smoothstep(0.80,1.0,v)*sin(PI*u)
 	return Vector3(x,y,z)
 
 static func cap_point(rear: bool,u: float,v: float) -> Vector3:
@@ -211,7 +214,7 @@ static func cap_point(rear: bool,u: float,v: float) -> Vector3:
 	var z: float=ztop + (rear_roll if rear else front_roll)
 	if not rear:
 		z+=0.035*smoothstep(0.23,0.42,v)*(1.0-smoothstep(0.48,0.70,v))*(1.0-a*a)
-	var top: float=shoulder(ztop)+0.045*(1.0-a*a) if rear else hood_point(u,0.0).y
+	var top: float=deck_point(u,1.0).y if rear else hood_point(u,0.0).y
 	var floor_y: float=0.24 if rear else 0.24+0.012*maxf(0.0,1.0-a*a)
 	var y: float=top-(top-floor_y)*pow(1.0-v,1.8)
 	if not rear:
@@ -250,6 +253,14 @@ static func hatch_left_u(on_deck: bool,v: float,width: float) -> float:
 		else: high=mid
 	return (low+high)*0.5
 
+static func rear_normal(u: float,v: float) -> Vector3:
+	var sample: Callable=func(x: float,y: float)->Vector3:return cap_point(true,x,y)
+	var tail: Vector3=M.normal_at(sample,u,v,Vector3.BACK)
+	# A common edge normal carries the deck highlight over the rounded tail.
+	# Independently estimated endpoint normals left a faceted bright seam.
+	var deck: Vector3=M.normal_at(deck_point,u,1.0,Vector3.UP)
+	return tail.slerp(deck,smoothstep(0.86,1.0,v)).normalized()
+
 static func hatch_rear_left_u(v: float) -> float:
 	var p: float=clampf((1.0-v)/0.68,0.0,1.0)
 	return hatch_left_u(false,v,lerpf(0.768,0.70,smoothstep(0.0,1.0,p)))
@@ -265,7 +276,15 @@ static func rear_lamp_strip(parent: Node3D,name_value: String,v0: float,v1: floa
 			var edge: float=hatch_rear_left_u(height)
 			var start: float=outer if part==0 else edge+gap if part==1 else 1.0-edge+gap
 			var end: float=edge-gap if part==0 else 1.0-edge-gap if part==1 else 1.0-outer
-			return cap_point(true,lerpf(start,end,u),height)+Vector3.BACK*offset,material,Vector3.BACK,simple)
+			var across: float=lerpf(start,end,u)
+			return cap_point(true,across,height)+rear_lamp_offset(across,height,offset),material,Vector3.BACK,simple)
+
+static func rear_lamp_offset(u: float,v: float,distance: float) -> Vector3:
+	# The upper tail rolls nearly horizontal. A Z-only offset left the lamp
+	# inside the coarser body triangles, producing the visible sawtooth band.
+	# Keep X fixed so the two hatch gaps retain their exact physical widths.
+	var n: Vector3=rear_normal(u,v)
+	return Vector3(0.0,n.y,n.z).normalized()*distance
 
 static func front_lightbar_point(u: float,v: float) -> Vector3:
 	var p: Vector3=cap_point(false,u,front_lamp_v(u,v,true))
@@ -300,10 +319,6 @@ static func cap_strip(parent: Node3D,name_value: String,rear: bool,u0: float,u1:
 
 # Bounds in the same UV space as the front cap, so the opening rims, inset
 # backs and the surrounding paint all share exactly the same boundary.
-static func intake_edge(side: float,t: float) -> float:
-	var half: float=lerpf(0.365,0.325,t)+0.008*sin(PI*t)
-	return front_uv_from_width(0.5+side*half)
-
 static func curtain_edge(side: float,outer: bool,t: float) -> float:
 	# The outside edge is nearly vertical. A soft inner edge tapers into the
 	# ends, following the upright air-curtain shape of the reference.
@@ -348,7 +363,7 @@ static func build_hood(car: CarVisual,parent: Node3D,paint: Material,trim: Mater
 	M.patch(parent,"ReferenceHood",80,48,hood_point,paint,Vector3.UP,simple)
 	# A fitted shut line defines the bonnet instead of leaving one featureless
 	# upper casting. It closes around the cowl without crossing the glazing.
-	M.ribbon(parent,"SportBonnetShutLine",func(t: float)->Vector3:
+	M.fitted_line(parent,"SportBonnetShutLine",parent.find_child("ReferenceHood",false,false),func(t: float)->Vector3:
 		var u: float
 		var v: float
 		if t<0.25:
@@ -359,7 +374,7 @@ static func build_hood(car: CarVisual,parent: Node3D,paint: Material,trim: Mater
 			u=lerpf(0.91,0.09,(t-0.50)*4.0);v=0.97
 		else:
 			u=0.09;v=lerpf(0.97,0.045,(t-0.75)*4.0)
-		return hood_point(u,v)+Vector3.UP*0.0012,144,0.0009,trim,simple)
+		return hood_point(u,v),192,0.0022,trim,Vector3.UP,simple)
 
 static func build(car: CarVisual,paint: Material,trim: Material,bright: Material) -> void:
 	var body: Node3D=car.body
@@ -392,14 +407,14 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 			return side_point(side,z,y)+Vector3(side*0.004,0,0),trim,hint,simple)
 		# Narrow shut lines follow the curved body, stopping at the wheel apertures.
 		for seam: int in range(3):
-			M.ribbon(body,"ReferenceDoorSeam"+str(side)+str(seam),func(t: float)->Vector3:
+			M.fitted_line(body,"ReferenceDoorSeam"+str(side)+str(seam),body.find_child("ReferenceSide"+str(side).replace(".","_"),false,false),func(t: float)->Vector3:
 				# Share the upper stations with the corresponding window edges.
 				var start: float=cabin_z([WINDOW_A_FOOT,WINDOW_B_FOOT,WINDOW_C_FOOT][seam])
 				var finish: float=[-0.88,0.05,0.75][seam]
 				var z: float=lerpf(start,finish,t)
 				var seam_top: float=minf(0.96,shoulder(z)-0.002)
 				var y: float=lerpf(seam_top,0.31,t)
-				return side_point(side,z,y)+Vector3(side*0.0015,0,0),32,0.0014,trim,simple)
+				return side_point(side,z,y),96,0.0028,trim,Vector3(side,0,0),simple)
 		for axle: float in [-AXLE,AXLE]:
 			build_wheelhouse(car,side,axle,paint,trim)
 	build_undertray(car,trim)
@@ -429,7 +444,7 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 			var span: float=(vv-0.08)/0.19
 			return cap_point(false,lerpf(opening_left.call(span),opening_right.call(span),u),vv+v*0.010)+Vector3.BACK*0.021,trim,Vector3.FORWARD,simple)
 	# Match the side panel's vertical stations at both rear corners.
-	M.patch(body,"ReferenceRear",120,28,func(u: float,v: float)->Vector3:return cap_point(true,u,v),paint,Vector3.BACK,simple)
+	M.patch(body,"ReferenceRear",120,28,func(u: float,v: float)->Vector3:return cap_point(true,u,v),paint,Vector3.BACK,simple,Callable(),rear_normal)
 	# The slim light guide follows the closed electric nose.
 	M.patch(body,"ReferenceFrontLampHousing",72,4,func(u: float,v: float)->Vector3:
 		return cap_point(false,u,front_lamp_v(u,v,false))+Vector3.FORWARD*0.003,trim,Vector3.FORWARD,simple)
@@ -485,11 +500,12 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 			var height: float=lerpf(0.79,0.86,v)
 			var edge: float=hatch_rear_left_u(height)
 			var centre: float=edge if side==0 else 1.0-edge
-			return cap_point(true,centre+lerpf(-0.0045,0.0045,u),height)+Vector3.BACK*0.005,trim,Vector3.BACK,simple)
+			var across: float=centre+lerpf(-0.0045,0.0045,u)
+			return cap_point(true,across,height)+rear_lamp_offset(across,height,0.005),trim,Vector3.BACK,simple)
 	cap_strip(body,"ReferenceRearDiffuser",true,0.08,0.92,0.025,0.085,trim,simple,0.003)
 	cap_strip(body,"SportRearValance",true,0.06,0.94,0.085,0.25,trim,simple,0.006)
 	# Five short diffuser fences follow the curved rear instead of exposed
-	# rectangular blocks; a painted trailing lip finishes the deck edge.
+	# rectangular blocks; the trailing lip is formed in the deck surface.
 	for fin: int in range(5):
 		var uu: float=0.27+0.115*fin
 		M.patch(body,"SportDiffuserFin"+str(fin),8,4,func(u: float,v: float)->Vector3:
@@ -497,7 +513,3 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 			p.z+=0.008+0.030*sin(PI*u)*sin(PI*v)
 			p.x+=0.003*cos(PI*v)
 			return p,trim,Vector3.BACK,simple)
-	M.patch(body,"SportDeckLip",64,4,func(u: float,v: float)->Vector3:
-		var p: Vector3=deck_point(lerpf(0.06,0.94,u),lerpf(0.965,1.0,v))
-		p.y+=0.013*sin(PI*v*0.5)*sin(PI*u)
-		return p,paint,Vector3.UP,simple)

@@ -11,6 +11,8 @@ const COMMON: Array[Dictionary] = [
 	{"id":"countries", "title":"Flags and country names", "files":[
 		"res://assets/countries/LICENSE-flag-icons.txt", "res://assets/countries/UNICODE-LICENSE.txt"]},
 	{"id":"audio", "title":"Sound and music credits", "files":["res://legal/audio_notices.txt"]},
+	{"id":"kart_driver", "title":"Kart driver", "files":["res://legal/kart_driver_notices.txt"]},
+	{"id":"challenger_hellcat", "title":"Super rally car model", "files":["res://legal/challenger_hellcat_notices.txt"]},
 	{"id":"cc0", "title":"CC0 1.0 Universal", "files":["res://assets/audio/locked_in_v1/CC0-LICENSE.txt"]},
 	{"id":"native", "title":"Native libraries", "files":["res://platform/track_geometry/NOTICE.txt"]},
 	{"id":"shader", "title":"Godot particle shader", "files":["res://vehicle/GODOT-DUST-SHADER-LICENSE.txt"]},

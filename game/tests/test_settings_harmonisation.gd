@@ -114,7 +114,7 @@ func run() -> void:
 	var active_graphics: Dictionary = game._graphics.duplicate(true)
 	var active_model: bool = game.car.simple_model
 	page().draft_graphics.shadow_quality = "off"
-	page().draft_simple_models = not active_model
+	check(page().find_child("SimpleCarModels",true,false)==null and active_model,"pause Settings always uses reduced models")
 	check(page()._apply(),"graphics commit succeeds")
 	check(game._graphics == active_graphics and game.car.simple_model == active_model,"graphics defer without rebuilding active world")
 	game.opponent_ghost = true

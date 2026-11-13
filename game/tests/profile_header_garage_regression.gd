@@ -62,9 +62,11 @@ func run() -> void:
 	while Time.get_ticks_msec()<deadline:
 		await frame()
 		var showroom: Control = app._retained_garage.showroom
-		if showroom.showroom_ready and showroom.get("preparing")!=true and Icons.ready("compact",records) and not is_instance_valid(app._header_capture_cover): break
-	result.garage_and_header_ms = Time.get_ticks_msec()-entering
-	check(Icons.ready("compact",records),"exact custom header ready")
+		if showroom.showroom_ready and showroom.get("preparing")!=true: break
+	result.garage_ready_ms = Time.get_ticks_msec()-entering
+	result.entry_header_ready = Icons.ready("compact",records)
+	if "--expect-ready" in OS.get_cmdline_user_args(): check(Icons.ready("compact",records),"exact custom header remains ready from the preceding idle menu")
+	check(not app.header_car_cache.capture_active(),"live Garage defers optional header capture")
 	check(app._retained_garage.showroom.showroom_ready and app._retained_garage.showroom.get("preparing")!=true,"interactive Garage ready")
 	check(app.header_car_cache.peak_worlds<=1,"single bounded header world")
 	if "--expect-ready" in OS.get_cmdline_user_args(): check(not ResourceLoader.has_cached("res://garage/parking_hall_drive.tscn"),"ordinary Garage entry leaves Test drive scene unloaded")
@@ -74,7 +76,7 @@ func run() -> void:
 		while app.menu_page_motion!=null and app.menu_page_motion.is_running(): await frame()
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("garage.png"))
-		Icons.texture("compact",records).get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("header.png"))
+		if Icons.ready("compact",records): Icons.texture("compact",records).get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("header.png"))
 		if "--picker" in OS.get_cmdline_user_args():
 			app.account_button.get_node("MenuCarPicker").show_popup()
 			await RenderingServer.frame_post_draw

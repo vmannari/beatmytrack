@@ -1,18 +1,21 @@
 class_name CameraProfile
 extends Resource
 
-const MODES: Array[String] = ["overhead", "follow_car", "look_ahead"]
+const MODES: Array[String] = ["overhead", "follow_car", "look_ahead", "top_down", "high_angle", "low_angle"]
 const DEFAULT_SPEED_ZOOM_STRENGTH: float = 0.30
 const MAX_SPEED_ZOOM_STRENGTH: float = 0.50
-const TITLES: Array[String] = ["Overhead", "Follow car", "Look ahead"]
+const TITLES: Array[String] = ["Overhead", "Follow car", "Look ahead", "Top down", "High angle", "Low angle"]
 const DESCRIPTIONS: Array[String] = [
 	"The original fixed-angle overhead view.",
 	"Turns smoothly with the car, viewed from a slightly lower angle.",
 	"Keeps the world steady and shows more road in your direction of travel.",
+	"An almost vertical view for judging corners and car placement.",
+	"A steeper fixed view that shows more of the track layout.",
+	"A lower fixed view that brings out the cars and track scenery.",
 ]
 
 @export var height: float = 32.0
-@export_range(40.0, 80.0, 0.5) var pitch_degrees: float = 56.0
+@export_range(40.0, 85.0, 0.5) var pitch_degrees: float = 56.0
 @export var world_yaw_degrees: float = 18.0
 @export var baseline_extent: float = 35.0
 @export var magnification: float = 1.15
@@ -48,4 +51,11 @@ static func for_mode(value: String) -> CameraProfile:
 			result.forward_look_ahead = 2.0
 			result.maximum_look_ahead = 9.0
 			result.look_ahead_smoothing = 2.0
+		"top_down":
+			# Stay just off vertical so look_at retains an unambiguous up axis.
+			result.pitch_degrees = 85.0
+		"high_angle":
+			result.pitch_degrees = 70.0
+		"low_angle":
+			result.pitch_degrees = 46.0
 	return result

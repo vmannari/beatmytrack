@@ -16,16 +16,17 @@ static func rest_scene(car: CarVisual) -> Node3D:
 	return null
 
 static func key_for(car: CarVisual) -> Array:
-	var key: Array = ["prepared-car-2",car.vehicle_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
-	if VehicleCustomisation.supported(car.vehicle_id):
+	var key: Array = ["prepared-car-2",car.model_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
+	if VehicleCustomisation.supported(car.model_id):
 		for category: String in VehicleCustomisation.CATEGORIES: key.append(car.customisation[category])
 	return key
 
 static func restore(car: CarVisual) -> bool:
-	# Only the stock detailed Compact currently passes exact renderer comparisons.
-	# Other models/kits retain their original material/shadow construction sequence.
-	# All models can still reuse their immutable rest-pose ghost geometry.
-	if not enabled or car.simple_model or car.editable_kits or car.vehicle_id != "compact" or car.customisation != VehicleCustomisation.defaults(): return false
+	# Simple fitted cars retain their exact completed procedural geometry, including
+	# original shadow casters. They must not use the stock modular shadow proxies.
+	var fitted_simple: bool = car.simple_model and car.customisation != VehicleCustomisation.defaults()
+	var stock_compact: bool = not car.simple_model and car.chassis_id == "compact" and car.customisation == VehicleCustomisation.defaults()
+	if not enabled or car.editable_kits or not (fitted_simple or stock_compact): return false
 	var key: Array = key_for(car)
 	for index: int in range(entries.size()):
 		if entries[index].key != key: continue

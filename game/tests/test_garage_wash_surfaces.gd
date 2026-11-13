@@ -29,6 +29,7 @@ func check_underbody(view: CarShowroom) -> void:
 		view.pick_meshes = [{"node":node,"bounds":node.mesh.get_aabb(),"triangles":node.mesh.generate_triangle_mesh()}]
 		var binding: Dictionary = original_bindings[0].duplicate()
 		binding.node = node
+		binding.index = 0 # The synthetic patch has exactly one surface.
 		view.weathering.bindings = [binding]
 		var inspector: RefCounted = inspector_script.new()
 		inspector._sample_exterior(view)
@@ -66,6 +67,7 @@ func check_material_boundary(view: CarShowroom) -> void:
 	node.queue_free()
 
 func run() -> void:
+	var reduced: bool="--simple-model" in OS.get_cmdline_user_args()
 	for argument: String in OS.get_cmdline_user_args():
 		if not argument.begins_with("--before-file="): continue
 		inspector_script = GDScript.new()
@@ -74,6 +76,7 @@ func run() -> void:
 	for id: String in VehicleCatalog.IDS:
 		var view := CarShowroom.new()
 		view.vehicle_id = id
+		view.simple_model = reduced
 		root.add_child(view)
 		await process_frame
 		check_underbody(view)
@@ -98,6 +101,13 @@ func run() -> void:
 		hidden.slow_wash = hidden.wash
 		effect.restore(hidden)
 		check(inspector.is_clean(view),id+" dirty bottom does not prevent customisation")
+		if reduced and id=="kart" and not inspector.is_clean(view):
+			var residual_points: Array=[]
+			for index: int in range(inspector.points.size()):
+				var point: Vector3=inspector.points[index]
+				var residue: float=1.0-inspector._washed(point,effect.bounds,effect.wash_image.get_data())
+				if residue>0.3 and inspector._scopes[index].x>0.3:residual_points.append([point,inspector._regions[index],residue,inspector._scopes[index]])
+			print("REDUCED_KART_WASH_DIAGNOSTIC bounds=",effect.bounds," mean=",inspector._mean_residue," dirty=",inspector._dirty_fraction," points=",residual_points)
 		# Road dirt is absent from high panels, even with untouched mask cells.
 		mask.fill(255)
 		for y: int in range(16):

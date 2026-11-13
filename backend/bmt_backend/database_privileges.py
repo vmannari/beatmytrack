@@ -85,6 +85,7 @@ DOMAIN_TABLES = frozenset(
         "player_blocks",
         "players",
         "product_events",
+        "product_loss_sources",
         "product_metrics",
         "product_player_days",
         "product_profiles",
@@ -142,6 +143,15 @@ DOMAIN_TABLES = frozenset(
         "tracks",
         "version_finishers",
         "world_circuit_entries",
+        "world_car_circuits",
+        "world_car_entries",
+        "world_car_weeks",
+        "world_car_awards",
+        "world_car_standings",
+        "world_car_work_inputs",
+        "world_car_work_places",
+        "world_car_work_weekly",
+        "world_car_work_standings",
         "world_circuits",
         "world_ranking_archives",
         "world_ranking_awards",
@@ -247,6 +257,7 @@ def relation_policy(workload):
         policy[table] = dict.fromkeys(("SELECT", "INSERT", "UPDATE") if workload == "worker" else ("SELECT",))
     policy["track_of_day_bests"] = dict.fromkeys(
         ("SELECT", "INSERT", "UPDATE") if workload == "worker" else ("SELECT",))
+    policy["product_loss_sources"] = dict.fromkeys(CRUD if workload == "worker" else ("SELECT",))
     return policy
 
 

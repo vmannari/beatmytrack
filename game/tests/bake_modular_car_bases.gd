@@ -6,6 +6,7 @@ const PREPARED = preload("res://vehicle/prepared_car_cache.gd")
 func _initialize() -> void: run.call_deferred()
 
 func run() -> void:
+	var lods = preload("res://tests/support/car_refinement_lods.gd").new()
 	var only: String = ""
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--vehicle="): only = argument.trim_prefix("--vehicle=")
@@ -19,6 +20,7 @@ func run() -> void:
 	PREPARED.enabled = false
 	preload("res://ui/garage_car_cache.gd").enabled = false
 	for id: String in VehicleCatalog.IDS:
+		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
 		if not only.is_empty() and only != id: continue
 		for simple: bool in [false,true]:
 			var edit_modes: Array[bool] = [false]
@@ -32,7 +34,10 @@ func run() -> void:
 				root.add_child(car)
 				while not car.model_ready: await process_frame
 				BASE.enabled = true
+				if id in ["compact","forklift"]: preload("res://tests/support/car_model_buffers.gd").detach(car)
 				var error: Error = BASE.bake(car)
+				if error == OK: error = lods.bake(BASE.path_for(car),id,0.5 if simple else 2.0)
+				if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(BASE.path_for(car),id)
 				BASE.enabled = false
 				print("MODULAR_BASE_BAKE ",id," simple=",simple," editable=",editable," error=",error)
 				car.free()

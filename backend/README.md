@@ -494,25 +494,34 @@ Phone touch/performance and production capacity remain unmeasured.
 
 ### World Ranking
 
-Migration `0059_world_ranking` adds the prospective Compact Circuit and the
-best-12-of-26 World Ranking, with best-six 13-week seasons. Configure the same
+Migration `0059_world_ranking` introduced the Compact Circuit. Additive migration
+`0076_multi_car_world_ranking` adds separate rankings for the five playable cars
+and an overall strongest-three score weighted at 100% / 40% / 15%. Each car keeps
+its best 12 results from 26 weeks, with best-six 13-week seasons. An announced
+eight-week participation multiplier adds up to 25%, alongside a separate
+opposition-strength/evidence adjustment. Existing opened Compact weeks and
+historical awards retain their original policy. Configure the same
 `BMT_WORLD_RANKING_LAUNCH_WEEK` (UTC Monday epoch seconds) on API and workers;
 zero leaves launch unannounced and does not start the ranking role. Do not
-backfill historical Rivalries. Prepare five trusted official tracks through
-the existing weekly planner before the declared opening.
+backfill historical Rivalries. Prepare five trusted official tracks for each
+playable car through the existing weekly planner before the declared opening.
 
 The supervisor starts a separate low-priority SQL-only ranking process with
 one database connection. Its batches, bounded sort memory, query deadline and
 foreground queue guard keep settlement out of race acceptance and HTTP reads.
 Readers use an atomic published generation and indexed 50-row pages, nine-row
-neighborhoods and at most 26 results per profile. The current and previous
+neighborhoods, at most eight car summaries and 26 selected-car results per profile.
+Use `vehicle_id=overall` or a car on the ranking/profile reads. The current and previous
 generations remain hot; older sporting inputs use compact private archives.
 Official Circuit receipts grant three free resumes without charging wallets.
 
-See [implementation and rollout](../docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23.md)
-for exact rules, correction commands, retention, measured capacity, source
-manifests, native views, remaining acceptance and connection-budget checks.
-This change has not been deployed or enabled on a live service.
+See [multi-car rules, verification and rollout requirements](../docs/MULTI_CAR_WORLD_RANKING_2026_11_07.md)
+and [the v2 wire schema](../docs/schemas/world-ranking-v2.schema.json). Apply the
+matching migration, runtime-role grants, API, supervised worker and client together;
+drain the previous ranking worker before opening a v2 week. The earlier
+[Compact implementation measurements](../docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23.md)
+do not qualify multi-car capacity. This change has not been deployed or enabled
+on a live service.
 
 ### Negotiated completion and pending reads
 

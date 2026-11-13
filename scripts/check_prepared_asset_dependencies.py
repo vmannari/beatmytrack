@@ -48,7 +48,7 @@ def audit():
             begin = source.index("static func tire(")
             end = source.index("static func build(")
             sections = [
-                (source[:begin] + source[end:], {"compact"}),
+                (source[:begin] + source[end:], {"compact", "super_rally"}),
                 (source[begin:end], owners),
             ]
         for section, section_owners in sections:

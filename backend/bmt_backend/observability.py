@@ -39,7 +39,7 @@ class JsonFormatter(logging.Formatter):
         value["level"] = record.levelname.lower()
         for field in ("run_id", "time_ticks", "failure_code", "worker_id", "request_id", "exception_type", "sqlstate",
                       "verification_seconds", "verification_compute_ms", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal",
-                      "generation_id", "generation_seconds"):
+                      "generation_id", "generation_seconds", "telemetry_stage", "telemetry_owners"):
             if hasattr(record, field):
                 value[field] = getattr(record, field)
         # Record only exception type: arbitrary exception text can include submitted data.

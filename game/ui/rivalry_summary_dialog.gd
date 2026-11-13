@@ -22,6 +22,7 @@ var ornament: Control
 var perfect: Label
 var position_label: Label
 var rank_label: Label
+var field_label: Label
 var no_results_label: Label
 var driver_label: Label
 var player_points: Label
@@ -103,40 +104,47 @@ func _build_hero() -> void:
 	ornament.empty_week = summary.rank == null and int(summary.completed) == 0
 	hero.add_child(ornament)
 	MenuStyle.fill(ornament)
-	position_label = _summary_label(hero,_place_caption(),22,MenuStyle.ACCENT,Rect2(103,14,420,28))
+	position_label = _summary_label(hero,"FINAL POSITION",20,MenuStyle.MUTED,Rect2(566,14,250,28))
 	position_label.name = "WeeklySummaryPlace"
+	position_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var titles: Dictionary = {"WEEKLY CHAMPION":"Weekly Champion","PODIUM FINISH":"PODIUM\nFINISH","WEEK COMPLETE":"Week complete"}
 	var title_source: String = titles.get(str(summary.title),str(summary.title))
-	heading = _summary_label(hero,GameText.message(title_source).replace("\n"," ").to_upper(),72,MenuStyle.ACCENT if int(summary.tier) > 0 else MenuStyle.TEXT,Rect2(103,35,420,90))
+	heading = _summary_label(hero,GameText.message(title_source).replace("\n"," ").to_upper(),60,MenuStyle.ACCENT if int(summary.tier) > 0 else MenuStyle.TEXT,Rect2(103,28,420,90))
 	heading.name = "WeeklySummaryAward"
 	var bold := FontVariation.new()
 	bold.base_font = _font_for(heading.text)
 	bold.variation_embolden = 0.3
 	bold.variation_transform = Transform2D(Vector2(0.92,0),Vector2(0,1),Vector2.ZERO)
-	bold.spacing_glyph = -7
+	bold.spacing_glyph = -2
 	bold.spacing_top = -10
 	bold.spacing_bottom = -10
 	heading.add_theme_font_override("font",bold)
-	driver_label = _summary_label(hero,player_name.to_upper(),46,MenuStyle.TEXT,Rect2(103,128,420,57))
+	driver_label = _summary_label(hero,player_name.to_upper(),36,MenuStyle.TEXT,Rect2(103,128,420,57))
 	driver_label.name = "WeeklySummaryDriver"
 	GameText.user_text(driver_label)
 	perfect = _summary_label(hero,"PERFECT WEEK",18,MenuStyle.ACCENT,Rect2(329,151,192,25))
 	perfect.name = "WeeklySummaryPerfect"
 	perfect.visible = bool(summary.perfect)
 	if perfect.visible: driver_label.size.x = 215
-	var rank_text: String = "—" if summary.rank == null else "%02d" % int(summary.rank)
-	rank_label = _summary_label(hero,rank_text,178,MenuStyle.ACCENT if summary.rank != null else MenuStyle.MUTED,Rect2(564,-3,159,191))
+	var rank_text: String = "—" if summary.rank == null else str(int(summary.rank))
+	rank_label = _summary_label(hero,rank_text,120,MenuStyle.ACCENT if summary.rank != null else MenuStyle.MUTED,Rect2(566,38,250,113))
 	rank_label.name = "WeeklySummaryRank"
+	rank_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	rank_label.visible = not ornament.empty_week
 	var italic := FontVariation.new()
 	italic.base_font = display_face
 	italic.variation_embolden = 0.3
-	italic.variation_transform = Transform2D(Vector2(0.9,0),Vector2(-0.18,1),Vector2.ZERO)
-	italic.spacing_glyph = -12
+	italic.variation_transform = Transform2D.IDENTITY
+	italic.spacing_glyph = -2
 	italic.spacing_top = -15
 	italic.spacing_bottom = -15
 	rank_label.add_theme_font_override("font",italic)
-	no_results_label = _summary_label(hero,GameText.message("No races completed").to_upper(),30,MenuStyle.MUTED,Rect2(594,55,214,84))
+	field_label = _summary_label(hero,GameText.message("OF %d DRIVERS") % int(summary.drivers),20,MenuStyle.MUTED,Rect2(566,154,250,29))
+	field_label.name = "WeeklySummaryField"
+	field_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	field_label.visible = summary.rank != null
+	position_label.visible = summary.rank != null
+	no_results_label = _summary_label(hero,GameText.message("No races completed").to_upper(),30,MenuStyle.MUTED,Rect2(566,55,250,84))
 	no_results_label.name = "WeeklySummaryNoResults"
 	no_results_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	no_results_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
@@ -152,22 +160,16 @@ func _build_comparison() -> void:
 	canvas.add_child(vehicle)
 	_place(vehicle,Rect2(47,287,87,56))
 	ProfileCar.apply_presentation(vehicle)
-	var own_name: Label = _summary_label(canvas,player_name.to_upper(),21,MenuStyle.MUTED,Rect2(167,282,141,28))
-	GameText.user_text(own_name)
-	player_points = _summary_label(canvas,_points(int(summary.points)),39,MenuStyle.ACCENT,Rect2(167,305,141,45))
+	_summary_label(canvas,"YOUR POINTS",21,MenuStyle.MUTED,Rect2(145,282,163,28))
+	player_points = _summary_label(canvas,_points(int(summary.points)),39,MenuStyle.ACCENT,Rect2(145,305,163,45))
 	player_points.name = "WeeklySummaryPlayerPoints"
-	var opponent: Label = _summary_label(canvas,"CO-LEADER" if bool(summary.champion) and int(summary.get("lead",0)) == 0 else "RUNNER-UP" if bool(summary.champion) else "LEADER",21,MenuStyle.MUTED,Rect2(572,282,262,28))
+	var opponent: Label = _summary_label(canvas,"CO-LEADER" if bool(summary.champion) and int(summary.get("lead",0)) == 0 else "RUNNER-UP" if bool(summary.champion) else "TOP SCORE",21,MenuStyle.MUTED,Rect2(572,282,262,28))
 	opponent.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	opponent_points = _summary_label(canvas,"—" if summary.get("opponent_points") == null else _points(int(summary.opponent_points)),35,MenuStyle.MUTED,Rect2(572,305,262,43))
 	opponent_points.name = "WeeklySummaryOpponentPoints"
 	opponent_points.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var comparison := Banner.new()
-	comparison.kind = "comparison"
-	canvas.add_child(comparison)
-	_place(comparison,Rect2(330,296,220,38))
-	var lead: String = "UNRANKED" if summary.rank == null else "TIED FOR LEAD" if int(summary.get("lead",0)) == 0 else GameText.message("+%d POINT LEAD") % int(summary.lead) if bool(summary.champion) else GameText.message("%d PTS TO LEAD") % absi(int(summary.get("lead",0)))
-	if summary.get("opponent_points") == null: lead = "WEEK COMPLETE"
-	lead_label = _summary_label(canvas,lead,21,MenuStyle.POSITIVE,Rect2(362,299,156,30))
+	var lead: String = "" if summary.rank == null or summary.get("opponent_points") == null else "TIED FOR LEAD" if int(summary.get("lead",0)) == 0 else GameText.message("+%d POINT LEAD") % int(summary.lead) if bool(summary.champion) else GameText.message("%d PTS BEHIND") % absi(int(summary.get("lead",0)))
+	lead_label = _summary_label(canvas,lead,22,MenuStyle.MUTED,Rect2(330,299,220,30))
 	lead_label.name = "WeeklySummaryLead"
 	lead_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
@@ -176,7 +178,7 @@ func _build_metrics() -> void:
 	metrics.name = "WeeklySummaryMetrics"
 	canvas.add_child(metrics)
 	_place(metrics,Rect2(34,370,812,76))
-	var facts: Array = [["FINAL POSITION","—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"flag"],["TRACK VICTORIES","%d / 5" % int(summary.wins),"trophy"],["PERSONAL BESTS","%d / 5" % int(summary.get("personal_bests",0)),"clock"]]
+	var facts: Array = [["TRACKS COMPLETED","%d / %d" % [int(summary.completed),summary.results.size()],"flag"],["TRACK VICTORIES",str(int(summary.wins)),"trophy"],["PERSONAL BESTS",str(int(summary.get("personal_bests",0))),"clock"]]
 	for index: int in range(3):
 		var card: Control = _card(metrics,Rect2(index*275,0,262,76))
 		var number: Label = _summary_label(card,str(facts[index][1]),37,MenuStyle.ACCENT,Rect2(16,3,196,46))
@@ -192,7 +194,7 @@ func _build_metrics() -> void:
 		_place(icon,Rect2(210,22,32,32))
 
 func _build_actions() -> void:
-	confirm_button = MenuStyle.button("VIEW RESULTS",_confirm)
+	confirm_button = MenuStyle.button("VIEW STANDINGS",_confirm)
 	confirm_button.name = "WeeklySummaryViewResults"
 	var outline: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
 	outline.border_color = MenuStyle.ACCENT
@@ -250,12 +252,6 @@ func _line(parent: Control, rectangle: Rect2, color: Color) -> void:
 func _points(value: int) -> String:
 	return "%d %s" % [value,GameText.message("PTS")]
 
-func _place_caption() -> String:
-	if summary.rank == null: return GameText.message("UNRANKED")
-	var rank: int = int(summary.rank)
-	var suffix: String = "TH" if rank%100 in [11,12,13] else "ST" if rank%10 == 1 else "ND" if rank%10 == 2 else "RD" if rank%10 == 3 else "TH"
-	return "%d%s PLACE" % [rank,suffix] if TranslationServer.get_locale().begins_with("en") else GameText.message("FINAL POSITION")+" #"+str(rank)
-
 func present() -> void:
 	popup_centered(_target_size())
 	_layout.call_deferred()
@@ -286,9 +282,11 @@ func _layout() -> void:
 		if not child.has_meta("summary_position"): child.set_meta("summary_position",child.position)
 		child.position = Vector2(child.get_meta("summary_position"))*scale_factor
 		child.scale = Vector2.ONE*scale_factor
-	_fit_label(heading,82,34)
-	_fit_label(driver_label,46,24)
-	_fit_label(rank_label,200,84)
+	_fit_label(heading,64,28)
+	_fit_label(driver_label,36,24)
+	_fit_label(rank_label,130,60)
+	_fit_label(position_label,20,13)
+	_fit_label(field_label,20,13)
 	_fit_label(player_points,39,25)
 	_fit_label(lead_label,21,15)
 	for button: Button in [confirm_button,continue_button]:

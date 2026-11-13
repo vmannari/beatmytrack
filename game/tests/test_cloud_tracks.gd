@@ -32,7 +32,7 @@ func check(value: bool, description: String) -> void:
 func settle(cloud: Node) -> void:
 	for attempt: int in range(100):
 		await cloud.flush_outbox()
-		var jobs: Array = cloud.upload_jobs()
+		var jobs: Array = (await cloud.upload_history())
 		if not jobs.is_empty() and jobs.all(func(job: Dictionary) -> bool: return job.has("done") or job.has("failure")): return
 		await create_timer(0.2).timeout
 	check(false,"verification completes before deadline: "+cloud.status)
@@ -107,7 +107,7 @@ func run() -> void:
 	ticket.data["_race_proof"] = fixture.race_proof
 	ticket.data["_race_ghost"] = fixture.ghost
 	check(ticket.ok,"creator gets server contract")
-	check(cloud.queue_run(ticket.data,fixture.replay.frames),"ordinary creator race replay durably queued after publication")
+	check((await cloud.queue_run_async(ticket.data,fixture.replay.frames)),"ordinary creator race replay durably queued after publication")
 	await settle(cloud)
 	await cloud.refresh(true)
 	check(cloud.entries.size() == 1,"verified publication enters cloud discovery")
@@ -192,7 +192,7 @@ func run() -> void:
 	check(game.online_frames.size() == fixture.replay.frames.size()+1200,"audit includes original and resumed input segments")
 	race["_race_proof"] = game.race_proof.recording(game.track_session)
 	race["_race_ghost"] = game.ghost_run.recording("race")
-	check(cloud.queue_run(race,game.online_frames,"",game.online_rewinds),"actual game replay persisted")
+	check((await cloud.queue_run_async(race,game.online_frames,"",game.online_rewinds)),"actual game replay persisted")
 	game.restart()
 	check(game.online_frames.is_empty(),"retry resets captured inputs")
 	game.queue_free()
@@ -203,7 +203,7 @@ func run() -> void:
 	restored.root_override = cloud.root_override
 	root.add_child(restored)
 	await settle(restored)
-	check(restored.upload_jobs()[-1].get("done",false),"rewind replay survives outbox reload and earns a verified leaderboard result")
+	check((await restored.upload_history())[-1].get("done",false),"rewind replay survives outbox reload and earns a verified leaderboard result")
 	var board: Dictionary = await client.request_api("/track-versions/"+version+"/leaderboard?vehicle_id=compact&limit=1")
 	check(board.ok and board.data.population == 2 and board.data.items.size() == 1 and board.data.next_offset == 1,"verified scores paginated per vehicle")
 	var other: Dictionary = await client.request_api("/track-versions/"+version+"/leaderboard?vehicle_id=kart")

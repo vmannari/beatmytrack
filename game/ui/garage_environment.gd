@@ -7,6 +7,7 @@ const ROOF_CUTAWAY_HEIGHT: float = 4.95
 static var surfaces: Dictionary = {}
 static var architecture_scene: PackedScene
 static var cabinet_meshes: Dictionary = {}
+static var pedestal_scene: PackedScene
 const PREPARED_ARCHITECTURE: String = "res://assets/garage/workshop_v1.scn"
 
 static func deck_finish() -> ShaderMaterial:
@@ -44,6 +45,8 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, 
 	mesh.bottom_radius = radius
 	mesh.height = height
 	mesh.radial_segments = 96
+	# The side is straight: intermediate height rings add no shape or shading.
+	mesh.rings = 0
 	node.mesh = mesh
 	node.position = at
 	node.material_override = material
@@ -175,6 +178,32 @@ static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = f
 	return environment
 
 static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
+	var stage: Node3D
+	if pedestal_scene != null:
+		stage = pedestal_scene.instantiate()
+		world.add_child(stage)
+	else:
+		stage = _build_pedestal_shell(world)
+		_set_owner(stage, stage)
+		pedestal_scene = PackedScene.new()
+		if pedestal_scene.pack(stage) != OK:
+			pedestal_scene = null
+		else:
+			# Keep the cached material neutral: the first live reflection must
+			# not bind its viewport texture into the shared scene template.
+			stage.free()
+			stage = pedestal_scene.instantiate()
+			world.add_child(stage)
+	car.reparent(stage)
+	car.position.y = DECK_HEIGHT
+	ShowroomStudio._studio_glass(car, {})
+	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
+	for wheel: Vector3 in car.wheel_rest_positions:
+		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
+	ShowroomStudio._contact(stage, Vector3(0, 0.002, 0), Vector2.ONE * (DECK_RADIUS * 2.2), 0.52)
+	return stage
+
+static func _build_pedestal_shell(world: Node3D) -> Node3D:
 	var inset: Material = surfaces.inset
 	var steel: Material = surfaces.steel
 	var edges: Material = surfaces.edges
@@ -184,7 +213,10 @@ static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
 	var radius: float = DECK_RADIUS
 	cylinder(stage, Vector3(0, 0.035, 0), radius + 0.13, 0.07, inset)
 	cylinder(stage, Vector3(0, 0.11, 0), radius, 0.17, steel)
-	cylinder(stage, Vector3(0, 0.205, 0), radius - 0.055, 0.03, deck_finish())
+	var deck: ShaderMaterial = deck_finish()
+	# Reflection textures belong to each showroom, even when meshes are shared.
+	deck.resource_local_to_scene = true
+	cylinder(stage, Vector3(0, 0.205, 0), radius - 0.055, 0.03, deck)
 	ring(stage, radius + 0.018, 0.085, 0.014, surface("rimlight", "d8ba64", 0.1, 0.65, 0.45))
 	ring(stage, radius - 0.04, 0.216, 0.015, edges)
 	for index: int in range(24):
@@ -192,13 +224,6 @@ static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
 		var mark := box(stage, Vector3(sin(angle) * (radius - 0.2), 0.222, cos(angle) * (radius - 0.2)), Vector3(0.035, 0.003, 0.11), inset)
 		mark.rotation.y = angle
 	_batch(stage)
-	car.reparent(stage)
-	car.position.y = DECK_HEIGHT
-	ShowroomStudio._studio_glass(car, {})
-	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
-	for wheel: Vector3 in car.wheel_rest_positions:
-		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
-	ShowroomStudio._contact(stage, Vector3(0, 0.002, 0), Vector2.ONE * (radius * 2.2), 0.52)
 	return stage
 
 static func _workbench(root: Node3D, position: Vector3) -> void:

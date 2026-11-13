@@ -221,12 +221,12 @@ func run() -> void:
 		var cloud: Node = cloud_for(api,"outbox-%s"%rate_limited)
 		var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[1,1,0,0,1,0,0,0]]}
 		for index: int in range(20):
-			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]]),"outbox backlog is durable")
+			check((await cloud.queue_run_async({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]])),"outbox backlog is durable")
 		api.reply = failure(429,"RATE_LIMITED",120) if rate_limited else {"ok":true,"status":202,"data":{"run_id":"run-fixture","status":"verified"},"error":""}
 		await cloud.flush_outbox()
 		await cloud.flush_outbox()
 		check(api.paths.size() == 1,"outbox %s does not spend the budget on every remaining job"%rate_limited)
-		check(cloud.upload_jobs().size() == 20,"outbox retains every saved result")
+		check((await cloud.upload_history()).size() == 20,"outbox retains every saved result")
 		if rate_limited:
 			var request_scope: String = api.base_url()+"/fixture-owner"
 			check(int(cloud._flush_deadlines[request_scope])-Time.get_ticks_msec() > 110000,"whole outbox honors Retry-After")

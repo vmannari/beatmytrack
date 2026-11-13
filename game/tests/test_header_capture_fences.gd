@@ -66,7 +66,7 @@ func run() -> void:
 	root.add_child(garage)
 	app._retained_garage = garage
 	app.screen = "garage"
-	check(app._header_car_capture_allowed("compact"),"ready visible matching Garage is an eligible opportunity")
+	check(not app._header_car_capture_allowed("compact"),"ready visible Garage keeps its painted car instead of starting optional header work")
 	check(not app._header_car_capture_allowed("kart"),"different vehicle cannot use the opportunity")
 	var pictures := Pictures.new()
 	root.add_child(pictures)
@@ -89,7 +89,11 @@ func run() -> void:
 	garage.showroom.showroom_ready = true
 	garage.hide()
 	check(not app._header_car_capture_allowed("compact"),"hidden retained Garage is ineligible")
+	app.screen = "tracks"
+	check(app._header_car_capture_allowed("compact"),"settled menu can finish the picture after Garage is hidden")
 	garage.show()
+	check(not app._header_car_capture_allowed("compact"),"outgoing visible Garage blocks capture until navigation settles")
+	app.screen = "garage"
 	garage.records = LocalRecords.new("user://capture-fences/other.json")
 	check(not app._header_car_capture_allowed("compact"),"different Garage owner is ineligible")
 	garage.records = app.records

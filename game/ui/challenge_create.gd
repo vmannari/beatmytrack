@@ -530,10 +530,6 @@ func _choose_format(key: String) -> void:
 	_active_slot = mini(_active_slot,_required_tracks()-1)
 	_refresh_tracks()
 
-func _choose_mode(index: int) -> void: mode = index; selected_format = "custom"; _update()
-func _choose_duration(seconds: int) -> void: duration = seconds; selected_format = "custom"; _update()
-func _choose_attempt_limit(value: int) -> void: attempt_limit = value; selected_format = "custom"; _update()
-
 func _check_source() -> void:
 	_serial += 1
 	var serial: int = _serial

@@ -12,5 +12,5 @@ void fragment() {
 	ROUGHNESS = 0.17;
 	SPECULAR = 0.65;
 	METALLIC = 0.0;
-	ALPHA = 0.31 + 0.12 * pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0);
+	ALPHA = 0.18 + 0.16 * pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0);
 }

@@ -85,6 +85,16 @@ func run() -> void:
 		check(game.car.front_wheels.size() == 2 and game.car.rolling_wheels.size() == 4,"actual race wheel articulation")
 		check(game.trails.wheelbase == game.handling.wheelbase,"canonical tyre trails retained")
 		await capture("race")
+		var steering_wheel: Node3D = game.car.find_child("SteeringAssembly",true,false)
+		var steering_driver: MeshInstance3D = game.car.find_child("TomkartDriver",true,false)
+		check(steering_wheel != null and steering_driver != null,"actual race retains articulated cockpit handles")
+		for input: float in [-1.0,0.0,1.0,0.0]:
+			game.sim.state.steering = input
+			game._present_frame(1.0/60.0)
+			check(steering_wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/5)),"actual Game presentation turns the steering wheel")
+			var shape_weight: float = 0
+			for shape: int in range(6): shape_weight += steering_driver.get_blend_shape_value(shape)
+			check(is_equal_approx(shape_weight,absf(input)),"actual Game presentation poses both arms and centres exactly")
 		game.camera.current = false
 		game.hud.hide()
 		var camera := Camera3D.new()

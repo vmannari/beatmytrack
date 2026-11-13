@@ -1,0 +1,475 @@
+--- a/scripts/prepare_kart_driver.py
++++ b/scripts/prepare_kart_driver.py
+@@ -68,16 +68,23 @@
+             visit(child, transform)
+ 
+     visit(0, np.eye(4))
+-    scale = 0.34
++    scale = 0.42
+     # A proper 180-degree rotation faces the kart's -Z nose without mirroring.
+     forward = np.diag([-1., 1., -1.])
+-    lean = np.deg2rad(16)
++    lean = np.deg2rad(27)
+     torso_rotation = np.array([[1, 0, 0], [0, np.cos(lean), -np.sin(lean)], [0, np.sin(lean), np.cos(lean)]])
+     pelvis_source = np.array([0, .10, -.24]) * scale
+-    pelvis_target = np.array([0, .35, .035])
++    pelvis_target = np.array([0, .35, .095])
++
++    def reclined(points):
++        return (points - pelvis_source) @ torso_rotation.T + pelvis_target
+ 
+     def torso(points):
+-        return (points - pelvis_source) @ torso_rotation.T + pelvis_target
++        neck = np.array([0, 1.50, -.23]) * scale
++        aligned = points - neck + reclined(neck[None, :])[0]
++        weight = np.clip((points[:, 1]/scale-1.32)/(1.57-1.32),0,1)
++        weight = weight*weight*(3-2*weight)
++        return reclined(points)*(1-weight[:, None])+aligned*weight[:, None]
+ 
+     def segment(points, start, end, target_start, target_end):
+         start, end = np.array(start) * scale, np.array(end) * scale
+@@ -90,7 +97,12 @@
+         return delta @ rotation.T + target_start
+ 
+     def pose(points, index):
+-        if index in [0, 1, 2, 3, 4, 11, 12, 13, 20]:
++        if index in [0, 1, 2, 3, 4]:
++            # Keep the head looking forward while the torso rests against the
++            # seat. Reclining the helmet with the chest makes it look skyward.
++            neck = np.array([0, 1.50, -.23]) * scale
++            return points - neck + torso(neck[None, :])[0]
++        if index in [11, 12, 13, 20]:
+             return torso(points)
+         # Sides below are in the kart coordinate system after the half-turn.
+         side = -1 if index in [5, 6, 7, 14, 15, 16] else 1
+@@ -102,17 +114,17 @@
+         if index in [5, 6, 7, 8, 9, 10]:
+             shoulder = torso(np.array([[side * .42, 1.32, -.17]]) * scale)[0]
+             upper = segment(points, [side * .42, 1.32, -.17], [side * .79, .55, -.17],
+-                            shoulder, [side * .235, .52, -.03])
++                            shoulder, [side * .26, .565, .02])
+             forearm = segment(points, [side * .79, .55, -.17], [side * .96, .31, -.23],
+-                              [side * .235, .52, -.03], [side * .19, .54, -.17])
++                              [side * .26, .565, .02], [side * .195, .555, -.17])
+             hand = segment(points, [side * .96, .31, -.23], [side * 1.02, -.23, -.23],
+-                           [side * .19, .54, -.17], [side * .15, .53, -.36])
++                           [side * .195, .555, -.17], [side * .15, .53, -.36])
+             # All three separate source pieces use the same deformation at
+             # overlapping seams, preserving their original shared boundaries.
+             arm = blend(hand, forearm, .26, .36)
+             arm = blend(arm, upper, .46, .64)
+             return blend(arm, torso(points), 1.10, 1.33)
+-        hip, knee, ankle = [side * .10, .345, .035], [side * .135, .375, -.335], [side * .14, .245, -.72]
++        hip, knee, ankle = [side * .12, .345, .095], [side * .145, .49, -.34], [side * .14, .245, -.72]
+         if index in [14, 15, 16, 17, 18, 19]:
+             thigh = segment(points, [side * .22, -.11, -.23], [side * .25, -1.07, -.20], hip, knee)
+             shin = segment(points, [side * .25, -1.07, -.20], [side * .30, -2.02, -.17], knee, ankle)
+@@ -144,7 +156,13 @@
+         result["accessors"].append(accessor)
+         return len(result["accessors"]) - 1
+ 
+-    report = {"source_sha256": hashlib.sha256(args.archive.read_bytes()).hexdigest(), "parts": []}
++    hip, knee, ankle = np.array([.12, .345, .095]), np.array([.145, .49, -.34]), np.array([.14, .245, -.72])
++    flexion = np.rad2deg(np.arccos(np.clip(np.dot(knee-hip, ankle-knee) /
++                                         (np.linalg.norm(knee-hip)*np.linalg.norm(ankle-knee)), -1, 1)))
++    report = {"source_sha256": hashlib.sha256(args.archive.read_bytes()).hexdigest(),
++              "scale": scale, "scale_before": .34, "linear_size_increase_percent": (scale/.34-1)*100,
++              "torso_recline_degrees": float(np.rad2deg(lean)), "knee_flexion_degrees": float(flexion),
++              "hip": hip.tolist(), "knee": knee.tolist(), "ankle": ankle.tolist(), "parts": []}
+     for index, mesh in enumerate(source["meshes"]):
+         primitive = mesh["primitives"][0]
+         vertices = read(primitive["attributes"]["POSITION"])
+--- a/scripts/run_kart_driver_review.py
++++ b/scripts/run_kart_driver_review.py
+@@ -11,29 +11,41 @@
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-OUT = ROOT / "docs/evidence/kart-tomkart-driver-2026-11-08"
++OUT = ROOT / "docs/evidence/kart-driver-fit-style-2026-11-08"
+ 
+ 
+ def main():
+     name, script, *options = sys.argv[1:]
++    project_root = Path(os.environ.get("BMT_DRIVER_PROJECT_ROOT", str(ROOT))).resolve()
++    if not project_root.is_relative_to(ROOT):
++        raise ValueError("Driver review project must stay within this workspace")
+     OUT.mkdir(parents=True, exist_ok=True)
+-    profile = ROOT / "build/kart-driver-tomkart-2026-11-08/profile"
++    profile = ROOT / ("build/kart-driver-fit-style-2026-11-08/profile" if project_root == ROOT else "build/kart-driver-fit-style-2026-11-08/profile-frozen")
+     for folder in [profile / "roaming", profile / "local"]:
+         folder.mkdir(parents=True, exist_ok=True)
+     env = dict(os.environ, APPDATA=str(profile / "roaming"),
+                LOCALAPPDATA=str(profile / "local"), BMT_API_URL="", BMT_DEV_AUTH_KEY="")
+     engine = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
+     actual = subprocess.check_output([engine, "--version"], text=True).strip()
+-    assert actual == (ROOT / "godot-version.txt").read_text().strip(), actual
++    assert actual == (project_root / "godot-version.txt").read_text().strip(), actual
+     command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine,
+-               "--path", str(ROOT / "game"), "--audio-driver", "Dummy", "--position", "10000,10000",
++               "--path", str(project_root / "game"), "--audio-driver", "Dummy", "--position", "10000,10000",
+                "--script", script, *options]
+     started = time.monotonic()
+     with (OUT / (name + ".log")).open("w", encoding="utf-8") as log:
+         process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
+                                    stderr=subprocess.STDOUT)
+         try:
+-            code = process.wait(timeout=900)
++            while process.poll() is None:
++                time.sleep(0.1)
++                output = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
++                if "SCRIPT ERROR:" in output:
++                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                                   stdout=log, stderr=subprocess.STDOUT, check=False)
++                    break
++                if time.monotonic() - started > 900:
++                    raise subprocess.TimeoutExpired(command, 900)
++            code = process.wait()
+         except subprocess.TimeoutExpired:
+             # Kill only this runner's owned child tree, including native Godot.
+             subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+--- a/game/tests/bake_tomkart_driver.gd
++++ b/game/tests/bake_tomkart_driver.gd
+@@ -1,8 +1,9 @@
+ extends SceneTree
+-## Bake the reviewed static source adaptation and imagegen logo-removal patches.
+-const WORK: String = "res://../build/kart-driver-tomkart-2026-11-08"
++## Bake the enlarged seated driver with native matte cloth; no fabric texture.
++const WORK: String = "res://../build/kart-driver-fit-style-2026-11-08"
+ const DEST: String = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1"
+ const GENERATED: String = "res://../docs/evidence/kart-tomkart-driver-2026-11-08/imagegen/"
++var preview: bool = false
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -24,17 +25,36 @@
+ 				var blend: float = smoothstep(0,4,edge)
+ 				original.set_pixel(x,y,original.get_pixel(x,y).lerp(edited.get_pixel(x,y),blend))
+ 	assert(original.save_png(ProjectSettings.globalize_path(WORK+"/candidate/textures/"+file)) == OK)
+-	assert(original.save_png(DEST+"/textures/"+file) == OK)
++	if not preview: assert(original.save_png(DEST+"/textures/"+file) == OK)
++
++func cloth(source: Mesh, surface: int, tool: SurfaceTool) -> void:
++	var arrays: Array = source.surface_get_arrays(surface)
++	var positions: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++	var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
++	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	# Foot meshes share the original suit atlas, but get plain rubber boots.
++	var top: float = -INF
++	for point: Vector3 in positions: top = maxf(top,point.y)
++	var boot: bool = top < 0.4
++	for index: int in indices:
++		var color := Color("465861")
++		if boot:
++			color = Color("1d292e")
++		elif surface in [7,10] and positions[index].y > 0.77:
++			# Quiet shoulder yokes belong to the garment geometry; photographic
++			# folds, logos and highlights are not sampled into the new material.
++			color = Color("929c9a")
++		elif surface == 11 and positions[index].y > 0.89:
++			color = Color("26343a")
++		tool.set_color(color)
++		tool.set_normal(normals[index])
++		tool.set_uv(uv[index])
++		tool.add_vertex(positions[index])
+ 
+ func run() -> void:
++	preview = "--preview" in OS.get_cmdline_user_args()
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DEST+"/textures"))
+-	clean("RT_DriverSuit_baseColor.png","suit.png",[
+-		Rect2i(230,332,205,48),Rect2i(170,426,57,54),Rect2i(455,426,54,55),
+-		Rect2i(780,78,36,169),Rect2i(779,758,39,207)])
+-	clean("RT_Gloves_baseColor.png","gloves.png",[
+-		Rect2i(68,205,50,50),Rect2i(905,206,55,55),Rect2i(154,343,105,107),Rect2i(770,342,108,108),
+-		Rect2i(318,413,126,83),Rect2i(582,413,126,83),Rect2i(378,345,81,91),Rect2i(575,345,81,91),
+-		Rect2i(124,154,68,31),Rect2i(837,154,62,29)])
+ 	clean("RT_Helemt_trasparent_baseColor.png","helmet.png",[
+ 		Rect2i(1250,46,126,53),Rect2i(908,132,100,78),Rect2i(1615,132,110,80)],true)
+ 	var document := GLTFDocument.new()
+@@ -45,23 +65,40 @@
+ 	if scene is MeshInstance3D: nodes.push_front(scene)
+ 	assert(nodes.size() == 1)
+ 	var source: ArrayMesh = nodes[0].mesh
++	assert(source.get_surface_count() == 21)
+ 	var result := ArrayMesh.new()
+ 	var tools: Dictionary = {}
+ 	var materials: Dictionary = {}
+ 	for surface: int in range(source.get_surface_count()):
+ 		var material: StandardMaterial3D = source.surface_get_material(surface)
+ 		var key: String = material.resource_name
++		# The bulky source neck restraint obscures the seated silhouette.
++		if key == "RT_HANS": continue
+ 		if not tools.has(key):
+ 			tools[key] = SurfaceTool.new()
+ 			materials[key] = material
+-			material.roughness = 0.85 if key in ["RT_DriverSuit","RT_Gloves","RT_HANS"] else 0.42
+-			material.metallic_specular = 0.08 if key in ["RT_DriverSuit","RT_Gloves"] else 0.3
+-		tools[key].append_from(source,surface,Transform3D.IDENTITY)
++			if key == "RT_DriverSuit": tools[key].begin(Mesh.PRIMITIVE_TRIANGLES)
++			if key in ["RT_DriverSuit","RT_Gloves","RT_HANS"]:
++				material.albedo_texture = null
++				material.albedo_color = Color.WHITE if key == "RT_DriverSuit" else Color("26343a")
++				material.vertex_color_use_as_albedo = key == "RT_DriverSuit"
++				material.vertex_color_is_srgb = true
++				material.roughness = 1.0
++				material.metallic_specular = 0.0
++				material.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
++				material.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
++			else:
++				material.roughness = 0.42
++				material.metallic_specular = 0.3
++		if key == "RT_DriverSuit":
++			cloth(source,surface,tools[key])
++		else: tools[key].append_from(source,surface,Transform3D.IDENTITY)
+ 	for key: String in tools:
++		if key == "RT_DriverSuit": tools[key].index()
+ 		tools[key].commit(result)
+ 		result.surface_set_material(result.get_surface_count()-1,materials[key])
+-	assert(result.get_faces().size()/3 == 1445)
+-	assert(ResourceSaver.save(result,DEST+"/driver.res",ResourceSaver.FLAG_COMPRESS) == OK)
++	assert(result.get_faces().size()/3 == 1343)
++	assert(ResourceSaver.save(result,(WORK+"/candidate" if preview else DEST)+"/driver.res",ResourceSaver.FLAG_COMPRESS) == OK)
+ 	scene.free()
+-	print("TOMKART_DRIVER_BAKE 1445 triangles; ",result.get_surface_count()," material surfaces; three unbranded texture atlases")
++	print("TOMKART_DRIVER_BAKE ",result.get_faces().size()/3," triangles; ",result.get_surface_count()," material surfaces; native matte cloth; preview=",preview)
+ 	quit()
+--- a/game/tests/review_tomkart_driver.gd
++++ b/game/tests/review_tomkart_driver.gd
+@@ -1,27 +1,16 @@
+ extends SceneTree
+ ## Offline source/pose preview; never reads owner records or contacts the backend.
+-const OUT: String = "res://../docs/evidence/kart-tomkart-driver-2026-11-08"
++const OUT: String = "res://../docs/evidence/kart-driver-fit-style-2026-11-08"
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+-	var document := GLTFDocument.new()
+-	var state := GLTFState.new()
+-	var folder: String = "res://../build/kart-driver-tomkart-2026-11-08/candidate"
+-	var error: Error = document.append_from_file(ProjectSettings.globalize_path(folder+"/driver.gltf"),state)
+-	assert(error == OK)
+-	var imported: Node3D = document.generate_scene(state)
+-	assert(imported != null)
+-	var meshes: Array[Node] = imported.find_children("*","MeshInstance3D",true,false)
+-	if imported is MeshInstance3D: meshes.push_front(imported)
+-	assert(meshes.size() == 1)
+-	var driver: MeshInstance3D = meshes[0]
+-	if "--save" in OS.get_cmdline_user_args():
+-		var target: String = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1"
+-		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(target))
+-		assert(ResourceSaver.save(driver.mesh,target+"/driver.res",ResourceSaver.FLAG_COMPRESS) == OK)
+-		print("TOMKART_NATIVE_MESH_SAVED ",driver.mesh.get_faces().size()/3)
++	var before: bool = "--before" in OS.get_cmdline_user_args()
++	var imported := MeshInstance3D.new()
++	var path: String = OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res" if before else "res://../build/kart-driver-fit-style-2026-11-08/candidate/driver.res"
++	imported.mesh = load(path)
++	assert(imported.mesh != null)
+ 	if DisplayServer.get_name() == "headless":
+ 		imported.free()
+ 		quit()
+@@ -52,12 +41,12 @@
+ 	world.add_child(camera)
+ 	camera.current = true
+ 	camera.fov = 32
+-	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
++	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["side-right",Vector3(2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
+ 		camera.position = shot[1]
+ 		camera.look_at(shot[2])
+ 		for frame: int in range(6):
+ 			await process_frame
+ 			await RenderingServer.frame_post_draw
+-		assert(viewport.get_texture().get_image().save_png(OUT+"/draft-"+shot[0]+".png") == OK)
++		assert(viewport.get_texture().get_image().save_png(OUT+("/before-" if before else "/candidate-")+shot[0]+".png") == OK)
+ 	viewport.free()
+ 	quit()
+--- a/game/tests/test_tomkart_driver.gd
++++ b/game/tests/test_tomkart_driver.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+-## KTD01-KTD04: licensed replacement, seated fit, both quality tiers and caches.
+-const OUT: String = "res://../docs/evidence/kart-tomkart-driver-2026-11-08"
++## KTF01-KTF03: larger driver, bent seated posture, native matte suit and caches.
++const OUT: String = "res://../docs/evidence/kart-driver-fit-style-2026-11-08"
+ const DRIVER: ArrayMesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
+ const BASE = preload("res://vehicle/modular_car_base.gd")
+ var checks: int = 0
+@@ -14,8 +14,8 @@
+ 
+ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+-	check(DRIVER.get_faces().size()/3 == 1445,"complete source driver triangle count")
+-	check(DRIVER.get_surface_count() == 8,"all eight source material roles preserved")
++	check(DRIVER.get_faces().size()/3 == 1343,"source geometry retained except the removed 102-triangle neck restraint")
++	check(DRIVER.get_surface_count() == 7,"seven retained source material roles")
+ 	check(DRIVER.get_aabb().position.y > 0.15 and DRIVER.get_aabb().end.y < 1.15,"driver stays above floor and within believable seated height")
+ 	check(DRIVER.get_aabb().size.x < 0.65 and DRIVER.get_aabb().size.z < 1.4,"driver fits within original kart cockpit")
+ 	for surface: int in range(DRIVER.get_surface_count()):
+@@ -25,9 +25,33 @@
+ 		for normal: Vector3 in arrays[Mesh.ARRAY_NORMAL]: finite = finite and normal.is_finite() and normal.length_squared() > 0.8
+ 		check(finite,"finite seated mesh and normals "+str(surface))
+ 		var material: StandardMaterial3D = DRIVER.surface_get_material(surface)
+-		check(material != null and material.albedo_texture != null,"textured source material "+str(surface))
++		var cloth: bool = material.resource_name in ["RT_DriverSuit","RT_Gloves"]
++		if cloth:
++			check(material.albedo_texture == null and material.roughness == 1.0 and material.metallic_specular == 0.0 and material.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON and material.specular_mode == BaseMaterial3D.SPECULAR_DISABLED,"native matte cloth with no photographic texture or highlights "+material.resource_name)
++		else: check(material.albedo_texture != null,"retained helmet/face texture "+material.resource_name)
+ 		check(arrays[Mesh.ARRAY_TEX_UV].size() == arrays[Mesh.ARRAY_VERTEX].size(),"source UV coordinates retained "+str(surface))
+-		var atlases: Dictionary = {"RT_DriverSuit":"RT_DriverSuit_baseColor.png","RT_Gloves":"RT_Gloves_baseColor.png","RT_Helemt":"RT_Helemt_trasparent_baseColor.png"}
++		if material.resource_name == "RT_DriverSuit":
++			var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
++			var restrained: bool = colors.size() == arrays[Mesh.ARRAY_VERTEX].size()
++			for color: Color in colors:
++				var allowed: bool = false
++				for sample: Color in [Color("465861"),Color("929c9a"),Color("26343a"),Color("1d292e")]: allowed = allowed or color.is_equal_approx(sample)
++				restrained = restrained and allowed
++			check(restrained,"cloth uses only the four reviewed flat garment/boot colours")
++			var knee_top: float = -INF
++			for point: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
++				if absf(point.z+0.34) < 0.065 and absf(point.x) > 0.07: knee_top = maxf(knee_top,point.y)
++			check(knee_top > 0.46,"actual knees are raised above the old nearly straight legs")
++		if material.resource_name == "RT_Helemt":
++			var old: ArrayMesh = load(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++			var old_width: float = 0.0
++			var new_width: float = 0.0
++			for point: Vector3 in arrays[Mesh.ARRAY_VERTEX]: new_width = maxf(new_width,absf(point.x)*2)
++			for original_surface: int in range(old.get_surface_count()):
++				if old.surface_get_material(original_surface).resource_name != "RT_Helemt": continue
++				for point: Vector3 in old.surface_get_arrays(original_surface)[Mesh.ARRAY_VERTEX]: old_width = maxf(old_width,absf(point.x)*2)
++			check(is_equal_approx(new_width/old_width,0.42/0.34),"actual helmet/body scale increases 23.53 percent")
++		var atlases: Dictionary = {"RT_Helemt":"RT_Helemt_trasparent_baseColor.png"}
+ 		if atlases.has(material.resource_name):
+ 			var expected: Image = Image.load_from_file("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/textures/"+atlases[material.resource_name])
+ 			var actual: Image = material.albedo_texture.get_image()
+@@ -57,9 +81,9 @@
+ 			var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
+ 			check(driver != null,"new driver in tier/kit mode %s/%s" % [simple,editable])
+ 			if driver != null:
+-				check(driver.mesh.get_faces().size()/3 == 1445,"complete driver survives car batching")
++				check(driver.mesh.get_faces().size()/3 == 1343,"adapted driver survives car batching")
+ 				check(driver.get_parent() == car.body,"driver follows body suspension")
+-				check(driver.mesh.get_surface_count() == 8,"car batching retains all driver materials")
++				check(driver.mesh.get_surface_count() == 7,"car batching retains all driver materials")
+ 			check(car.find_child("TailoredRaceSuitV4",true,false) == null and car.find_child("HelmetMount",true,false) == null,"previous driver and helmet are absent")
+ 			check(car.front_wheels.size() == 2 and car.rolling_wheels.size() == 4,"wheel articulation preserved")
+ 			if prepared:
+@@ -96,7 +120,7 @@
+ 		while not car.model_ready: await process_frame
+ 		var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
+ 		check(garage.hits == before_hits+1,"full-detail Garage template actually restored")
+-		check(driver != null and driver.mesh.get_faces().size()/3 == 1445,"Garage template contains the complete replacement")
++		check(driver != null and driver.mesh.get_faces().size()/3 == 1343,"Garage template contains the fitted replacement")
+ 		check(car.rolling_wheels.size() == 4,"Garage template retains four articulated wheels")
+ 		car.free()
+ 	print("TOMKART_DRIVER ",checks," checks, ",failures," failures; prepared=",prepared)
+@@ -116,7 +140,7 @@
+ 	world.add_child(camera)
+ 	camera.current = true
+ 	camera.fov = 32
+-	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
++	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["side-right",Vector3(2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
+ 		camera.position = shot[1]
+ 		camera.look_at(shot[2])
+ 		for frame: int in range(6):
+--- a/game/legal/kart_driver_notices.txt
++++ b/game/legal/kart_driver_notices.txt
+@@ -10,3 +10,5 @@
+ If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+ This work is based on "Race Car Driver - Low Poly" (https://sketchfab.com/3d-models/race-car-driver-low-poly-0fedfae53537473ba2ee3d9b722e0c66) by tomkart (https://sketchfab.com/tomkart) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+ Beat my track modifications (2026-11-08): static seated kart pose, resized to fit the original seat, steering wheel and pedals; suit, glove and helmet text/brand marks removed; material roughness adjusted; geometry combined by material. No skeleton, animation or runtime posing added.
++
++Owner feedback revision (2026-11-08): driver enlarged 23.53%; raised knees and 27-degree seated torso with upright head; neck restraint removed (102 triangles). Suit, gloves and boots now use native matte toon materials and flat garment colours, without the photographic suit/glove textures.
+--- /dev/null
++++ b/game/tests/audit_driver_picture_controls.gd
+@@ -0,0 +1,28 @@
++extends SceneTree
++## Compare unrelated thumbnail bytes before/after the scoped driver revision.
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var output: Dictionary = {}
++	var prefix: String = "res://../docs/evidence/kart-driver-fit-style-2026-11-08"
++	for id: String in ["compact","forklift","electric","hovercraft"]:
++		var path: String = "game/assets/garage/previews_v1/"+id+".png"
++		var old: Image = Image.load_from_file(ProjectSettings.globalize_path(prefix+"/before/"+path))
++		var current: Image = Image.load_from_file(ProjectSettings.globalize_path("res://assets/garage/previews_v1/"+id+".png"))
++		assert(old.get_size() == current.get_size())
++		old.convert(Image.FORMAT_RGBA8)
++		current.convert(Image.FORMAT_RGBA8)
++		var a: PackedByteArray = old.get_data()
++		var b: PackedByteArray = current.get_data()
++		var pixels: int = 0
++		var peak: int = 0
++		for offset: int in range(0,a.size(),4):
++			var changed: bool = false
++			for channel: int in range(4):
++				var difference: int = absi(a[offset+channel]-b[offset+channel])
++				changed = changed or difference != 0
++				peak = maxi(peak,difference)
++			if changed: pixels += 1
++		output[id] = {"changed_pixels":pixels,"maximum_channel_difference":peak}
++	FileAccess.open(prefix+"/picture-pixel-controls.json",FileAccess.WRITE).store_string(JSON.stringify(output,"\t"))
++	print("DRIVER_PICTURE_CONTROLS ",JSON.stringify(output))
++	quit()
+--- /dev/null
++++ b/docs/KART_DRIVER_FIT_STYLE_2026_11_08.md
+@@ -0,0 +1,58 @@
++# Kart driver size, posture and suit revision — 2026-11-08
++
++The owner rejects the first imported driver's posture and photographic red overalls, then explicitly asks for a larger driver. KTF01–KTF04 supersede the prior imported driver's size, pose and clothing appearance. The selected tomkart model and its attribution remain.
++
++| Requirement | Change |
++| --- | --- |
++| KTF01 — seated posture | Pelvis sits farther into the original bucket. Knees rise from the near-straight 0.375-height target to 0.49; geometric joint flexion increases from about 21° to 51.36°. Torso recline changes from 16° to 27°. Helmet and upper collar are aligned separately so the head looks forward rather than reclining with the chest. Source limb seams share the same offline deformation. |
++| KTF02 — match the game | The photographic suit/glove textures are removed from the production materials. Cloth uses the game's native toon diffuse and disabled specular, roughness 1.0 and zero metallic specular. Slate cloth, quiet shoulder yokes, a dark collar and charcoal boots/gloves use four flat vertex colours. No source fabric highlights, folds, text or logos are sampled into those colours. The bulky 102-triangle neck restraint is removed. Helmet graphics and their prior branding removal remain. |
++| KTF03 — larger driver | Authored anatomy scale increases from 0.34 to 0.42, a 23.53% increase. Torso, helmet and limb thickness grow; arm/leg lengths are reposed to preserve the existing steering wheel, floor and pedals. Actual helmet vertex width is independently compared with the archived previous mesh. The original cockpit width/depth and floor/head-height gates remain unchanged. |
++| KTF04 — complete integration | Native driver, body shadow, four modular base modes, 60 kart modules, Garage template, catalogue/news/header pictures and 49 kart livery photographs are refreshed. Credits include these modifications. No kart chassis, seat, controls, camera or canonical handling source is edited. |
++
++The native driver now contains **1,343 triangles / seven surfaces**: all selected source geometry except the removed 102-triangle neck-restraint piece. Source UVs, positions outside the deliberate pose change and original source normals transformed through that pose remain available. The source archive still contains the complete original 1,445-triangle model. No skeleton, runtime posing or runtime media generation is introduced. The native resource shrinks from 2,837,831 to 1,324,836 bytes; this is file accounting, not a device performance claim.
++
++Matched side-view comparison: [rejected posture](evidence/kart-driver-fit-style-2026-11-08/before-side-right.png), [revised production posture](evidence/kart-driver-fit-style-2026-11-08/frozen-results/simple-side-right-gl_compatibility.png). Also see [front](evidence/kart-driver-fit-style-2026-11-08/frozen-results/simple-front-gl_compatibility.png), [actual Garage](evidence/kart-driver-fit-style-2026-11-08/app-compatibility/garage-1280.png), and [actual race](evidence/kart-driver-fit-style-2026-11-08/app-compatibility/race.png). Owner appearance acceptance remains; structural assertions do not establish aesthetic acceptance.
++
++## Sources and reproduction
++
++Changed authoring/test files are `scripts/prepare_kart_driver.py`, `game/tests/bake_tomkart_driver.gd`, `game/tests/review_tomkart_driver.gd`, `game/tests/test_tomkart_driver.gd`, and `scripts/run_kart_driver_review.py`. Runtime geometry is `game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res`; unused suit/glove PNGs retire, with copies retained in the task-start archive. `game/legal/kart_driver_notices.txt` records the new adaptations, and `licenses/ASSETS.md` records their provenance. The runtime `kart_driver.gd` seat builder is unchanged in this revision.
++
++The existing source ZIP, license and imagegen helmet-retouch output are reused from the first task. This revision changes native geometry/materials; it does not generate or repaint another bitmap. The original texture edits remain documented in [the previous implementation](KART_TOMKART_DRIVER_2026_11_08.md).
++
++The exact pinned engine remains `4.7.2.stable.official.ed1daf0bf`. The established `scripts/dev.ps1` wrapper terminates on this machine's known certificate-store diagnostic, so the task runner checks that exact version and invokes it through the existing crash-dialog helper, with private offline APPDATA/LOCALAPPDATA and Dummy audio. The runner now detects script errors and terminates only its own child tree; the 900-second timeout also stops that owned tree. No owner process is touched.
++
++```powershell
++python scripts/prepare_kart_driver.py docs/evidence/kart-tomkart-driver-2026-11-08/source/race_car_driver_-_low_poly.zip --output build/kart-driver-fit-style-2026-11-08/candidate
++python scripts/run_kart_driver_review.py candidate-bake res://tests/bake_tomkart_driver.gd --headless -- --preview
++python scripts/run_kart_driver_review.py before res://tests/review_tomkart_driver.gd --rendering-method gl_compatibility -- --before
++python scripts/run_kart_driver_review.py candidate res://tests/review_tomkart_driver.gd --rendering-method gl_compatibility
++python scripts/run_kart_driver_review.py final-driver-bake res://tests/bake_tomkart_driver.gd --headless
++python scripts/run_kart_driver_review.py direct-final res://tests/test_tomkart_driver.gd --headless
++python scripts/run_kart_driver_review.py shadow-bake res://tests/bake_kart_model.gd --headless
++python scripts/run_kart_driver_review.py kit-meshes res://tests/bake_kart_kits.gd --headless
++powershell -NoProfile -ExecutionPolicy Bypass -Command ". ./scripts/build_identity.ps1; Write-ClientBuildIdentity (Get-Location).Path 'build/kart-driver-fit-style-2026-11-08/identity'"
++python scripts/run_kart_driver_review.py kart-bases res://tests/bake_modular_car_bases.gd --headless -- --vehicle=kart
++python scripts/run_kart_driver_review.py kart-kits res://tests/bake_modular_car_kits.gd --headless -- --vehicle=kart
++python scripts/run_kart_driver_review.py kart-garage res://tests/bake_garage_cars.gd --headless -- --vehicle=kart
++```
++
++All actual commands, exit codes, logs and timings are retained in `docs/evidence/kart-driver-fit-style-2026-11-08/*.json` and `*.log`. The existing catalogue, news, livery, header and five-Garage-picture bakers run with their original recipes. Since livery photographs belong to the existing conservative shared dependency tree, the full 20-base / 442-module / five-Garage / header-template preparation sequence runs after those photographs. No cache guard is relaxed.
++
++## Checks and retained findings
++
++The direct native-mesh test passes **59/0**. The initial both-renderer cache/fit/style matrix passes **74/0 each**, including actual prepared hits in all four modes and full-detail Garage restoration. Actual App Garage/race tests pass **16/0 each desktop renderer**, driving **72/0**, and Garage washing **45/0**. The independent checks cover actual raised knee geometry, actual enlarged helmet width, finite normals, the restricted cloth palette, no cloth texture/specular highlights, steering/wheel articulation, paint isolation and all material roles. Final receipts and preserved-asset comparisons are recorded in `final-summary.json`.
++
++Initial drafts and failed logs remain. An incorrect removal-count assertion was corrected to 1,445 − 102 = 1,343; its failed preview process alone was explicitly identified and stopped after the sandbox refused termination. The corrected baker completes normally. A first enlarged draft exceeded the unchanged 1.4 cockpit-length gate by 0.54 mm; shifting the pelvis 5 mm forward resolves it without widening the gate. The original height, width, floor, material-finiteness and motion assertions remain. Native previews additionally exposed the helmet reclining with the torso, which was corrected before applying the result. The game retains first-use native frame hitches and the existing Windows root-certificate warning; no FPS/loading/hardware-memory gain is claimed.
++
++The original imported-driver test's 1,445-triangle/eight-textured-material assertions describe the rejected version. The revised tests explicitly require removal of the neck-restraint role and the new texture-free toon cloth instead. Earlier retired-driver and legacy Garage-cache findings remain documented in the previous task, without weakening their assertions.
++
++Task-start files and their hashes are retained under `before/`. The source-only checkpoint compares against that task-start copy, preserving the previous uncommitted work and the main Git index. The verification receipt pins 102 vehicle/configuration source files. Owner PC reload and appearance acceptance remain. No device query/test, APK build/install, owner-save edit, owner-process restart, backend request or deployment is performed.
++
++
++## Final source isolation and live-work boundary
++
++Concurrent sixth-car work changed `vehicle_catalog.gd` and then shared car/cache helpers while final validation was running. Final live matrices retain **76 checks / 5 strict cache-hit failures each renderer**, with the exact changed source names in their diagnostics. The earlier complete **468-resource / 1,925-check / 0-failure** preflight and successful 442-module rebuild are retained as earlier receipts, not current whole-live-build acceptance. Other work's generated build identity and sources are preserved.
++
++A separate project under `build/kart-driver-fit-style-2026-11-08/frozen` uses the already qualified simpler-model source copy, reconciled to **all 102 exact pinned source hashes** plus this task's actual adapted driver, shadow, art, legal and tests. Three differing baseline leaves are restored from byte-matching sources; the receipt lists them. Its independent Git index supports the normal build-identity recipe without touching the main index. Kart bases, all 60 kart modules and the Garage template are rebuilt there. Final frozen driver/cache/style checks pass **76/0 each desktop renderer**; frozen actual Garage/race checks pass **16/0** in Compatibility. The frozen and live driver `.res` files are byte-identical. Frozen binaries are kept isolated and are not copied over current live work. Only the captured pictures/reports are copied to `frozen-results/`.
++
++Four unrelated Garage PNGs and four kart wheel shadows remain byte-exact to this task's start. The repeated Forklift and Volt photographs differ by three and one pixels respectively, and are retained as controls; their original PNGs are preserved. The source-only checkpoint reverse-application check and Python compilation pass. Final live export/cache readiness requires reconciling the concurrent sixth-car changes; this task does not overwrite those changes or claim a qualified Android update.

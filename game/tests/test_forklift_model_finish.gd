@@ -51,7 +51,7 @@ func solid(part: MeshInstance3D, label: String) -> Dictionary:
 func geometry(simple: bool) -> void:
 	var car: CarVisual = make_car(simple)
 	var data: Dictionary = {}
-	for pattern: String in ["ForgedFork*","FormedSideSkin*","RolledWheelArch*"]:
+	for pattern: String in ["ForgedFork*","Formed*","RolledWheelArch*"]:
 		for part: MeshInstance3D in car.find_children(pattern,"MeshInstance3D",true,false): data[part.name] = solid(part,str(part.name))
 	var rim: MeshInstance3D = car.find_child("SteeringWheelRim",true,false)
 	check(rim != null,"steering rim has independent solid geometry")

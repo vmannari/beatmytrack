@@ -21,7 +21,7 @@ const DESCRIPTIONS: Dictionary = {
 	"rims":["Factory finish","Five broad spokes","Six split spokes","Swept turbine blades","Cross-spoke lattice","Deep recessed centre","Closed rally face","Six sculpted spokes","Ten narrow spokes","Three broad spokes"],
 	"body":["Factory finish","Low front lip and side skirts","Rally arches and mud flaps","Front splitter and sill extensions","Subtle classic arch trim","Touring lip and sill package","Extended wheel arches","Deep splitter and rear diffuser","Raised gravel trim and mud flaps","Sculpted street trim"]}
 
-const KIT_CARS: Array[String] = ["compact","kart","hovercraft","forklift","electric"]
+const KIT_CARS: Array[String] = ["compact","kart","hovercraft","forklift","electric","super_rally"]
 const ELECTRIC_OPTIONS: Dictionary = {
 	"hood":[["stock","Original"],["volt_centre","Centre sculpt"],["volt_twin","Twin channels"],["volt_carbon","Carbon centre"],["volt_blade","Blade channels"],["volt_vent","Shoulder sculpt"],["volt_triple","Triple contour"],["volt_sweep","Swept channels"],["volt_crest","Raised crest"],["volt_delta","Delta panel"],["volt_split","Split centre"],["volt_edge","Edge blades"],["volt_track","Touring sculpt"],["volt_ridge","Twin ridges"],["volt_sport","Sport panel"],["volt_race","Race channels"]],
 	"aero":[["stock","Original"],["volt_lip","Deck lip"],["volt_ducktail","Ducktail"],["volt_low","Low wing"],["volt_swept","Swept wing"],["volt_bridge","Bridge wing"],["volt_twin","Twin blade"],["volt_gt","GT wing"],["volt_arc","Arc wing"],["volt_endurance","Endurance wing"],["volt_swan","Swan wing"],["volt_split","Split wing"],["volt_club","Club wing"],["volt_wide","Wide wing"],["volt_race","Race wing"],["volt_aero","Aero blade"]],
@@ -75,7 +75,7 @@ const KART_DESCRIPTIONS: Dictionary = {
 		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides","Sculpted side pods with swept crest fins"]}
 
 static func supported(id: String) -> bool:
-	return id in KIT_CARS
+	return VehicleCatalog.chassis_id(id) in KIT_CARS
 
 static func options(category: String, id: String = "compact") -> Array:
 	return (ELECTRIC_OPTIONS if id=="electric" else FORKLIFT_OPTIONS if id=="forklift" else HOVER_OPTIONS if id=="hovercraft" else KART_OPTIONS if id=="kart" else OPTIONS).get(category,[]) if supported(id) else []
@@ -118,7 +118,7 @@ static func for_car(settings: Dictionary, id: String) -> Dictionary:
 	return normalized
 
 static func valid_collection(value: Variant) -> bool:
-	if not value is Dictionary or value.size() > KIT_CARS.size(): return false
+	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
 	for id: Variant in value:
 		if not id is String or not supported(id) or not valid(value[id],id): return false
 	return true

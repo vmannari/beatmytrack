@@ -1,0 +1,484 @@
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -479,7 +479,9 @@
+ 	if is_instance_valid(super_wash_effect):
+ 		var active: bool = super_wash_effect.visible
+ 		super_wash_effect.reset()
+-		if active: invalidate_render()
++		if active:
++			invalidate_render()
++			condition_changed.emit()
+ 	_wall_pointer = -2
+ 	_wall_press = Vector2.INF
+ 	washing = false
+@@ -543,8 +545,22 @@
+ 	if not is_instance_valid(super_wash_effect):
+ 		super_wash_effect = preload("res://ui/garage_super_wash.gd").new()
+ 		super_wash_effect.prepare(car)
++		super_wash_effect.swept.connect(_super_wash_swept)
++		super_wash_effect.finished.connect(_super_wash_finished)
+ 	super_wash_effect.play()
+ 	invalidate_render()
++
++func _super_wash_swept(front: float) -> void:
++	if not weathering.installed: return
++	var frame: Transform3D = weathering._body.global_transform.affine_inverse() * car.global_transform
++	super_wash_effect.clean_through(weathering,(frame * Vector3(0,0,front)).z,frame.basis.z.length() * 0.23)
++
++func _super_wash_finished() -> void:
++	# Only the completed nose-to-tail pass clears deposits and all hidden cells.
++	weathering.reset()
++	weathering.restore({})
++	invalidate_render()
++	condition_changed.emit()
+ 
+ func _dispose_super_wash() -> void:
+ 	if is_instance_valid(super_wash_effect): super_wash_effect.queue_free()
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1672,6 +1672,7 @@
+ 
+ func _super_wash() -> void:
+ 	if section != "care" or not is_visible_in_tree() or _menu_motion != null: return
++	if is_instance_valid(showroom.super_wash_effect) and showroom.super_wash_effect.visible: return
+ 	# Free for now. A future rewarded-ad completion should enter here only
+ 	# after confirming the same Garage owner and selected car are still active.
+ 	_save_condition()
+@@ -1679,13 +1680,8 @@
+ 	showroom.set_wash_mode(false)
+ 	wash_button.text = "Wash"
+ 	_update_wash_hint()
+-	# Reset both deposit layers, aged grime and every wash voxel, including
+-	# the underside and wheels, then recreate the clean weathering textures.
+-	showroom.weathering.reset()
+-	showroom.weathering.restore({})
+ 	showroom.play_super_wash()
+ 	showroom.invalidate_render()
+-	_save_condition()
+ 	_update_wash_status()
+ 
+ func _select_wash_tool(tool: String) -> void:
+@@ -1704,6 +1700,7 @@
+ 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
+ 	# Prepared/outgoing garage pages must never overwrite newer race wear.
+ 	if current != _condition_saved:
++		if is_instance_valid(showroom.super_wash_effect): showroom.super_wash_effect.reset()
+ 		showroom.weathering.restore(current)
+ 		_condition_saved = current.duplicate(true)
+ 		_condition_presented = showroom.weathering.snapshot()
+@@ -1736,6 +1733,7 @@
+ 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()
+ 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
+ 	if current != _condition_saved:
++		if is_instance_valid(showroom.super_wash_effect): showroom.super_wash_effect.reset()
+ 		showroom.weathering.restore(current)
+ 		_condition_saved = current.duplicate(true)
+ 		_condition_presented = showroom.weathering.snapshot()
+diff --git a/game/ui/garage_super_wash.gd b/game/ui/garage_super_wash.gd
+--- a/game/ui/garage_super_wash.gd
++++ b/game/ui/garage_super_wash.gd
+@@ -1,5 +1,7 @@
+ extends Node3D
+-## Presentation only: a reusable rollover wash in the existing Garage world.
++## Reusable rollover wash; cleaning follows the actual brush position.
++signal swept(front: float)
++signal finished
+ const SECONDS: float = 3.6
+ const WATER_COUNT: int = 96
+ const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
+@@ -139,12 +141,40 @@
+ 	elapsed = minf(SECONDS,elapsed+maxf(0.0,delta))
+ 	if elapsed >= SECONDS:
+ 		reset()
++		finished.emit()
+ 		return
+ 	_present()
++
++func clean_through(effect: VehicleWeathering, front: float, feather: float) -> void:
++	# Use the existing persistent wash masks; this full-width strip belongs
++	# only to the Garage machine, while ordinary racing/manual washing stays shared.
++	if effect.wash_image == null or not is_finite(front) or not is_finite(feather) or feather <= 0.0: return
++	var grid: int = VehicleCondition.GRID
++	var bytes: PackedByteArray = effect.wash_image.get_data()
++	var slow_bytes: PackedByteArray = effect.slow_wash_image.get_data()
++	var changed: bool = false
++	for z: int in range(grid):
++		var along: float = effect.bounds.position.z + float(z) / float(grid - 1) * effect.bounds.size.z
++		var coverage: int = roundi(255.0 * smoothstep(along,along + feather,front))
++		if coverage == 0: continue
++		for y: int in range(grid):
++			for x: int in range(grid):
++				var index: int = y * grid * grid + z * grid + x
++				if bytes[index] < coverage or slow_bytes[index] < coverage:
++					bytes[index] = maxi(bytes[index],coverage)
++					slow_bytes[index] = maxi(slow_bytes[index],coverage)
++					changed = true
++				if bytes[index] == 255 and slow_bytes[index] == 255: effect.grime_age[index] = 0
++	if not changed: return
++	effect._mask_travel = 0.0
++	effect._slow_mask_travel = 0.0
++	effect._grime_elapsed = 0.0
++	effect._upload_wash_masks(bytes,slow_bytes)
+ 
+ func _present() -> void:
+ 	var progress: float = smoothstep(0.08,0.92,elapsed/SECONDS)
+ 	gantry.position = Vector3(bounds.get_center().x,0,lerpf(travel.x,travel.y,progress))
++	swept.emit(gantry.position.z)
+ 	# Deployment and retraction happen beyond the car's ends.
+ 	var deployment: float = smoothstep(0.0,0.25,elapsed)*(1.0-smoothstep(SECONDS-0.25,SECONDS,elapsed))
+ 	gantry.scale = Vector3.ONE*maxf(0.001,deployment)
+diff --git a/game/tests/test_super_wash.gd b/game/tests/test_super_wash.gd
+--- a/game/tests/test_super_wash.gd
++++ b/game/tests/test_super_wash.gd
+@@ -48,7 +48,7 @@
+ 		check(absf(choice.size.x-(dock.size.x-20.0)/3.0) <= 1.0,"equal wash option widths")
+ 		var title: Label = choice.title
+ 		check(title.get_theme_font("font").get_string_size(GameText.message(title.text),HORIZONTAL_ALIGNMENT_LEFT,-1,title.get_theme_font_size("font_size")).x <= title.size.x+1.0,"wash caption fits "+str(choice.name))
+-	check(not dock.get_node("GarageSuperWash").toggle_mode,"instant action is separate from manual-tool selection")
++	check(not dock.get_node("GarageSuperWash").toggle_mode,"automatic action is separate from manual-tool selection")
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+@@ -87,6 +87,7 @@
+ 		check(root.get_visible_rect().encloses(button.get_global_rect()),id+" action fits")
+ 		var paint: Dictionary = page.showroom.livery.duplicate(true)
+ 		var parts: Dictionary = page.showroom.customisation.duplicate(true)
++		page.showroom.set_process(false)
+ 		var others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
+ 		others.erase(id)
+ 		page._toggle_wash()
+@@ -96,6 +97,9 @@
+ 		await capture(id+"-dirty")
+ 		await click(button)
+ 		await settle()
++		check(page.showroom.weathering.dirt_amount>0.0,id+" dirt remains until the brushes pass")
++		check(page._workshop_wash_required,id+" dirty workshop remains locked at wash start")
++		page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
+ 		var clean: Dictionary = page.showroom.weathering.snapshot()
+ 		for field: String in ["dirt","snow","slow_dirt","slow_snow","mud","smudge","wetness","slow_recoat","grime_elapsed"]:
+ 			check(float(clean[field]) == 0.0,id+" clears "+field)
+@@ -105,9 +109,10 @@
+ 		check(not page.showroom.weathering.installed,id+" restores clean original materials")
+ 		check(not page.showroom.wash_mode and not page.showroom.washing and not page.showroom.wash_pointer_valid and page.showroom.touches.is_empty(),id+" ends active wash gestures")
+ 		check(page.wash_button.text == "Wash",id+" manual wash can restart")
+-		check(page._wash_status.text == "Shiny. For now.",id+" immediately displays top cleanliness grade")
+-		check(not page._workshop_wash_required,id+" immediately permits customisation")
+-		check(not button.button_pressed,id+" instant action does not remain selected")
++		page._update_wash_status()
++		check(page._wash_status.text == "Shiny. For now.",id+" completed wash displays top cleanliness grade")
++		check(not page._workshop_wash_required,id+" completed wash permits customisation")
++		check(not button.button_pressed,id+" automatic action does not remain selected")
+ 		check(page.showroom.livery == paint and page.showroom.customisation == parts,id+" retains paint and parts")
+ 		check(VehicleCondition.read(records,id) == clean,id+" persists full clean state")
+ 		var after_others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
+@@ -117,6 +122,7 @@
+ 		var revision: int = AchievementProgress.read(records).revision
+ 		await click(button)
+ 		check(VehicleCondition.read(records,id) == clean and AchievementProgress.read(records).revision == revision,id+" repeated clean action is a no-op")
++		page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
+ 		var reopened := LocalRecords.new(records.path)
+ 		reopened.load_records()
+ 		check(VehicleCondition.read(reopened,id) == clean,id+" stays clean after local reload")
+@@ -124,6 +130,8 @@
+ 	# being restored by the stale-page protection after the button is pressed.
+ 	check(VehicleCondition.save(records,page.vehicle_id,dirty) == OK,"newer race wear saved")
+ 	page._super_wash()
++	check(VehicleCondition.read(records,page.vehicle_id).dirt>0.0,"newer local wear remains at wash start")
++	page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
+ 	check(VehicleCondition.read(records,page.vehicle_id).dirt == 0.0,"Super Wash includes newer local wear")
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+diff --git a/game/tests/test_super_wash_animation.gd b/game/tests/test_super_wash_animation.gd
+--- a/game/tests/test_super_wash_animation.gd
++++ b/game/tests/test_super_wash_animation.gd
+@@ -23,6 +23,33 @@
+ 	await RenderingServer.frame_post_draw
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
+ 
++func check_brush_front(showroom: CarShowroom, before: Dictionary, id: String) -> void:
++	var effect: Node3D = showroom.super_wash_effect
++	var weather: VehicleWeathering = showroom.weathering
++	var front: float = weather._body.to_local(effect.gantry.global_position).z
++	var wash: PackedByteArray = weather.wash_image.get_data()
++	var slow: PackedByteArray = weather.slow_wash_image.get_data()
++	var original: PackedByteArray = Marshalls.base64_to_raw(before.wash)
++	var original_slow: PackedByteArray = Marshalls.base64_to_raw(before.slow_wash)
++	var behind_clean: bool = true
++	var ahead_exact: bool = true
++	var behind: int = 0
++	var ahead: int = 0
++	for z: int in range(VehicleCondition.GRID):
++		var along: float = weather.bounds.position.z + weather.bounds.size.z * float(z) / 15.0
++		for y: int in range(VehicleCondition.GRID):
++			for x: int in range(VehicleCondition.GRID):
++				var index: int = y*256+z*16+x
++				if along < front-0.4:
++					behind += 1
++					behind_clean = behind_clean and wash[index]==255 and slow[index]==255
++				elif along > front+0.4:
++					ahead += 1
++					ahead_exact = ahead_exact and wash[index]==original[index] and slow[index]==original_slow[index]
++	check(behind>0 and behind_clean,id+" both layers clean behind the actual brushes")
++	check(ahead>0 and ahead_exact,id+" both layers remain exact ahead of the actual brushes")
++	check(weather.dirt_amount==before.dirt and weather.slow_dirt_amount==before.slow_dirt,id+" deposits retain their strength on untouched panels")
++
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+ 	output = OS.get_environment("BMT_SUPER_WASH_OUTPUT").path_join(RenderingServer.get_current_rendering_method())
+@@ -32,6 +59,13 @@
+ 	var records := LocalRecords.new(directory.path_join("records.json"))
+ 	var dirty: Dictionary = VehicleWeathering.new().snapshot()
+ 	for field: String in ["dirt","slow_dirt","mud","smudge"]: dirty[field] = 0.95
++	# Preserve earlier manual strokes in the two independent deposit layers.
++	var old_wash: PackedByteArray = Marshalls.base64_to_raw(dirty.wash)
++	var old_slow: PackedByteArray = old_wash.duplicate()
++	old_wash[14*16+8] = 200
++	old_slow[14*16+8] = 90
++	dirty.wash = Marshalls.raw_to_base64(old_wash)
++	dirty.slow_wash = Marshalls.raw_to_base64(old_slow)
+ 	for id: String in VehicleCatalog.IDS: VehicleCondition.save(records,id,dirty)
+ 	root.size = Vector2i(1280,720)
+ 	var page := GaragePage.new()
+@@ -62,11 +96,14 @@
+ 		showroom.set_process(false)
+ 		var paint: Dictionary = showroom.livery.duplicate(true)
+ 		var parts: Dictionary = showroom.customisation.duplicate(true)
++		var before: Dictionary = showroom.weathering.snapshot()
++		await capture(page,id+"-dirty")
+ 		page.preview.get_node("GarageWashTools/GarageSuperWash").pressed.emit()
+ 		var effect: Node3D = showroom.super_wash_effect
+ 		check(is_instance_valid(effect) and effect.visible,id+" starts automatic wash from its real button")
+ 		check(effect.get_parent()==showroom.car,id+" rig follows actual selected car")
+-		check(VehicleCondition.read(records,id).dirt==0.0,id+" clean result saved immediately")
++		check(showroom.weathering.snapshot()==before,id+" starting the machine preserves the dirty car")
++		check(VehicleCondition.read(records,id)==before,id+" start does not save a clean result")
+ 		check(not showroom.wash_mode and not showroom.washing,id+" manual washing ends")
+ 		check(effect.rollers.size()==3,id+" three powered brushes")
+ 		check(effect.water.multimesh.instance_count==96,id+" fixed spray pool")
+@@ -77,17 +114,25 @@
+ 		await capture(page,id+"-start")
+ 		effect.advance(1.1)
+ 		check(effect.gantry.position.z>start.z and effect.rollers[0].rotation!=spin,id+" machine travels and brushes rotate")
++		check_brush_front(showroom,before,id)
++		var middle: Dictionary = showroom.weathering.snapshot()
++		page._super_wash()
++		check(is_equal_approx(effect.elapsed,1.8) and showroom.weathering.snapshot()==middle,id+" repeated press preserves the running pass")
+ 		await capture(page,id+"-middle")
+ 		var node_count: int = effect.get_child_count()
+ 		effect.advance(1.0)
+ 		await capture(page,id+"-rinse")
+ 		effect.advance(0.9)
+ 		check(not effect.visible and effect.water.multimesh.visible_instance_count==0,id+" completion leaves no active spray")
++		check(VehicleCondition.read(records,id).dirt==0.0 and not showroom.weathering.installed,id+" completion restores and saves clean original materials")
+ 		check(showroom.livery==paint and showroom.customisation==parts,id+" retains equipped paint and fittings")
+ 		showroom.play_super_wash()
+ 		check(showroom.super_wash_effect==effect and effect.get_child_count()==node_count,id+" repeats reuse the same rig")
++		var clean: Dictionary = showroom.weathering.snapshot()
++		effect.advance(1.8)
+ 		showroom.set_wash_mode(true)
+ 		check(not effect.visible,id+" manual wash cancels automatic feedback")
++		check(showroom.weathering.snapshot()==clean and VehicleCondition.read(records,id)==clean,id+" a clean car stays exact during a repeated or cancelled pass")
+ 		showroom.set_wash_mode(false)
+ 		showroom.play_super_wash()
+ 		page._show_section("cars")
+@@ -98,8 +143,41 @@
+ 		page.hide()
+ 		check(not effect.visible,id+" hiding clears feedback")
+ 		page.show()
++		VehicleCondition.save(records,id,dirty)
++		page._save_condition()
++		page._super_wash()
++		effect.advance(1.8)
++		var partial: Dictionary = showroom.weathering.snapshot()
++		page._show_section("cars")
++		check(not effect.visible and VehicleCondition.read(records,id)==partial,id+" cancelling saves only the brushed portion")
++		var reopened := LocalRecords.new(records.path)
++		reopened.load_records()
++		check(VehicleCondition.read(reopened,id)==partial,id+" partial cleaning survives local reload")
++		check(partial.dirt>0.0 and Marshalls.base64_to_raw(partial.wash).count(0)>0,id+" cancellation leaves untouched dirt")
++		page._show_section("care")
++		await settle()
++		page._super_wash()
++		effect.advance(0.6)
++		VehicleCondition.save(records,id,dirty)
++		page._process(0.0)
++		effect.advance(4.0)
++		check(not effect.visible and showroom.weathering.snapshot()==dirty and VehicleCondition.read(records,id)==dirty,id+" newer wear cancels the stale pass")
+ 		showroom.set_process(true)
+ 	await settle()
++	page._show_section("care")
++	await settle()
++	page.showroom.set_process(false)
++	page._super_wash()
++	var stepped: Node3D = page.showroom.super_wash_effect
++	stepped.advance(1.8)
++	var skipped_frames: Dictionary = page.showroom.weathering.snapshot()
++	stepped.reset()
++	page.showroom.weathering.restore(dirty)
++	page.showroom.play_super_wash()
++	for index: int in range(18): stepped.advance(0.1)
++	check(page.showroom.weathering.snapshot()==skipped_frames,"cleaning at the same brush position is independent of frame size")
++	stepped.advance(4.0)
++	page.showroom.set_process(true)
+ 	page._super_wash()
+ 	var outgoing: Node3D = page.showroom.super_wash_effect
+ 	page.open_car(0)
+diff --git a/game/assets/garage/previews_v1/provenance.json b/game/assets/garage/previews_v1/provenance.json
+--- a/game/assets/garage/previews_v1/provenance.json
++++ b/game/assets/garage/previews_v1/provenance.json
+@@ -37,7 +37,7 @@
+ 		"game/resources/cars/pickup.tres": "4b3c363228e9c80d9094a76ad2b6684659cb8537df2307638698b7c27f44d3cf",
+ 		"game/resources/original_slide.tres": "2fa4096fc70fa0bf8584d7ab77c8ec25a17731cba70cb5be8f468ee6ae1ea857",
+ 		"game/soundtrack/record_library.gd": "764bac342ade58c0a239160603b02b3272fad07a54c47a6467add14ed3eccd16",
+-		"game/ui/car_showroom.gd": "3b3da17956196441cda30c801d11131e0c54aae726fa91708ca54c11714f7a7b",
++		"game/ui/car_showroom.gd": "aa76d0ac43af0682a052d75cc7e9b11882546e5f09d942b2b23cd49d48e6d87c",
+ 		"game/ui/garage_audio_lid.gdshader": "40a0707029035bd2c9fb145f7affe371a01a75af712c79e598a66811c51865a8",
+ 		"game/ui/garage_audio_wood.gdshader": "8b4f47d21e1eac1538817ba999d9c37c52a8bf04fae1aacfb75857c814dd2d4d",
+ 		"game/ui/garage_car_cache.gd": "301f1ba50b2bc07535bf060642886b577c42f2c284960f687914054962ed585c",
+diff --git a/docs/SUPER_WASH_BRUSH_CLEANING_2026_11_07.md b/docs/SUPER_WASH_BRUSH_CLEANING_2026_11_07.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SUPER_WASH_BRUSH_CLEANING_2026_11_07.md
+@@ -0,0 +1,46 @@
++# Superwash cleaning follows the brushes — 2026-11-07
++
++SBC01: The Garage Super Wash button starts the existing 3.6-second machine without resetting the dirty car. Its actual nose-to-tail brush position progressively cleans both persistent deposit masks across the car, with a soft trailing edge. Panels ahead retain their dirt and earlier manual strokes. The same car/body coordinate transform keeps the cleaning aligned when the pedestal turns. Only completion clears all deposits, aged grime and hidden voxels and restores clean original materials. This supersedes the instantaneous cleaning retained by SWA01/SWA02.
++
++SBC02: Interruption by manual washing, section navigation or hiding retains and saves the portion already cleaned. A repeated button press leaves the active pass running. Newer externally saved wear cancels a stale pass. A clean car remains exact during repeated/cancelled passes. Paint, equipped parts, other cars, the machine geometry, duration and fixed spray pool are preserved. Cleaning uses existing local masks and persistence; it adds no shader, asset dependency, backend operation or canonical simulation change.
++
++Changed runtime files:
++
++- `game/ui/garage_super_wash.gd`: emits the actual brush position and completion; updates both existing wash masks monotonically behind the brush.
++- `game/ui/car_showroom.gd`: converts the brush position to the weathering frame, saves cancellation through the existing signal and performs the complete reset on completion.
++- `game/ui/garage_page.gd`: starts without instant cleaning, ignores repeat presses and cancels stale passes when newer wear arrives.
++
++SBCQ01 covers the real Garage controls and all five active cars. `test_super_wash_animation.gd` checks unchanged start, fully cleaned masks behind / exact masks ahead of the actual brush, existing strokes, frame-size independence, partial-save/reload, repeated presses, newer-wear cancellation, paint/parts, rig reuse/cleanup and idle drawing. `test_super_wash.gd` retains its complete deposit/voxel/local-save/layout assertions after the machine finishes; its former immediate-clean expectations are updated to the owner's requested timing.
++
++Native captures: [Compact before](evidence/super-wash-brush-cleaning-2026-11-07/gl_compatibility/compact-dirty.png), [Compact halfway](evidence/super-wash-brush-cleaning-2026-11-07/gl_compatibility/compact-middle.png), [Forklift halfway](evidence/super-wash-brush-cleaning-2026-11-07/mobile/forklift-middle.png). The evidence directory contains four stages for every car on both desktop renderers. Captures are native game renders, not device or performance measurements.
++
++Actual validation with pinned Godot 4.7.2:
++
++| Check | Result |
++| --- | --- |
++| Final brush cleaning, native Compatibility | 150 checks, 0 failures |
++| Final brush cleaning, native desktop Mobile/Vulkan | 150 checks, 0 failures |
++| Final brush cleaning, headless | 130 checks, 0 failures; certificate-store diagnostic retained |
++| Complete clean/save/layout, native Compatibility | 268 checks, 0 failures |
++| Complete clean/save/layout, intermediate headless | 256 checks, 0 failures; certificate-store diagnostic retained |
++| Retained manual hose | 81 checks, 0 failures; certificate-store diagnostic retained |
++| Prepared car asset preflight | 468 resources, 1925 checks, 0 failures |
++| Native preview provenance | Five exact photographs, 156 current source hashes; active PNGs byte-exact to before |
++| Scoped checkpoint | Nine files; forward/reverse/content checks pass |
++
++All final native runs exit 0 without matched engine errors. The guarded asset pipeline changed no monitored sources during its run and required only the five photograph captures/provenance refresh; existing car scenes/modules remain valid. Validation receipts and the checked source patch are recorded in [report.json](evidence/super-wash-brush-cleaning-2026-11-07/report.json). Commands run from the repository root:
++
++```powershell
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py --mode gl_compatibility
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py --direct --mode mobile
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py --direct
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py --direct --mode gl_compatibility --test test_super_wash
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py --direct --test test_garage_hose
++python scripts/run_no_crash_dialog.py -- python scripts/prepare_car_assets.py --output docs/evidence/super-wash-brush-cleaning-2026-11-07/prepared
++python docs/evidence/super-wash-brush-cleaning-2026-11-07/checkpoint.py
++git diff --check -- game/ui/car_showroom.gd game/ui/garage_page.gd game/ui/garage_super_wash.gd game/tests/test_super_wash.gd game/tests/test_super_wash_animation.gd
++```
++
++The first restricted standard-entry launch failed with certificate-store / Access denied errors. Direct headless checks pass their assertions while retaining the certificate-store diagnostic. Approved native launches use the pinned Godot 4.7.2, a private offline profile and the required crash-dialog wrapper. Initial intermediate checks and the initial preview preflight failure are retained: an early shared-weathering helper temporarily invalidated conservative geometry identity. The helper now belongs entirely to Garage; the shared weathering script is byte-exact to task start. The normal pipeline refreshes identity and native preview provenance through its existing guards. Generated build identity/project metadata are separate from authored changes. Concurrent work is preserved.
++
++Reload/rebuild and owner appearance acceptance remain. No physical-device query or test, APK build/install, owner-save or owner-process change, live/backend request, deployment, staging or commit was performed. Desktop Mobile/Vulkan checks are not tablet tests.
+diff --git a/docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py b/docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/super-wash-brush-cleaning-2026-11-07/run.py
+@@ -0,0 +1,30 @@
++"""Run the real Garage in a private offline profile with the pinned engine."""
++import argparse
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[3]
++HERE = Path(__file__).parent
++parser = argparse.ArgumentParser()
++parser.add_argument("--mode", choices=["headless", "gl_compatibility", "mobile"], default="headless")
++parser.add_argument("--test", default="test_super_wash_animation")
++parser.add_argument("--direct", action="store_true")
++args = parser.parse_args()
++profile = ROOT / "tmp/super-wash-brush-cleaning-profile"
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL="", BMT_SUPER_WASH_OUTPUT=str(HERE))
++command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts/dev.ps1"), "-Action", "TestScript", "-ScriptPath", f"res://tests/{args.test}.gd", "-CommandTimeoutSeconds", "240"]
++if args.mode != "headless":
++    command += ["-Graphical", "-RenderingMethod", args.mode]
++if args.direct:
++    command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe", "--path", str(ROOT / "game"), "--log-file", str(HERE / f"engine-{args.test}-{args.mode}.log"), "--script", f"res://tests/{args.test}.gd"]
++    command += ["--headless"] if args.mode == "headless" else ["--rendering-method", args.mode]
++log = HERE / f"{args.test}-{args.mode}{'-direct' if args.direct else ''}.log"
++with log.open("w", encoding="utf-8") as stream:
++    result = subprocess.run(command, cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=270, creationflags=subprocess.CREATE_NO_WINDOW)
++print(f"{args.test} / {args.mode}: exit {result.returncode}")
++print("\n".join(log.read_text(encoding="utf-8").splitlines()[-28:]))
++raise SystemExit(result.returncode)
+diff --git a/docs/evidence/super-wash-brush-cleaning-2026-11-07/checkpoint.py b/docs/evidence/super-wash-brush-cleaning-2026-11-07/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/super-wash-brush-cleaning-2026-11-07/checkpoint.py
+@@ -0,0 +1,54 @@
++"""Make a scoped source patch and verify it in independent scratch files."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++HERE = Path(__file__).parent
++existing = [
++    "game/ui/car_showroom.gd",
++    "game/ui/garage_page.gd",
++    "game/ui/garage_super_wash.gd",
++    "game/tests/test_super_wash.gd",
++    "game/tests/test_super_wash_animation.gd",
++    "game/assets/garage/previews_v1/provenance.json",
++]
++new = ["docs/SUPER_WASH_BRUSH_CLEANING_2026_11_07.md"] + [
++    (HERE / name).relative_to(ROOT).as_posix()
++    for name in ["run.py", "checkpoint.py"]
++]
++scratch = ROOT / "tmp/super-wash-brush-cleaning-checkpoint"
++scratch.mkdir(parents=True, exist_ok=True)
++patch = []
++hashes = {}
++for relative in existing + new:
++    current = ROOT / relative
++    original = HERE / "before" / relative
++    before = original.read_text(encoding="utf-8") if relative in existing else ""
++    after = current.read_text(encoding="utf-8")
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    if relative in new:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile=f"a/{relative}" if relative in existing else "/dev/null", tofile=f"b/{relative}"))
++    copy = scratch / relative
++    copy.parent.mkdir(parents=True, exist_ok=True)
++    if relative in existing:
++        copy.write_bytes(before.encode("utf-8"))
++    else:
++        copy.unlink(missing_ok=True)
++    hashes[relative] = hashlib.sha256(current.read_bytes()).hexdigest()
++target = HERE / "task.patch"
++target.write_text("".join(patch), encoding="utf-8", newline="\n")
++for flags in [["--check"], [], ["--check", "--reverse"], ["--reverse"]]:
++    subprocess.run(["git", "apply", *flags, "--directory=tmp/super-wash-brush-cleaning-checkpoint", str(target)], cwd=ROOT, check=True)
++    if not flags:
++        for relative in existing + new:
++            assert (scratch / relative).read_text(encoding="utf-8") == (ROOT / relative).read_text(encoding="utf-8")
++for relative in existing:
++    assert (scratch / relative).read_text(encoding="utf-8") == (HERE / "before" / relative).read_text(encoding="utf-8")
++for relative in new:
++    assert not (scratch / relative).exists()
++print(f"CHECKPOINT: {len(existing)+len(new)} files; forward/reverse/content checks pass; main index untouched")
++(HERE / "checkpoint.json").write_text(json.dumps({"requirements": ["SBC01", "SBC02", "SBCQ01"], "source_sha256": hashes, "patch_sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "forward_reverse_content_check": "pass"}, indent=2)+"\n", encoding="utf-8")

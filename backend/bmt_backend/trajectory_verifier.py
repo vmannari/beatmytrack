@@ -108,7 +108,7 @@ def validate_envelope(replay):
             raise VerificationError("Invalid claimed lap timing")
 
 
-def check(geometry, proof, ticks, vehicle, *, creator_test=False):
+def check(geometry, proof, ticks, vehicle, *, creator_test=False, daily_laps=False):
     """Check samples once. Geometry is prepared from the pinned server track."""
     if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
             or proof.get("schema") not in ("bmt-race-proof-v1", "bmt-race-path-v1") or type(proof["samples"]) is not list
@@ -129,7 +129,7 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
     distance_limits = (0.0,) + tuple((limit*dt + 0.05*(dt/6))**2 for dt in range(1, 7))
     number_types = (int, float)
     extent_x, extent_y = geometry["extent"]
-    target_laps = 1 if creator_test else 5
+    target_laps = 1 if creator_test else 10 if daily_laps else 5
     gate_index, laps, previous_tick, last_lap = 0, 0, -1, 0
     px, py, previous_layer = start
     lap_ticks = []
@@ -175,7 +175,7 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
                 after = nx*x+ny*y+origin
             gate_before = after
         previous_tick, px, py, previous_layer = tick, x, y, layer
-    if laps != target_laps or previous_tick != ticks or sum(lap_ticks) != ticks:
+    if (not (2 <= laps <= 10) if daily_laps else laps != target_laps) or previous_tick != ticks or sum(lap_ticks) != ticks:
         raise VerificationError("Trajectory does not complete the required laps and ordered road gates")
     return {"time_ticks": ticks, "time_ms": round(ticks*1000/120), "lap_ticks": lap_ticks,
             "manifest": geometry["manifest"], "verification_method": "trajectory-v1",

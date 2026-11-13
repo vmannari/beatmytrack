@@ -24,6 +24,7 @@ from sqlalchemy import (
 from .identity_models import Player
 from .rivalry_models import RivalryBest, RivalryGroup, RivalryTicket
 from .track_models import Run, new_id, now
+from .world_ranking_car_rules import POLICY as MULTI_POLICY
 from .world_ranking_models import (
     Circuit,
     CircuitEntry,
@@ -50,6 +51,29 @@ class LeaseLost(RuntimeError):
 
 class CircuitUnavailable(RuntimeError):
     pass
+
+
+def _available_versions(db, circuit):
+    if circuit.policy != MULTI_POLICY:
+        versions = [row["version_id"] for row in circuit.tracks]
+        if len(versions) != 5 or len(set(versions)) != 5:
+            raise CircuitUnavailable("Invalid pinned Circuit lineup")
+        return versions
+    from .world_ranking_car_models import CarCircuit
+    events = list(db.scalars(select(CarCircuit).where(CarCircuit.circuit_id == circuit.id)))
+    if not events:
+        raise CircuitUnavailable("Pinned car lineups are unavailable")
+    voids = set(db.scalars(select(RankingCorrection.vehicle_id).where(
+        RankingCorrection.circuit_id == circuit.id, RankingCorrection.player_key == 0)))
+    versions = set()
+    for event in events:
+        if event.vehicle_id in voids:
+            continue
+        ids = [row["version_id"] for row in event.tracks]
+        if len(ids) != 5 or len(set(ids)) != 5:
+            raise CircuitUnavailable("Invalid pinned car lineup")
+        versions.update(ids)
+    return list(versions)
 
 
 def _lock(db, identity, token):
@@ -97,10 +121,12 @@ def _delete_batch(db, model, criterion, batch):
     return db.execute(delete(model).where(tuple_(*keys).in_(rows))).rowcount
 
 
-def _archive_read(blobs, archive, codec):
+def _archive_read(blobs, archive, codec, *, vehicle_id=None):
     payload = blobs.get_json(archive.digest)
     if payload.get("format") != "bmt-ranking-1" or payload.get("count") != archive.count or not 0 < archive.count <= 10000:
         raise ValueError("Invalid ranking archive manifest")
+    if vehicle_id is not None and (payload.get("policy") != MULTI_POLICY or payload.get("vehicle_id") != vehicle_id):
+        raise ValueError("Ranking archive car identity mismatch")
     data = base64.b64decode(payload["data"], validate=True)
     if len(data) != codec.size * archive.count:
         raise ValueError("Truncated ranking archive")
@@ -119,7 +145,8 @@ def _country(data):
 
 
 def _corrections(db, circuit):
-    return set(db.scalars(select(RankingCorrection.player_key).where(RankingCorrection.circuit_id == circuit)))
+    return set(db.scalars(select(RankingCorrection.player_key).where(
+        RankingCorrection.circuit_id == circuit, RankingCorrection.vehicle_id == "")))
 
 
 def _freeze(db, branch, snapshot, circuit, batch, blobs):
@@ -235,8 +262,9 @@ def _write_archive(db, branch, snapshot, kind, batch, blobs):
         _advance(branch, "members" if kind == "week" else "publish")
         return
     body = b"".join(codec.pack(*r) for r in packed)
+    archive_policy = db.get(Circuit, snapshot.circuit_id).policy
     db.commit()
-    digest = blobs.put_json({"format": "bmt-ranking-1", "policy": POLICY,
+    digest = blobs.put_json({"format": "bmt-ranking-1", "policy": archive_policy,
         "count": len(packed), "data": base64.b64encode(body).decode("ascii")})
     branch = _lock(db, branch.id, branch.lease_token)
     db.add(RankingArchive(snapshot_id=snapshot.id, kind=kind, part=branch.part, digest=digest,
@@ -326,6 +354,15 @@ def _careers(db, branch, snapshot, control, batch):
     winners = set(db.scalars(select(RankingAward.player_key).where(RankingAward.branch_id == branch.id,
         RankingAward.circuit_id == snapshot.circuit_id, RankingAward.weekly_place == 1,
         RankingAward.player_key > branch.cursor, RankingAward.player_key <= rows[-1].player_key)))
+    car_wins = {}
+    if db.get(Circuit, snapshot.circuit_id).policy == MULTI_POLICY:
+        from .world_ranking_car_models import CarAward, CarWeek
+        car_wins = dict(db.execute(select(CarAward.player_key, func.count()).join(CarWeek,
+            (CarWeek.snapshot_id == snapshot.id) & (CarWeek.vehicle_id == CarAward.vehicle_id)).where(
+                CarAward.branch_id == branch.id, CarAward.circuit_id == snapshot.circuit_id,
+                CarAward.weekly_place == 1, CarWeek.field_size >= 2,
+                CarAward.player_key > branch.cursor, CarAward.player_key <= rows[-1].player_key)
+            .group_by(CarAward.player_key)).all())
     prestige = snapshot.field_size >= 1000
     finale = (snapshot.week_start-control.launch_week)//WEEK % 13 == 12 and snapshot.season_qualifying_weeks >= 6
     for standing in rows:
@@ -337,7 +374,7 @@ def _careers(db, branch, snapshot, control, batch):
             peak_field=snapshot.ranked_count if peak else old.peak_field,
             weeks_top100=(old.weeks_top100 if old else 0)+int(prestige and standing.world_rank <= 100),
             weeks_no1=(old.weeks_no1 if old else 0)+int(prestige and standing.world_rank == 1),
-            victories=(old.victories if old else 0)+int(snapshot.field_size >= 2 and standing.player_key in winners),
+            victories=(old.victories if old else 0)+int(snapshot.field_size >= 2 and standing.player_key in winners)+car_wins.get(standing.player_key, 0),
             season_titles=(old.season_titles if old else 0)+int(finale and standing.season_rank == 1)))
     branch.cursor = rows[-1].player_key
 
@@ -422,6 +459,41 @@ def _cleanup(db, branch, snapshot, batch):
         if not _delete_batch(db, RankingCareer, RankingCareer.branch_id.in_(retired), batch):
             _advance(branch, "cleanup11")
         return
+    from .world_ranking_car_models import (
+        CarAward,
+        CarEntry,
+        CarInput,
+        CarPlace,
+        CarStanding,
+        CarWeekly,
+        CarWork,
+    )
+    if 11 <= phase <= 14:
+        model = (CarInput, CarPlace, CarWeekly, CarWork)[phase-11]
+        if not _delete_batch(db, model, model.snapshot_id == snapshot.id, batch):
+            _advance(branch, f"cleanup{phase+1}")
+        return
+    if phase == 15:
+        if not _delete_batch(db, CarEntry, CarEntry.circuit_id == snapshot.circuit_id, batch):
+            _advance(branch, "cleanup16")
+        return
+    if phase == 16:
+        keep = [control.published_id or 0, control.previous_id or 0, snapshot.id]
+        old = select(RankingSnapshot.id).where(~RankingSnapshot.id.in_(keep))
+        # Correction builds need their preceding snapshot until the next week
+        # has copied its skills; previous_id is also retained while unpublished.
+        if snapshot.previous_id:
+            old = old.where(RankingSnapshot.id != snapshot.previous_id)
+        if not _delete_batch(db, CarStanding, CarStanding.snapshot_id.in_(old), batch):
+            _advance(branch, "cleanup17")
+        return
+    if phase == 17:
+        old = select(Circuit.id).where(Circuit.week_start < snapshot.week_start-27*WEEK)
+        retired = select(RankingBranch.id).where(~RankingBranch.id.in_(protected))
+        stale = ((CarAward.branch_id == branch.id) & CarAward.circuit_id.in_(old)) | CarAward.branch_id.in_(retired)
+        if not _delete_batch(db, CarAward, stale, batch):
+            _advance(branch, "cleanup18")
+        return
     branch.next_week = snapshot.week_start+WEEK
     branch.snapshot_id = None
     _advance(branch, "idle")
@@ -478,22 +550,29 @@ def step(factory, blobs, settings):
                     circuit = db.scalar(select(Circuit).where(Circuit.week_start == branch.next_week))
                     if circuit is None:
                         # No official event opened: empty calendar week still advances expiry.
-                        circuit = Circuit(week_start=branch.next_week, contract_key="", policy=POLICY, tracks=[])
+                        previous = db.get(RankingSnapshot, branch.last_snapshot) if branch.last_snapshot else None
+                        policy = db.get(Circuit, previous.circuit_id).policy if previous else MULTI_POLICY
+                        circuit = Circuit(week_start=branch.next_week, contract_key="", policy=policy, tracks=[])
                         db.add(circuit)
                         db.flush()
                     void = 0 in _corrections(db, circuit.id)
+                    if circuit.policy not in (POLICY, MULTI_POLICY):
+                        raise ValueError("Unsupported World Ranking policy")
                     if circuit.tracks and not void and branch.mode != "rebuild":
                         from .track_models import Track, TrackVersion
-                        versions = [row["version_id"] for row in circuit.tracks]
+                        versions = _available_versions(db, circuit)
                         available = db.scalar(select(func.count()).select_from(TrackVersion).join(Track)
                             .join(Player, Player.id == Track.owner_id).where(TrackVersion.id.in_(versions),
                                 TrackVersion.state == "published", Track.hidden.is_(False),
                                 Track.archived.is_(False), Player.disabled.is_(False)))
-                        if available != 5:
+                        if available != len(set(versions)):
                             raise CircuitUnavailable("Owner-audited whole-week void required")
+                    void_cars = select(RankingCorrection.vehicle_id).where(RankingCorrection.circuit_id == circuit.id,
+                        RankingCorrection.player_key == 0, RankingCorrection.vehicle_id != "")
                     pending = db.scalar(select(Run.id).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
                         .join(RivalryGroup, RivalryGroup.id == RivalryTicket.group_id).where(
-                            RivalryGroup.world_circuit_id == circuit.id, Run.status.in_(("queued", "verifying"))).limit(1))
+                            RivalryGroup.world_circuit_id == circuit.id, ~RivalryGroup.vehicle_id.in_(void_cars),
+                            Run.status.in_(("queued", "verifying"))).limit(1))
                     if pending and not void:
                         worked = False
                     else:
@@ -506,11 +585,14 @@ def step(factory, blobs, settings):
                             RankingSnapshot.branch_id == branch.id, RankingSnapshot.week_start.between(beginning, snapshot.week_start),
                             RankingSnapshot.field_size >= 1000))
                         branch.snapshot_id = snapshot.id
-                        _advance(branch, "freeze")
+                        _advance(branch, "m_freeze:0" if circuit.policy == MULTI_POLICY else "freeze")
             else:
                 snapshot = db.get(RankingSnapshot, branch.snapshot_id)
                 circuit = db.get(Circuit, snapshot.circuit_id)
-                if branch.phase == "freeze":
+                if branch.phase.startswith("m_"):
+                    from .world_ranking_cars import advance
+                    advance(db, branch, snapshot, circuit, control, batch, blobs)
+                elif branch.phase == "freeze":
                     _freeze(db, branch, snapshot, circuit, batch, blobs)
                 elif branch.phase.startswith("track"):
                     slot = int(branch.phase[-1])

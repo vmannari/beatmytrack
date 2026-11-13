@@ -87,8 +87,7 @@ func run() -> void:
 		draft._advance()
 		while draft._checking: await process_frame
 		check(draft.get_ok_button().disabled and draft._race.visible,"new creator is offered a race instead of an invented target")
-		draft._choose_duration(86400)
-		draft._choose_attempt_limit(3)
+		preload("res://tests/support/challenge_rules_input.gd").choose(draft,{"duration":86400,"tries":3})
 		draft._race.pressed.emit()
 		while app.game == null or not app.game.preparation_complete: await process_frame
 	else: await app._start_race(track,false)

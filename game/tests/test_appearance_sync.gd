@@ -15,6 +15,9 @@ class FakeClient extends Node:
 	var delay_get: bool = false
 	var lost: bool = false
 	var puts: int = 0
+	var reject: Dictionary = {}
+	var contract: String = "first"
+	func appearance_contract() -> String: return contract
 	func signed_in() -> bool: return online
 	func base_url() -> String: return "http://fixture.invalid"
 	func request_api(_path: String, method: int = 0, body: Dictionary = {}, _key: String = "", auth: bool = false) -> Dictionary:
@@ -26,6 +29,7 @@ class FakeClient extends Node:
 		else:
 			puts += 1
 			var value: Dictionary = body.appearance.duplicate(true)
+			if reject.has(value.vehicle_id): return {"ok":false,"status":reject[value.vehicle_id],"data":{},"error":"INVALID_INPUT"}
 			var current: Variant = saved.get(value.vehicle_id)
 			if current != value and current != body.previous: return {"ok":false,"status":409,"data":{}}
 			saved[value.vehicle_id] = value
@@ -85,10 +89,10 @@ func run() -> void:
 	var writes: int = fake.puts
 	await sb.refresh()
 	check(fake.puts == writes,"clean fresh device never uploads defaults")
-	edit(b,"pickup","123456")
+	edit(b,"forklift","123456")
 	await sb.refresh()
 	await sa.refresh()
-	check(State.car(a.settings,"pickup").livery.colors.body == "123456","running first device downloads edits")
+	check(State.car(a.settings,"forklift").livery.colors.body == "123456","running first device downloads edits")
 	# Independent cars are retained when both devices edit offline.
 	edit(a,"compact","abcdef")
 	edit(b,"kart","fedcba")
@@ -97,13 +101,13 @@ func run() -> void:
 	await sb.refresh()
 	check(State.car(b.settings,"compact").livery.colors.body == "abcdef" and State.car(a.settings,"kart").livery.colors.body == "fedcba","independent car edits merge")
 	# The older offline car cannot overwrite a newer accepted online car.
-	edit(a,"pickup","111111")
-	edit(b,"pickup","222222")
+	edit(a,"forklift","111111")
+	edit(b,"forklift","222222")
 	await sb.refresh()
 	await sa.refresh()
-	check(State.car(a.settings,"pickup").livery.colors.body == "222222","same-car conflict retains accepted online value")
+	check(State.car(a.settings,"forklift").livery.colors.body == "222222","same-car conflict retains accepted online value")
 	fake.available = false
-	edit(a,"formula","333333")
+	edit(a,"electric","333333")
 	await sa.refresh()
 	check(not sa.status.is_empty(),"offline save retains retry status")
 	sa.free()
@@ -111,22 +115,22 @@ func run() -> void:
 	sa = sync_for(a,fake)
 	fake.available = true
 	await sa.refresh()
-	check(fake.saved.formula.livery.colors.body == "333333","restart retries persisted local edit against original baseline")
+	check(fake.saved.electric.livery.colors.body == "333333","restart retries persisted local edit against original baseline")
 	fake.lost = true
-	edit(a,"classic","444444")
+	edit(a,"hovercraft","444444")
 	await sa.refresh()
-	check(fake.saved.classic.livery.colors.body == "444444" and not sa.status.is_empty(),"lost reply retains committed remote write")
+	check(fake.saved.hovercraft.livery.colors.body == "444444" and not sa.status.is_empty(),"lost reply retains committed remote write")
 	await sa.refresh()
-	check(sa.status.is_empty() and State.baseline(a.settings).classic == fake.saved.classic,"lost reply recovery acknowledges exact remote car")
+	check(sa.status.is_empty() and State.baseline(a.settings).hovercraft == fake.saved.hovercraft,"lost reply recovery acknowledges exact remote car")
 	fake.lost = true
-	edit(a,"classic","454545")
+	edit(a,"hovercraft","454545")
 	await sa.refresh()
-	edit(a,"classic","464646")
+	edit(a,"hovercraft","464646")
 	sa.free()
 	a = store("device-a")
 	sa = sync_for(a,fake)
 	await sa.refresh()
-	check(sa.status.is_empty() and fake.saved.classic.livery.colors.body == "464646","lost reply plus newer local edit survives restart without a false conflict")
+	check(sa.status.is_empty() and fake.saved.hovercraft.livery.colors.body == "464646","lost reply plus newer local edit survives restart without a false conflict")
 	# A local edit while a write is pending must remain dirty after acknowledgement.
 	fake.delay_put = true
 	edit(a,"kart","555555")
@@ -139,10 +143,10 @@ func run() -> void:
 	check(State.car(a.settings,"kart").livery.colors.body == "666666","late acknowledgement preserves new local edit")
 	await sa.refresh()
 	check(fake.saved.kart.livery.colors.body == "666666","new local edit uploads after acknowledgement")
-	edit(a,"classic","778899")
+	edit(a,"hovercraft","778899")
 	await create_timer(1.0).timeout
-	check(fake.saved.classic.livery.colors.body == "778899","local commit automatically schedules debounced sync")
-	edit(a,"formula","8899aa")
+	check(fake.saved.hovercraft.livery.colors.body == "778899","local commit automatically schedules debounced sync")
+	edit(a,"electric","8899aa")
 	sa._debounce.stop()
 	var original_path: String = a.path
 	fake.delay_put = true
@@ -152,10 +156,10 @@ func run() -> void:
 	DirAccess.make_dir_recursive_absolute(a.path)
 	fake.delay_put = false
 	await process_frame
-	check(not sa.status.is_empty() and State.car(a.settings,"formula").livery.colors.body == "8899aa","failed acknowledgement save retains last committed local edit")
+	check(not sa.status.is_empty() and State.car(a.settings,"electric").livery.colors.body == "8899aa","failed acknowledgement save retains last committed local edit")
 	a.path = original_path
 	await sa.refresh()
-	check(sa.status.is_empty() and State.baseline(a.settings).formula == fake.saved.formula,"retry recovers failed acknowledgement storage")
+	check(sa.status.is_empty() and State.baseline(a.settings).electric == fake.saved.electric,"retry recovers failed acknowledgement storage")
 	# Fresh device with legacy defaults adopts server data before any upload.
 	var legacy: LocalRecords = store("legacy")
 	edit(legacy,"compact","000000")
@@ -186,6 +190,45 @@ func run() -> void:
 	check(not Client.valid_response("/me/appearances",HTTPClient.METHOD_PUT,bad),"wire rejects invalid pigment")
 	other.settings[State.KEY] = {"version":1,"baseline":{"compact":bad}}
 	check(other.save_records() == ERR_INVALID_DATA and other.settings.is_empty(),"invalid sync recovery rolls back atomically")
-	for node: Node in [sa,sb,sl,fake]: node.free()
+	# Permanent validation failures retain the edit across restart without
+	# retrying identical work or stopping another car from syncing.
+	var rejected_client := FakeClient.new()
+	root.add_child(rejected_client)
+	rejected_client.reject.compact = 422
+	var rejected_records: LocalRecords = store("rejected")
+	edit(rejected_records,"compact","112233")
+	edit(rejected_records,"kart","223344")
+	var rejected_sync: Node = sync_for(rejected_records,rejected_client)
+	await rejected_sync.refresh()
+	check(rejected_client.puts == 2 and rejected_client.saved.has("kart"),"rejected car does not block independent car")
+	check(State.pending(rejected_records.settings).has("compact") and State.car(rejected_records.settings,"compact").livery.colors.body == "112233","rejected edit stays saved and pending")
+	check(rejected_sync._poll.is_stopped() and not rejected_sync._needs_recovery(),"permanent rejection stops background polling")
+	await rejected_sync.refresh()
+	check(rejected_client.puts == 2,"explicit refresh does not repeat identical rejected PUT")
+	rejected_sync.free()
+	rejected_records = store("rejected")
+	rejected_sync = sync_for(rejected_records,rejected_client)
+	await rejected_sync.refresh()
+	check(rejected_client.puts == 2 and rejected_sync._poll.is_stopped(),"restart preserves rejected fingerprint")
+	rejected_client.contract = "second"
+	await rejected_sync.refresh()
+	check(rejected_client.puts == 3,"changed server contract retries retained edit once")
+	await rejected_sync.refresh()
+	check(rejected_client.puts == 3,"new contract rejection is suppressed afterward")
+	rejected_client.reject.clear()
+	edit(rejected_records,"compact","334455")
+	await rejected_sync.refresh()
+	check(rejected_client.saved.compact.livery.colors.body == "334455" and State.pending(rejected_records.settings).is_empty(),"edited design resumes sync and clears pending rejection")
+	rejected_client.available = false
+	edit(rejected_records,"kart","445566")
+	await rejected_sync.refresh()
+	check(rejected_sync._poll.wait_time == 60.0,"transient failure starts bounded backoff")
+	await rejected_sync.refresh()
+	check(rejected_sync._poll.wait_time == 120.0,"repeated transient failure increases backoff")
+	rejected_client.available = true
+	await rejected_sync.refresh()
+	check(rejected_sync._poll.wait_time == 30.0 and rejected_sync._poll.is_stopped(),"successful retry resets backoff and stops clean polling")
+	check(not State.valid({"version":1,"baseline":{},"rejected":{"compact":"z".repeat(64)}}),"recovery rejects malformed fingerprint")
+	for node: Node in [sa,sb,sl,fake,rejected_sync,rejected_client]: node.free()
 	print("APPEARANCE_SYNC: %d checks, %d failures" % [checks,failures])
 	quit(0 if failures == 0 else 1)

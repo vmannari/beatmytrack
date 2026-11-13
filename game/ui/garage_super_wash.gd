@@ -1,5 +1,7 @@
 extends Node3D
-## Presentation only: a reusable rollover wash in the existing Garage world.
+## Reusable rollover wash; cleaning follows the actual brush position.
+signal swept(front: float)
+signal finished
 const SECONDS: float = 3.6
 const WATER_COUNT: int = 96
 const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
@@ -139,12 +141,40 @@ func advance(delta: float) -> void:
 	elapsed = minf(SECONDS,elapsed+maxf(0.0,delta))
 	if elapsed >= SECONDS:
 		reset()
+		finished.emit()
 		return
 	_present()
+
+func clean_through(effect: VehicleWeathering, front: float, feather: float) -> void:
+	# Use the existing persistent wash masks; this full-width strip belongs
+	# only to the Garage machine, while ordinary racing/manual washing stays shared.
+	if effect.wash_image == null or not is_finite(front) or not is_finite(feather) or feather <= 0.0: return
+	var grid: int = VehicleCondition.GRID
+	var bytes: PackedByteArray = effect.wash_image.get_data()
+	var slow_bytes: PackedByteArray = effect.slow_wash_image.get_data()
+	var changed: bool = false
+	for z: int in range(grid):
+		var along: float = effect.bounds.position.z + float(z) / float(grid - 1) * effect.bounds.size.z
+		var coverage: int = roundi(255.0 * smoothstep(along,along + feather,front))
+		if coverage == 0: continue
+		for y: int in range(grid):
+			for x: int in range(grid):
+				var index: int = y * grid * grid + z * grid + x
+				if bytes[index] < coverage or slow_bytes[index] < coverage:
+					bytes[index] = maxi(bytes[index],coverage)
+					slow_bytes[index] = maxi(slow_bytes[index],coverage)
+					changed = true
+				if bytes[index] == 255 and slow_bytes[index] == 255: effect.grime_age[index] = 0
+	if not changed: return
+	effect._mask_travel = 0.0
+	effect._slow_mask_travel = 0.0
+	effect._grime_elapsed = 0.0
+	effect._upload_wash_masks(bytes,slow_bytes)
 
 func _present() -> void:
 	var progress: float = smoothstep(0.08,0.92,elapsed/SECONDS)
 	gantry.position = Vector3(bounds.get_center().x,0,lerpf(travel.x,travel.y,progress))
+	swept.emit(gantry.position.z)
 	# Deployment and retraction happen beyond the car's ends.
 	var deployment: float = smoothstep(0.0,0.25,elapsed)*(1.0-smoothstep(SECONDS-0.25,SECONDS,elapsed))
 	gantry.scale = Vector3.ONE*maxf(0.001,deployment)

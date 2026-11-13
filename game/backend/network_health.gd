@@ -23,6 +23,12 @@ var _device: String = bounded_text(OS.get_model_name())
 var _os: String = bounded_text(OS.get_version())
 static var _id_pattern: RegEx = RegEx.create_from_string("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$")
 
+func clear() -> void:
+	_scopes.clear()
+
+func erase_scope(scope: String) -> void:
+	_scopes.erase(scope)
+
 static func bounded_text(value: String) -> String:
 	var result: String = ""
 	for index: int in range(value.length()):

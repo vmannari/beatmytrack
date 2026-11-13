@@ -3,7 +3,7 @@ extends RefCounted
 ## Cosmetic exposure and local wash volume. Never writes canonical simulation or livery.
 const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
 const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
-const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52, "hovercraft": 1.42}
+const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52, "hovercraft": 1.42, "super_rally": 1.44}
 const SLOW_RATE: float = 1.0 / 20.0
 const SCRUB_RATE: float = 1.15
 const SCRUB_RADIUS: float = 0.60
@@ -101,7 +101,7 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 	bounds = bounds.grow(0.08)
 	# Saved wash voxels retain the original compact's model-space mapping.
 	# Fitted aero must not stretch old strokes across the hood/body/rims.
-	if car.vehicle_id == "compact" and car.customisation != VehicleCustomisation.defaults():
+	if car.chassis_id == "compact" and car.customisation != VehicleCustomisation.defaults():
 		bounds = AABB(Vector3(-1.115,0.181,-2.284),Vector3(2.23,1.412,4.5148))
 	if car.vehicle_id=="kart" and car.customisation!=VehicleCustomisation.defaults():
 		# Keep existing full/simple stock wash coordinates when a bumper narrows.

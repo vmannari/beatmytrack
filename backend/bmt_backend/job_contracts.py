@@ -12,7 +12,7 @@ def capability_matches(pinned, active):
     return (all(pinned.get(f) == active.get(f) and active.get(f) is not None for f in FIELDS if f != "physics_version")
             and active.get("physics_version") is not None
             and pinned.get("physics_version") in compatible_physics_versions(active["physics_version"], pinned.get("vehicle_id"))
-            and pinned.get("laps") == (1 if pinned.get("purpose") == "creator_test" else active.get("laps"))
+            and pinned.get("laps") == (1 if pinned.get("purpose") == "creator_test" else 10 if pinned.get("purpose") == "daily_laps" else active.get("laps"))
             and pinned.get("handling_version") == vehicle.get("handling_version")
             and pinned.get("config_hash") == vehicle.get("config_hash")
             and bool(vehicle.get("handling_version")) and bool(vehicle.get("config_hash")))
@@ -24,7 +24,8 @@ def pinned_filter(column, active):
     fields = [(column[f].as_integer() == active[f]) if f == "tick_rate"
               else column[f].as_string() == active[f] for f in FIELDS if f != "physics_version"]
     laps = or_(column["laps"].as_integer() == active["laps"],
-               and_(column["purpose"].as_string() == "creator_test", column["laps"].as_integer() == 1))
+               and_(column["purpose"].as_string() == "creator_test", column["laps"].as_integer() == 1),
+               and_(column["purpose"].as_string() == "daily_laps", column["laps"].as_integer() == 10))
     vehicles = [and_(column["vehicle_id"].as_string() == vehicle_id,
                      column["physics_version"].as_string().in_(compatible_physics_versions(active["physics_version"], vehicle_id)),
                      column["handling_version"].as_string() == values["handling_version"],
@@ -42,6 +43,6 @@ def worker_filter(column, pinned):
               else column[f].as_string() == pinned.get(f) for f in FIELDS if f != "physics_version"]
     vehicle = column["vehicles"][pinned.get("vehicle_id", "")]
     return and_(*fields, column["physics_version"].as_string().in_(compatible_physics_versions(pinned["physics_version"], pinned["vehicle_id"])),
-                column["laps"].as_integer() == (5 if pinned.get("purpose") == "creator_test" else pinned.get("laps")),
+                column["laps"].as_integer() == (5 if pinned.get("purpose") in ("creator_test", "daily_laps") else pinned.get("laps")),
                 vehicle["handling_version"].as_string() == pinned.get("handling_version"),
                 vehicle["config_hash"].as_string() == pinned.get("config_hash"))

@@ -5,7 +5,7 @@ extends RefCounted
 static var meshes: Dictionary = {}
 static var use_baked: bool = true
 const ASSET_ROOT: String = "res://assets/vehicles/compact_coachwork_v3"
-const SIDE_WINDOW_BOTTOM: float = 1.08
+const SIDE_WINDOW_BOTTOM: float = 1.035
 const SIDE_WINDOW_TOP: float = 1.422
 const B_PILLAR_FRONT: float = 0.59
 const B_PILLAR_REAR: float = 0.66
@@ -313,7 +313,10 @@ static func build_mirror(car: CarVisual, side: float, rubber: Material, metal: M
 			var a: float = lerpf(-1,1,u)
 			var b: float = lerpf(-1,1,v)
 			var p := Vector3(normal.x,a,b) if face<2 else Vector3(a,normal.y,b) if face<4 else Vector3(a,b,normal.z)
-			return center+_rounded_box_point(p*half_size,half_size,0.022),rubber,normal,Rect2(0,0,1,1))
+			return center+_rounded_box_point(p*half_size,half_size,0.022),rubber,normal,Rect2(0,0,1,1),false,func(u: float,v: float) -> Vector3:
+			var p := Vector3(normal.x,2*u-1,2*v-1) if face<2 else Vector3(2*u-1,normal.y,2*v-1) if face<4 else Vector3(2*u-1,2*v-1,normal.z)
+			p *= half_size
+			return (p-p.clamp(-half_size+Vector3.ONE*0.022,half_size-Vector3.ONE*0.022)).normalized())
 	# A small rounded insert on the rear-facing surface; no chrome slab.
 	_patch(car,prefix+"Glass",20,12,func(u: float,v: float) -> Vector3:
 		var x: float = lerpf(-0.077,0.077,u)
@@ -423,8 +426,9 @@ static func build_bumper(car: CarVisual,rear: bool,rubber: Material) -> void:
 		cap.material_override=rubber
 		car.body.add_child(cap)
 
-static func _patch(car: CarVisual, label: String, columns: int, rows: int, sample: Callable, surface: Material, normal_hint: Vector3, uv_region: Rect2, closed_profile: bool = false) -> void:
+static func _patch(car: CarVisual, label: String, columns: int, rows: int, sample: Callable, surface: Material, normal_hint: Vector3, uv_region: Rect2, closed_profile: bool = false, authored_normal: Callable = Callable()) -> void:
 	var key: String = label.to_snake_case()+ ("_left" if normal_hint.x < 0 else "_right" if normal_hint.x > 0 else "")
+	if authored_normal.is_valid(): key += "_continuous_normals_v2"
 	var path: String = ASSET_ROOT.path_join(key+".res")
 	var original_path: String = path
 	if car.simple_model:
@@ -467,6 +471,7 @@ static func _patch(car: CarVisual, label: String, columns: int, rows: int, sampl
 				var du: Vector3 = sample.call(minf(1,t.x+0.001),t.y)-sample.call(maxf(0,t.x-0.001),t.y)
 				var dv: Vector3 = sample.call(t.x,minf(1,t.y+0.001))-sample.call(t.x,maxf(0,t.y-0.001))
 				var normal: Vector3 = du.cross(dv).normalized()
+				if authored_normal.is_valid(): normal = authored_normal.call(t.x,t.y)
 				if not closed_profile and normal.dot(normal_hint)<0: normal=-normal
 				if label=="CurvedBody" and points[index].y<body_upper(points[index].z)-0.035:
 					# Wheel cut-outs change the patch's vertical sampling. Deriving

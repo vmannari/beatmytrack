@@ -18,9 +18,9 @@ func run() -> void:
 	app.online.client.configure("http://127.0.0.1:1")
 	app.online.client._access_token = "disposable-fixture"
 	app.online.client.player = {"id":"review-fixture", "display_name":"Review fixture"}
-	app.cloud.queue_run({"ticket_id":"pending-fixture"},[[0,255,0]])
-	app.cloud.queue_run({"ticket_id":"failed-fixture"},[[0,255,0]])
-	for job: Dictionary in app.cloud.upload_jobs():
+	(await app.cloud.queue_run_async({"ticket_id":"pending-fixture"},[[0,255,0]]))
+	(await app.cloud.queue_run_async({"ticket_id":"failed-fixture"},[[0,255,0]]))
+	for job: Dictionary in (await app.cloud.upload_history()):
 		if job.ticket == "failed-fixture":
 			job.failure = "invalid_replay"
 			app.cloud._save_job(str(job._path),job)

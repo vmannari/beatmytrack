@@ -36,7 +36,7 @@ def main():
     # One additional bounded connection, within the existing service instance.
     settings = replace(Settings.from_env(), database_pool_size=1, database_pool_overflow=0)
     app = create_worker_app(settings)
-    run_worker(app, process_job, once=args.once, idle_seconds=0.25)
+    run_worker(app, process_job, once=args.once, idle_seconds=0.25, max_idle_seconds=1.0)
 
 
 if __name__ == "__main__":

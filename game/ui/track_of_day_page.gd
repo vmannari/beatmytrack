@@ -400,6 +400,7 @@ func _open_standings() -> void:
 		return
 	var dialog := preload("res://ui/daily_standings.gd").new()
 	dialog.flying_laps = true
+	dialog.records = records
 	dialog.client = client
 	dialog.cloud = cloud
 	dialog.version = str(entry.version_id)

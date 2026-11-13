@@ -1,0 +1,665 @@
+--- /dev/null
++++ b/game/tests/review_track_asset_simplification_2026_11_07.gd
+@@ -0,0 +1,205 @@
++extends SceneTree
++## TAS01-TAS03: investigation only; production builders and caches are unchanged.
++const LODS = preload("res://tests/support/track_asset_lod_review.gd")
++const OUTPUT: String = "res://../docs/evidence/track-asset-simplification-2026-11-07"
++const CASES: Array = [["pine","tree"],["pine","tyre_wall"],["pine","container"],["pine","crate"],["pine","parked_car"],["pine","grandstand"],["winter","igloo"],["winter","snow_castle"],["winter","ice_compact"],["desert","egypt_pyramid"],["desert","egypt_column"],["night_city","abandoned_warehouse"]]
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++var folder: String
++var only: String = ""
++var studio: bool = false
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("TRACK_ASSET_REVIEW_FAIL ",label)
++
++func build(theme: String, kind: String) -> NativeTrackVisual:
++	var track := NativeTrack.new()
++	track.metadata = {"creator_document":{"objects":[{"kind":kind,"position":[0.0,0.0],"rotation":0.0}]},"scenery_objects":[]}
++	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)
++	var original: Dictionary = track.metadata.duplicate(true)
++	var visual := NativeTrackVisual.new()
++	visual.theme_id = theme
++	visual.colors = TrackTheme.palette(theme)
++	visual._suppress_night_fx = true
++	await visual._build_placed_objects(track)
++	check(track.metadata == original,theme+"/"+kind+" canonical metadata exact")
++	return visual
++
++func collect(node: Node, result: Array) -> void:
++	if node is Node3D and not node.visible: return
++	if node.is_in_group("contact_lighting"): return
++	var mesh: Mesh
++	var instances: int = 1
++	if node is MeshInstance3D: mesh = node.mesh
++	if node is MultiMeshInstance3D and node.multimesh != null:
++		mesh = node.multimesh.mesh
++		instances = node.multimesh.instance_count
++		if node.multimesh.visible_instance_count >= 0: instances = mini(instances,node.multimesh.visible_instance_count)
++	if mesh != null and instances > 0:
++		result.append({"node":node,"mesh":mesh,"instances":instances})
++	for child: Node in node.get_children(): collect(child,result)
++
++func prepare(parts: Array) -> Dictionary:
++	var policy = LODS.new()
++	var result: Dictionary = {"triangles":0,"first_lod_triangles":0,"smallest_lod_triangles":0,"vertices":0,"meshes":parts.size(),"meshes_with_lods":0,"lod_levels":0,"source_bytes":0,"lod_index_bytes":0,"levels":[]}
++	for part: Dictionary in parts:
++		var source: Mesh = part.mesh
++		var candidate: Mesh = policy.prepare(source)
++		part.candidate = candidate
++		result.source_bytes += preload("res://editor/cache_bytes.gd").mesh(source)
++		part.first = first_lod(candidate)
++		var has_lods: bool = false
++		var raw: Array = source.get("_surfaces") if source is ArrayMesh else []
++		var prepared: Array = candidate.get("_surfaces") if candidate is ArrayMesh else []
++		for surface: int in range(source.get_surface_count()):
++			var arrays: Array = source.surface_get_arrays(surface)
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			var count: int = indices.size() if not indices.is_empty() else arrays[Mesh.ARRAY_VERTEX].size()
++			var smallest: int = count
++			var first: int = count
++			if not prepared.is_empty():
++				var packet: Dictionary = prepared[surface].duplicate(true)
++				var levels: Array = packet.get("lods",[])
++				var stride: int = original_index_stride(raw[surface])
++				var description: Array = []
++				# The pinned ArrayMesh storage keeps alternating distance/index bytes.
++				for index: int in range(0,levels.size(),2):
++					var level_count: int = levels[index+1].size()/stride
++					if index == 0: first = level_count
++					smallest = mini(smallest,level_count)
++					result.lod_index_bytes += levels[index+1].size()
++					description.append({"metric":levels[index],"triangles":level_count/3,"index_storage":type_string(typeof(levels[index+1]))})
++				result.levels.append(description)
++				result.lod_levels += levels.size()/2
++				has_lods = has_lods or not levels.is_empty()
++				packet.erase("lods")
++				var original: Dictionary = raw[surface].duplicate(true); original.erase("lods")
++				check(packet == original,"original GPU surface storage exact")
++			check(candidate.surface_get_arrays(surface) == arrays,"original decoded attributes and full indices exact")
++			result.triangles += count/3*part.instances
++			result.first_lod_triangles += first/3*part.instances
++			result.smallest_lod_triangles += smallest/3*part.instances
++			result.vertices += arrays[Mesh.ARRAY_VERTEX].size()*part.instances
++		if has_lods: result.meshes_with_lods += 1
++	result.changed_vertex_streams = policy.totals.changed_vertex_streams
++	return result
++
++func original_index_stride(packet: Dictionary) -> int:
++	if int(packet.get("index_count",0)) > 0: return packet.index_data.size()/int(packet.index_count)
++	return 2 if int(packet.vertex_count) <= 65536 else 4
++
++func first_lod(source: Mesh) -> Mesh:
++	if not source is ArrayMesh: return source
++	var surfaces: Array = source.get("_surfaces").duplicate(true)
++	for packet: Dictionary in surfaces:
++		var levels: Array = packet.get("lods",[])
++		if not levels.is_empty():
++			var stride: int = original_index_stride(packet)
++			packet.index_data = levels[1]
++			packet.index_count = levels[1].size()/stride
++		packet.erase("lods")
++	var result := ArrayMesh.new(); result.set("_surfaces",surfaces)
++	return result
++
++func inventory() -> void:
++	for theme: String in TrackTheme.IDS:
++		for kind: String in CreatorObjects.KINDS:
++			var visual: NativeTrackVisual = await build(theme,kind)
++			var parts: Array = []; collect(visual,parts)
++			var started: int = Time.get_ticks_usec()
++			var row: Dictionary = prepare(parts)
++			row.theme = theme; row.kind = kind; row.lod_preparation_us = Time.get_ticks_usec()-started
++			rows.append(row)
++			visual.free()
++		print("TRACK_ASSET_INVENTORY ",theme," complete")
++		await process_frame
++
++func frames() -> void:
++	for index: int in range(8): await RenderingServer.frame_post_draw
++
++func observe(viewport: SubViewport) -> Dictionary:
++	await frames()
++	return {"image":viewport.get_texture().get_image(),"primitives":RenderingServer.viewport_get_render_info(viewport.get_viewport_rid(),RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME),"draws":RenderingServer.viewport_get_render_info(viewport.get_viewport_rid(),RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME)}
++
++func set_meshes(parts: Array, version: String) -> void:
++	for part: Dictionary in parts:
++		if part.node is MeshInstance3D: part.node.mesh = part[version]
++		else: part.node.multimesh.mesh = part[version]
++
++func native_review() -> void:
++	root.size = Vector2i(1280,720)
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.time_scale = 0.0
++	var viewport := SubViewport.new(); viewport.size = Vector2i(1280,720); viewport.own_world_3d = true
++	viewport.mesh_lod_threshold = 1.0; viewport.msaa_3d = Viewport.MSAA_4X
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
++	var stage := Node3D.new(); viewport.add_child(stage)
++	var camera := Camera3D.new(); stage.add_child(camera); camera.current = true
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.keep_aspect = Camera3D.KEEP_HEIGHT
++	var light := DirectionalLight3D.new(); light.shadow_enabled = true; stage.add_child(light)
++	var world := WorldEnvironment.new(); world.environment = Environment.new(); stage.add_child(world)
++	world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	var plane := PlaneMesh.new(); plane.size = Vector2(100,100)
++	var floor := MeshInstance3D.new(); floor.mesh = plane; floor.position.y = -0.035; stage.add_child(floor)
++	for specification: Array in CASES:
++		var theme: String = specification[0]; var kind: String = specification[1]
++		if not only.is_empty() and kind != only: continue
++		var visual: NativeTrackVisual = await build(theme,kind); stage.add_child(visual)
++		var parts: Array = []; collect(visual,parts)
++		var geometry: Dictionary = prepare(parts)
++		TrackTheme.apply_lighting(theme,world.environment,light)
++		var inspection_lighting: bool = studio or kind == "abandoned_warehouse"
++		if inspection_lighting:
++			light.light_energy = 1.0; light.light_color = Color.WHITE; light.rotation_degrees = Vector3(-58,-35,0)
++			world.environment.ambient_light_energy = 0.5; world.environment.ambient_light_color = Color("bac8ce")
++		world.environment.background_color = Color("34424a")
++		floor.material_override = VisualGeometry.material(TrackTheme.palette(theme)[1])
++		var bounds: AABB = ObjectThumbnail._mesh_bounds(visual)
++		for view: String in ["race_front","race_back","close_front","close_back"]:
++			var close: bool = view.begins_with("close")
++			var back: bool = view.ends_with("back")
++			camera.size = maxf(bounds.size.length()*1.2,2.0) if close else 35.0/1.15
++			var pitch: float = deg_to_rad(56.0)
++			var yaw: float = deg_to_rad(18.0)+(PI if back else 0.0)
++			var center: Vector3 = bounds.get_center() if close else Vector3.ZERO
++			camera.look_at_from_position(center+Vector3(sin(yaw)*cos(pitch),sin(pitch),cos(yaw)*cos(pitch))*65.0,center)
++			set_meshes(parts,"candidate"); await frames() # Warm all paths before comparison.
++			set_meshes(parts,"first"); await frames()
++			set_meshes(parts,"mesh"); var before: Dictionary = await observe(viewport)
++			set_meshes(parts,"candidate"); var after: Dictionary = await observe(viewport)
++			set_meshes(parts,"first"); var first: Dictionary = await observe(viewport)
++			set_meshes(parts,"mesh"); var restored: Dictionary = await observe(viewport)
++			var control: Dictionary = before.image.compute_image_metrics(restored.image,false)
++			check(control.max == 0.0,theme+"/"+kind+"/"+view+" unchanged original control")
++			var name: String = theme+"-"+kind+"-"+view
++			before.image.save_png(folder.path_join(name+"-original.png"))
++			after.image.save_png(folder.path_join(name+"-lod.png"))
++			first.image.save_png(folder.path_join(name+"-firstlod.png"))
++			if control.max != 0.0: restored.image.save_png(folder.path_join(name+"-restored.png"))
++			var metrics: Dictionary = before.image.compute_image_metrics(after.image,false)
++			var row: Dictionary = {"theme":theme,"kind":kind,"view":view,"inspection_lighting":inspection_lighting,"geometry":geometry,"original_primitives":before.primitives,"lod_primitives":after.primitives,"first_lod_primitives":first.primitives,"original_draws":before.draws,"lod_draws":after.draws,"first_lod_draws":first.draws,"image_metrics":metrics,"first_lod_image_metrics":before.image.compute_image_metrics(first.image,false),"original_control_metrics":control,"camera_extent":camera.size,"lod_threshold":viewport.mesh_lod_threshold}
++			rows.append(row)
++			print("TRACK_ASSET_NATIVE ",theme,"/",kind,"/",view," primitives ",before.primitives," -> ",after.primitives," mean ",metrics.mean)
++		visual.free(); await process_frame
++	viewport.free(); await process_frame
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--only="): only = argument.trim_prefix("--only=")
++		if argument == "--studio": studio = true
++	var mode: String = "inventory" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method()
++	if studio: mode += "-studio"
++	folder = ProjectSettings.globalize_path(OUTPUT.path_join(mode)); DirAccess.make_dir_recursive_absolute(folder)
++	if DisplayServer.get_name() == "headless": await inventory()
++	else: await native_review()
++	check(not rows.is_empty(),"review contains actual cases")
++	var report: Dictionary = {"requirements":["TAS01-current-catalogue","TAS02-index-lod-prototype","TAS03-native-visual-review"],"engine":Engine.get_version_info().string,"mode":mode,"checks":checks,"failures":failures,"rows":rows,"scope":"Investigation only. Individual production prop builders; default scale and span, visible parts excluding contact-lighting overlays. LOD generation occurs only in this offline review. Native views isolate model work, use race pitch/extent plus enlarged detail views, and compare restored-original controls. No full race, FPS, loading or device improvement claim."}
++	FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t",true)+"\n")
++	print("TRACK_ASSET_REVIEW ",checks," checks, ",failures," failures, ",rows.size()," cases")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/support/track_asset_lod_review.gd
+@@ -0,0 +1,121 @@
++extends RefCounted
++## Frozen 2026-11-07 review copy of car_mesh_lods.gd. Never used by production.
++var meshes: Dictionary = {}
++var totals: Dictionary = {"meshes":0,"with_lods":0,"lods":0,"original_triangles":0,"smallest_triangles":0,"changed_vertex_streams":0}
++
++func cache_order(vertices: PackedVector3Array, indices: PackedInt32Array) -> PackedInt32Array:
++	# Reorder existing triangles only. Keep their corner order, every master
++	# attribute/index byte, LOD error and screen-size threshold unchanged.
++	var arrays: Array=[]
++	arrays.resize(Mesh.ARRAY_MAX)
++	arrays[Mesh.ARRAY_VERTEX]=vertices
++	arrays[Mesh.ARRAY_INDEX]=indices
++	var temporary:=ArrayMesh.new()
++	temporary.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	var tool:=SurfaceTool.new()
++	tool.create_from(temporary,0)
++	tool.optimize_indices_for_cache()
++	var reordered: Array=tool.commit_to_arrays()
++	assert(reordered[Mesh.ARRAY_VERTEX]==vertices)
++	return reordered[Mesh.ARRAY_INDEX]
++
++func full_detail(source: Mesh) -> Mesh:
++	if not source is ArrayMesh: return source
++	var surfaces: Array = source.get("_surfaces").duplicate(true)
++	for surface: Dictionary in surfaces: surface.erase("lods")
++	var result := ArrayMesh.new()
++	result.set("_surfaces",surfaces)
++	result.custom_aabb = source.custom_aabb
++	result.shadow_mesh = source.shadow_mesh
++	return result
++
++func prepare(source: Mesh) -> Mesh:
++	if meshes.has(source): return meshes[source]
++	if not source is ArrayMesh or source.get_blend_shape_count() != 0: return source
++	var importer := ImporterMesh.new()
++	for surface: int in range(source.get_surface_count()):
++		importer.add_surface(source.surface_get_primitive_type(surface),source.surface_get_arrays(surface),[],{},source.surface_get_material(surface))
++	importer.generate_lods(0.0,0.0,[])
++	var result := ArrayMesh.new()
++	var original_surfaces: Array = source.get("_surfaces").duplicate(true)
++	var count: int = 0
++	for surface: int in range(source.get_surface_count()):
++		var arrays: Array = source.surface_get_arrays(surface)
++		var generated: Array = importer.get_surface_arrays(surface)
++		var same: bool = true
++		for attribute: int in range(Mesh.ARRAY_INDEX):
++			if arrays[attribute] != generated[attribute]: same = false
++		var lods: Dictionary = {}
++		if same:
++			for index: int in range(importer.get_surface_lod_count(surface)):
++				lods[maxf(0.000001,importer.get_surface_lod_size(surface,index))] = cache_order(arrays[Mesh.ARRAY_VERTEX],importer.get_surface_lod_indices(surface,index))
++		else: totals.changed_vertex_streams += 1
++		var indices: int = arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size()
++		totals.original_triangles += indices/3
++		var smallest: int = indices
++		for level: PackedInt32Array in lods.values(): smallest = mini(smallest,level.size())
++		totals.smallest_triangles += smallest/3
++		totals.lods += lods.size()
++		count += lods.size()
++		result.add_surface_from_arrays(source.surface_get_primitive_type(surface),arrays,[],lods,source.surface_get_format(surface) & Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES)
++		result.surface_set_material(surface,source.surface_get_material(surface))
++		result.surface_set_name(surface,source.surface_get_name(surface))
++	# Re-encoding compressed normals/tangents can round the original GPU bytes.
++	# Use the pinned engine's resource storage format to transfer only new LOD
++	# index buffers; positions, normals, UVs, colors and original indices stay exact.
++	var generated_surfaces: Array = result.get("_surfaces")
++	for surface: int in range(original_surfaces.size()):
++		if generated_surfaces[surface].has("lods"):
++			original_surfaces[surface].lods = generated_surfaces[surface].lods
++	var exact := ArrayMesh.new()
++	exact.set("_surfaces",original_surfaces)
++	exact.custom_aabb = source.custom_aabb
++	exact.shadow_mesh = source.shadow_mesh
++	for surface: int in range(source.get_surface_count()):
++		assert(exact.surface_get_arrays(surface) == source.surface_get_arrays(surface))
++	result.custom_aabb = source.custom_aabb
++	result.shadow_mesh = source.shadow_mesh
++	meshes[source] = exact if count > 0 else source
++	totals.meshes += 1
++	if count > 0: totals.with_lods += 1
++	return meshes[source]
++
++func eligible(part: MeshInstance3D, vehicle: String) -> bool:
++	if part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: return false
++	for surface: int in range(part.mesh.get_surface_count()):
++		var material: Material = part.get_active_material(surface)
++		if material is ShaderMaterial and material.shader != null and material.shader.resource_path in ["res://vehicle/electric_glass.gdshader","res://vehicle/window_reflection.gdshader"]: return false
++	if vehicle == "hovercraft":
++		# The separate rubber bag clears the canopy/deck layers. Its original
++		# vertices/normals remain available at close range, like the fan rotors.
++		if str(part.name)=="SportPressureSkirt": return true
++		# Only the independently articulated rotors are separated from the layered
++		# hull/canopy/ducts. Stable rotor names survive base and module packing.
++		var ancestor: Node = part.get_parent()
++		while ancestor != null:
++			if str(ancestor.name) in ["FanRotorLeft","FanRotorRight"]: return true
++			ancestor = ancestor.get_parent()
++		return false
++	return true
++
++func prepare_vehicle(holder: Node, vehicle: String, bias: float = 1.0) -> void:
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		if part.mesh == null: continue
++		part.mesh = prepare(part.mesh) if eligible(part,vehicle) else full_detail(part.mesh)
++		# The race viewport retains its world-wide one-pixel policy. A car-only
++		# bias of two uses the conservative half-pixel car threshold instead.
++		# Garage viewports already use half a pixel and retain their unit bias.
++		part.lod_bias = bias
++
++func bake(path: String, vehicle: String = "", bias: float = 1.0) -> Error:
++	if vehicle.is_empty() and path.get_file().get_basename() in VehicleCatalog.IDS:
++		vehicle = path.get_file().get_basename()
++	var scene: PackedScene = load(path)
++	if scene == null: return ERR_CANT_OPEN
++	var holder: Node = scene.instantiate()
++	prepare_vehicle(holder,vehicle,bias)
++	var packed := PackedScene.new()
++	var error: Error = packed.pack(holder)
++	if error == OK: error = ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)
++	holder.free()
++	return error
+--- /dev/null
++++ b/docs/TRACK_ASSET_SIMPLIFICATION_REVIEW_2026_11_07.md
+@@ -0,0 +1,84 @@
++# Track asset simplification investigation — 7 November 2026
++
++Selective simplification is worthwhile. The strongest prototypes are the ice-car sculpture, snow castle and shipping container: their first reduced levels remove approximately 50%, 50% and 61% of model triangles while retaining the main appearance in the inspected racing views. These are candidates for a production pass, subject to owner acceptance and in-game motion checks. This task changes no production scenery model or builder.
++
++## Scope and requirements
++
++TAS01 inventories the actual current catalogue and its production construction paths. TAS02 tests offline index-only detail levels without changing original vertex attributes or materials. TAS03 reviews native appearance at racing scale and enlarged scale, retains negative results and distinguishes geometry counts from performance measurements.
++
++The inventory covers all 58 `CreatorObjects.KINDS` identifiers in all five biomes: **290 combinations**. Dirt and water have no separate placed-object mesh in this path. Placements use default scale, rotation and section span. Visible active meshes and MultiMesh instances are counted; hidden breakable phases, inactive debris and contact-lighting overlays are excluded. This is a per-object catalogue study, not a population-weighted estimate for any particular track.
++
++Twelve representative assets receive native comparisons in Compatibility/OpenGL and desktop Mobile/Vulkan. Each has two opposite 56-degree racing views at the existing `35 / 1.15` orthographic extent and two enlarged inspection views, rendered at 1280×720 with 4× MSAA and directional shadows. The warehouse additionally uses neutral inspection lighting: isolated Night lighting was too dark to judge its structure. Its original dark captures are retained under `initial-night-lighting/`.
++
++## Measured candidates and rejected reductions
++
++These are referenced **model triangles**, before outline/other rendering passes. The reduced column is the first generated detail level forced for inspection, not a production setting. It can already be much too aggressive.
++
++| Asset | Current | First reduced level | Reduction | Assessment from these captures |
++|---|---:|---:|---:|---|
++| Ice-car sculpture | 7,908 | 3,954 | 50.00% | Strong candidate; main contours and ice/snow finish remain very close at racing scale. |
++| Snow castle | 7,950 | 3,974 | 50.01% | Strong racing candidate; tower edges and shading differ slightly. Retain original geometry for close inspection. |
++| Shipping container | 7,782 | 3,050 | 60.81% | Strong racing candidate; corrugation, silhouette, logo and broad rust markings remain readable. Fine hardware changes need close-view protection. |
++| Abandoned warehouse | 9,790 | 4,832 | 50.64% | Reject this automatic candidate: roof truss diagonals disappear under useful inspection lighting. Preserve those braces in any authored reduction. |
++| Pine tree | 1,550 | 672 | 56.65% | Reject this level for ordinary near scenery: needle sprays and branch layering are visibly lost. A gentler, foliage-aware level may work. |
++| Parked car | 2,976 | 1,260 | 57.66% | Silhouette remains; wheel centres and trim disappear. Requires protected wheels/trim or farther-only use. |
++| Igloo | 6,926 | 3,430 | 50.48% | Reject this candidate: block/roof transitions and shading degrade. |
++| Egyptian pyramid | 6,988 | 1,354 | 80.62% | Reject: large areas of masonry courses vanish. |
++| Egyptian column | 3,708 | 590 | 84.09% | Reject: capital and ornamental shape are removed. |
++| Grandstand | 4,720 | 838 | 82.25% | Reject: seats and open structure are lost. |
++| Wooden crate | 2,121 | 56 | 97.36% | Reject: planks/strapping become a plain box. |
++| Tyre wall, default six paired stacks | 7,200 | 7,200 | 0% | Automatic index LOD produces no reduction. A separate radial-sampling prototype is needed; retain open beads and movable-instance behaviour. |
++
++The historical hidden-face study already removed 2,507 triangles / 2.95% from its then-current catalogue, with exact native pictures. Repeating only that technique is unlikely to produce the larger reductions sought here. This review uses the newer catalogue, so its model counts must not be substituted for the 16 October totals.
++
++## Automatic selection versus a forced prototype
++
++With the native viewport's one-pixel LOD threshold, only the ice-car sculpture reduces visible main geometry in these racing views: renderer-reported visible primitives change **7,922 → 3,968** in both renderers. The additional 14 primitives belong to the isolated stage. The original close-view geometry returns automatically.
++
++Most other models retain their full visible geometry at that threshold. Some shadow rendering changes even when reported visible primitive counts remain unchanged. Simply running the same automatic process across every prop therefore does not deliver the forced-level savings shown in the table. Lowering a global threshold until those levels appear would expose the rejected shape losses.
++
++Adding reduced index buffers also retains the original vertices and original indices. It is not a storage/RAM reduction by itself. Across the three strongest prototypes, the generated LOD index payloads add 27,900 bytes for the ice sculpture, 44,076 for the castle and 32,466 for the container. The existing generic cache estimator counts base streams, not these additional buffers; any production integration must account for them explicitly within the existing budgets. Shader-compilation cost, draw calls, track loading and device FPS have not been shown to improve.
++
++## Recommended production approach
++
++Start with the three strong candidates and retain the original near detail. Prepare reduced resources offline or once within the existing bounded immutable preparation path; do not run simplification during a race. Validate the intended transition distances against the current overhead, lower Follow car and speed-zoom views, higher device resolutions, shadows and camera motion.
++
++Protect distinctive small structures before extending the pass: warehouse truss braces, grandstand seats, Egyptian courses/capitals, crate planks, foliage tips, tyre openings and car wheels. Author a gentler intermediate mesh where the generator jumps directly to a destructive level. Do not accept a percentage reduction merely because the silhouette's bounding box survives.
++
++Static props are currently joined into material-family meshes and spatial draws; Winter nature and movable tyres use instancing. An asset's reduced indices will not automatically survive those joins. Integrate and verify reduction before compatible batching, or carry per-object levels through the prepared family/chunk pipeline while preserving current draw grouping and object-order rules. Keep independent movable/damage-phase geometry, immutable cache keys, retained editor models and original thumbnails fenced. Do not introduce one draw per prop to obtain a lower triangle count.
++
++Roads, bridges, displaced terrain and snow/sand banks are not approved for reduction by this investigation. Their silhouettes, drivable edges, intersections, UVs and surface-dependent deformation require a separate study. No collision, document, checkpoint, physics or rules change is warranted by these cosmetic findings.
++
++## Evidence and reproducibility
++
++- [Inventory and structural checks](evidence/track-asset-simplification-2026-11-07/inventory/report.json).
++- [Compatibility measurements](evidence/track-asset-simplification-2026-11-07/gl_compatibility/report.json) and [Mobile measurements](evidence/track-asset-simplification-2026-11-07/mobile/report.json).
++- [Recommended racing comparisons](evidence/track-asset-simplification-2026-11-07/gl_compatibility/recommended-racing-comparison.png), [additional racing comparisons](evidence/track-asset-simplification-2026-11-07/gl_compatibility/comparison-0-race_front.png), [enlarged comparisons](evidence/track-asset-simplification-2026-11-07/gl_compatibility/comparison-0-close_front.png) and [rejected racing comparisons](evidence/track-asset-simplification-2026-11-07/gl_compatibility/comparison-1-race_front.png).
++- [Pixel observations](evidence/track-asset-simplification-2026-11-07/pixel-observations.json) count pixels changing by more than eight channel levels. These measurements support inspection; they are not automatic appearance-acceptance thresholds.
++- [Audited source snapshot](evidence/track-asset-simplification-2026-11-07/audited-source-snapshot.zip) and [source hashes](evidence/track-asset-simplification-2026-11-07/source-manifest-final-start.json) preserve the reviewed inputs. The shared car simplifier changed concurrently to reorder LOD indices for cache locality; a task-owned copy freezes its reviewed implementation for final runs. That concurrent change is not part of this task.
++
++Reproduce with pinned `4.7.2.stable.official.ed1daf0bf`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-simplification-2026-11-07/run_review.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-simplification-2026-11-07/review_images.ps1
++```
++
++The runner invokes `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_track_asset_simplification_2026_11_07.gd` for headless inventory and each graphical renderer. Every engine launch uses `scripts/run_no_crash_dialog.py`. Each run has private workspace APPDATA/LOCALAPPDATA and a loopback-unavailable backend URL; no App/authentication/backend flow is invoked.
++
++The [final receipt](evidence/track-asset-simplification-2026-11-07/receipt.json) records actual check counts, log paths and source stability. Every native case restores its original mesh after the automatic and forced alternatives, then requires an exact original-image match. Passing structural/restoration checks do not make an intentionally degraded prototype visually acceptable.
++
++| Final actual run | Cases | Checks | Failures |
++|---|---:|---:|---:|
++| Headless catalogue/immutable geometry | 290 | 852 | 0 |
++| Compatibility native comparisons | 48 | 85 | 0 |
++| Desktop Mobile native comparisons | 48 | 85 | 0 |
++| Total | 386 | 1,022 | 0 |
++
++The two renderers retain 288 original/automatic/forced captures and 96 exact original-restoration controls. The frozen final source manifest is unchanged across the three final runs. Desktop rendering uses the local RTX 3090; it does not establish Android performance or appearance acceptance.
++
++Retained initial findings: restricted engine startup failed to read the certificate store and reported Access denied; local engine execution then succeeded outside the sandbox. The first inventory harness called an ArrayMesh-only method on a BoxMesh and was corrected to inspect mesh arrays. An optional two-value PowerShell `-File` argument arrived as one string and produced an empty diagnostic run; it is not counted as qualification, its receipt is retained, and the harness now rejects empty reviews. Initial image composition selected an integer scaling overload and was corrected to use a floating-point scale. System Python and the checked backend virtual environment lacked Pillow; the retained image reviewer uses Windows System.Drawing instead. No assertions or acceptance limits were relaxed.
++
++Changed files are the investigation script, its frozen test helper, this report and the evidence/runner scripts. The standard development entry point also refreshes generated build identity. Production track sources, owner saves, running owner processes, main Git index and concurrent work are preserved. A task-only source checkpoint is included with the final receipt.
++
++No physical-device query or test, APK/export/install, live/backend request or deployment was performed. Production integration, full-track and in-motion verification, owner visual acceptance and device performance/memory qualification remain.
+--- /dev/null
++++ b/docs/evidence/track-asset-simplification-2026-11-07/run_review.ps1
+@@ -0,0 +1,19 @@
++$ErrorActionPreference = 'Stop'
++$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
++Push-Location -LiteralPath $repoRoot
++try {
++    foreach ($mode in @('inventory','gl_compatibility','mobile')) {
++        $env:APPDATA = Join-Path $repoRoot "build/track-asset-review-20261107/final-$mode-appdata"
++        $env:LOCALAPPDATA = Join-Path $repoRoot "build/track-asset-review-20261107/final-$mode-localappdata"
++        $env:BMT_BACKEND_URL = 'http://127.0.0.1:1'
++        $arguments = @('scripts/run_no_crash_dialog.py','--','powershell','-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/dev.ps1','-Action','TestScript','-ScriptPath','res://tests/review_track_asset_simplification_2026_11_07.gd','-CommandTimeoutSeconds','600')
++        if ($mode -ne 'inventory') {
++            $driver = if ($mode -eq 'mobile') { 'vulkan' } else { 'opengl3' }
++            $arguments += @('-Graphical','-RenderingMethod',$mode,'-RenderingDriver',$driver)
++        }
++        & python @arguments
++        if ($LASTEXITCODE -ne 0) { throw "Track asset review failed in $mode (exit $LASTEXITCODE)" }
++    }
++} finally {
++    Pop-Location
++}
+--- /dev/null
++++ b/docs/evidence/track-asset-simplification-2026-11-07/review_images.ps1
+@@ -0,0 +1,94 @@
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
++using System;
++using System.Drawing;
++using System.Drawing.Imaging;
++using System.Runtime.InteropServices;
++public static class TrackReviewPixels {
++    public static int[] Inspect(string first, string second) {
++        using (var a = new Bitmap(first)) using (var b = new Bitmap(second)) {
++            int w = a.Width, h = a.Height;
++            var region = new Rectangle(0, 0, w, h);
++            var pa = a.LockBits(region, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
++            var pb = b.LockBits(region, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
++            var aa = new byte[pa.Stride * h]; var bb = new byte[pb.Stride * h];
++            Marshal.Copy(pa.Scan0, aa, 0, aa.Length); Marshal.Copy(pb.Scan0, bb, 0, bb.Length);
++            int changed = 0, foreground = 0, lowX = w, lowY = h, highX = 0, highY = 0;
++            int bg = 20 * pa.Stride + 20 * 4;
++            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
++                int i = y * pa.Stride + x * 4;
++                bool diff = false, objectA = false, objectB = false;
++                for (int channel = 0; channel < 3; channel++) {
++                    diff |= Math.Abs(aa[i + channel] - bb[i + channel]) > 8;
++                    objectA |= Math.Abs(aa[i + channel] - aa[bg + channel]) > 8;
++                    objectB |= Math.Abs(bb[i + channel] - bb[bg + channel]) > 8;
++                }
++                if (diff) changed++;
++                if (objectA) foreground++;
++                if (objectA || objectB) { lowX = Math.Min(lowX, x); lowY = Math.Min(lowY, y); highX = Math.Max(highX, x); highY = Math.Max(highY, y); }
++            }
++            a.UnlockBits(pa); b.UnlockBits(pb);
++            return new int[] { changed, foreground, lowX, lowY, highX, highY };
++        }
++    }
++}
++'@
++$basePath = $PSScriptRoot
++$observations = New-Object System.Collections.Generic.List[object]
++foreach ($renderer in @('gl_compatibility', 'mobile')) {
++    $folder = Join-Path $basePath $renderer
++    if (-not (Test-Path -LiteralPath (Join-Path $folder 'report.json'))) { continue }
++    $report = Get-Content -LiteralPath (Join-Path $folder 'report.json') -Raw | ConvertFrom-Json
++    foreach ($row in $report.rows) {
++        $stem = "$($row.theme)-$($row.kind)-$($row.view)"
++        foreach ($version in @('lod', 'firstlod')) {
++            $pixels = [TrackReviewPixels]::Inspect((Join-Path $folder "$stem-original.png"), (Join-Path $folder "$stem-$version.png"))
++            $observations.Add([pscustomobject]@{renderer=$renderer; theme=$row.theme; kind=$row.kind; view=$row.view; version=$version; changed_pixels_over_8=$pixels[0]; foreground_and_shadow_pixels=$pixels[1]; changed_to_foreground_ratio=([double]$pixels[0]/[Math]::Max(1,$pixels[1]))})
++        }
++    }
++    $sets = @(
++        @('winter-ice_compact','winter-snow_castle','pine-container','night_city-abandoned_warehouse','pine-parked_car','pine-tree'),
++        @('desert-egypt_pyramid','winter-igloo','desert-egypt_column','pine-grandstand','pine-crate','pine-tyre_wall')
++    )
++    for ($set = 0; $set -lt $sets.Count; $set++) {
++        foreach ($view in @('race_front','close_front')) {
++            $canvas = New-Object System.Drawing.Bitmap(1000, 1980)
++            $graphics = [System.Drawing.Graphics]::FromImage($canvas)
++            $graphics.Clear([System.Drawing.Color]::FromArgb(27,31,35))
++            $font = New-Object System.Drawing.Font('Arial', 13)
++            for ($index = 0; $index -lt $sets[$set].Count; $index++) {
++                $stem = "$($sets[$set][$index])-$view"
++                $originalPath = Join-Path $folder "$stem-original.png"
++                $reducedPath = Join-Path $folder "$stem-firstlod.png"
++                $pixels = [TrackReviewPixels]::Inspect($originalPath,$reducedPath)
++                $left = [Math]::Max(0,$pixels[2]-16); $top = [Math]::Max(0,$pixels[3]-16)
++                $width = [Math]::Min(1280,$pixels[4]+17)-$left; $height = [Math]::Min(720,$pixels[5]+17)-$top
++                $row = $report.rows | Where-Object { "$($_.theme)-$($_.kind)-$($_.view)" -eq $stem }
++                $title = "$($row.kind) | primitives $($row.original_primitives) to $($row.first_lod_primitives)"
++                $graphics.DrawString($title,$font,[System.Drawing.Brushes]::White,15,($index*330+4))
++                for ($column = 0; $column -lt 2; $column++) {
++                    $path = if ($column -eq 0) { $originalPath } else { $reducedPath }
++                    $image = [System.Drawing.Image]::FromFile($path)
++                    $scale = [Math]::Min(1.0,[Math]::Min(480.0/$width,275.0/$height))
++                    $destWidth = [int]($width*$scale); $destHeight = [int]($height*$scale)
++                    $destination = New-Object System.Drawing.Rectangle(($column*500+(500-$destWidth)/2),($index*330+48+(275-$destHeight)/2),$destWidth,$destHeight)
++                    $source = New-Object System.Drawing.Rectangle($left,$top,$width,$height)
++                    $graphics.DrawImage($image,$destination,$source,[System.Drawing.GraphicsUnit]::Pixel)
++                    $label = if ($column -eq 0) { 'Original' } else { 'Forced first LOD prototype' }
++                    $graphics.DrawString($label,$font,[System.Drawing.Brushes]::White,($column*500+15),($index*330+27))
++                    $image.Dispose()
++                }
++            }
++            $canvas.Save((Join-Path $folder "comparison-$set-$view.png"),[System.Drawing.Imaging.ImageFormat]::Png)
++            if ($set -eq 0 -and $view -eq 'race_front') {
++                $crop = $canvas.Clone((New-Object System.Drawing.Rectangle(0,0,1000,990)),[System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
++                $crop.Save((Join-Path $folder 'recommended-racing-comparison.png'),[System.Drawing.Imaging.ImageFormat]::Png)
++                $crop.Dispose()
++            }
++            $graphics.Dispose(); $font.Dispose(); $canvas.Dispose()
++        }
++    }
++}
++$observations | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $basePath 'pixel-observations.json') -Encoding UTF8
++Write-Output "Pixel comparisons: $($observations.Count)"
+--- /dev/null
++++ b/docs/evidence/track-asset-simplification-2026-11-07/finalize_review.py
+@@ -0,0 +1,124 @@
++"""Consolidate this local investigation without changing production or Git state."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import shutil
++import zipfile
++
++ROOT = Path(__file__).resolve().parents[3]
++BASE = Path(__file__).resolve().parent
++
++
++def sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def main() -> None:
++    reports = {}
++    for mode, expected_cases, expected_checks in [
++        ("inventory", 290, 852),
++        ("gl_compatibility", 48, 85),
++        ("mobile", 48, 85),
++    ]:
++        report = json.loads((BASE / mode / "report.json").read_text())
++        assert len(report["rows"]) == expected_cases
++        assert report["checks"] == expected_checks and report["failures"] == 0
++        if mode != "inventory":
++            assert all(x["original_control_metrics"]["max"] == 0 for x in report["rows"])
++            for row in report["rows"]:
++                stem = f'{row["theme"]}-{row["kind"]}-{row["view"]}'
++                for version in ["original", "lod", "firstlod"]:
++                    assert (BASE / mode / f"{stem}-{version}.png").is_file()
++        reports[mode] = report
++
++    manifest = json.loads((BASE / "source-manifest-final-start.json").read_text())
++    current = {path: sha(ROOT / path) for path in manifest}
++    changed = [path for path in manifest if current[path] != manifest[path]]
++    assert not changed, f"Audited sources changed during final runs: {changed}"
++    (BASE / "source-manifest-final-end.json").write_text(json.dumps(current, indent=2) + "\n")
++
++    logs_folder = BASE / "logs"
++    logs_folder.mkdir(exist_ok=True)
++    logs = []
++    for path in (ROOT / "build/logs").glob("TestScript-*/test-script.log"):
++        content = path.read_text(encoding="utf-8-sig", errors="replace")
++        if "TRACK_ASSET_" not in content and "review_track_asset_simplification_2026_11_07" not in content:
++            continue
++        target = logs_folder / f"{path.parent.name}.log"
++        shutil.copy2(path, target)
++        logs.append(target.relative_to(ROOT).as_posix())
++
++    own_files = [
++        ROOT / "game/tests/review_track_asset_simplification_2026_11_07.gd",
++        ROOT / "game/tests/support/track_asset_lod_review.gd",
++        ROOT / "docs/TRACK_ASSET_SIMPLIFICATION_REVIEW_2026_11_07.md",
++        BASE / "run_review.ps1",
++        BASE / "review_images.ps1",
++        Path(__file__).resolve(),
++    ]
++    for path in list(own_files[:2]):
++        uid = path.with_suffix(path.suffix + ".uid")
++        if uid.exists():
++            own_files.append(uid)
++    patch = []
++    for path in own_files:
++        content = path.read_text(encoding="utf-8")
++        assert not any(line.rstrip() != line for line in content.splitlines()), path
++        relative = path.relative_to(ROOT).as_posix()
++        patch.extend(difflib.unified_diff([], content.splitlines(keepends=True), fromfile="/dev/null", tofile="b/" + relative))
++    (BASE / "task-only.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++    with zipfile.ZipFile(BASE / "task-only-source-checkpoint.zip", "w", zipfile.ZIP_DEFLATED) as archive:
++        for path in own_files:
++            archive.write(path, path.relative_to(ROOT).as_posix())
++    with zipfile.ZipFile(BASE / "task-only-source-checkpoint.zip") as archive:
++        assert archive.testzip() is None
++
++    inventory = reports["inventory"]["rows"]
++    decisions = []
++    for theme, kind, decision in [
++        ("winter", "ice_compact", "Strong candidate, preserve full near geometry"),
++        ("winter", "snow_castle", "Strong racing candidate, protect near tower edges"),
++        ("pine", "container", "Strong racing candidate, protect near hardware"),
++        ("night_city", "abandoned_warehouse", "Reject generated first level: truss diagonals lost"),
++        ("pine", "tree", "Reject generated first level: needle sprays lost"),
++        ("desert", "egypt_pyramid", "Reject generated first level: masonry courses lost"),
++        ("pine", "tyre_wall", "No automatic reduction; needs separate authored prototype"),
++    ]:
++        row = next(x for x in inventory if x["theme"] == theme and x["kind"] == kind)
++        decisions.append({"theme": theme, "kind": kind, "triangles": row["triangles"], "first_lod_triangles": row["first_lod_triangles"], "decision": decision})
++    receipt = {
++        "requirements": ["TAS01", "TAS02", "TAS03"],
++        "scope": "Investigation and offline prototype only; production models/builders unchanged by this task",
++        "engine": reports["inventory"]["engine"],
++        "checks": sum(x["checks"] for x in reports.values()),
++        "failures": sum(x["failures"] for x in reports.values()),
++        "catalogue_combinations": len(inventory),
++        "native_cases": 96,
++        "native_captures": 288,
++        "exact_original_restoration_controls": 96,
++        "source_hashes_unchanged_across_final_runs": not changed,
++        "frozen_simplifier": "game/tests/support/track_asset_lod_review.gd",
++        "decisions": decisions,
++        "logs": sorted(logs),
++        "commands": [
++            "powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-simplification-2026-11-07/run_review.ps1",
++            "powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-simplification-2026-11-07/review_images.ps1",
++            "python docs/evidence/track-asset-simplification-2026-11-07/finalize_review.py",
++            "git apply --check --reverse docs/evidence/track-asset-simplification-2026-11-07/task-only.patch",
++        ],
++        "task_files": {p.relative_to(ROOT).as_posix(): sha(p) for p in own_files},
++        "limits": [
++            "Static individual prop views, not full-track population or camera-motion qualification",
++            "Warehouse judged under neutral inspection lighting; original dark captures retained",
++            "Geometry reductions do not establish FPS, loading, memory or package-size improvements",
++            "No device query/test, APK/export/install, owner-save/process change, live/backend operation or deployment",
++            "No main-index mutation; concurrent sources and generated build-identity refresh are excluded from task patch",
++        ],
++    }
++    (BASE / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    print(f'{receipt["checks"]} checks / {receipt["failures"]} failures; {len(manifest)} source hashes stable; {len(own_files)} task files checkpointed')
++
++
++if __name__ == "__main__":
++    main()

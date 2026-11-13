@@ -1,0 +1,1437 @@
+--- a/game/ui/cosmetic_purchase_preview.gd
++++ /dev/null
+@@ -1,224 +0,0 @@
+-extends Control
+-## One temporary native preview; visible Garage meshes are shared, never rebuilt.
+-var source_car: WeakRef
+-var vehicle_id: String = "compact"
+-var livery: Dictionary = {}
+-var customisation: Dictionary = {}
+-var category: String = ""
+-var caption: String = ""
+-var viewport: SubViewport
+-var camera: Camera3D
+-var model: Node3D
+-var presentation_ready: bool = false
+-var reused_meshes: bool = false
+-var points := PackedVector3Array()
+-var yaw: float = -0.72
+-var pointer: int = -2
+-var previous := Vector2.ZERO
+-var render_requests: int = 0
+-var _released: bool = false
+-var callout: Control
+-
+-class PartCallout extends Control:
+-	var preview: Control
+-	func _draw() -> void: preview.draw_callout(self)
+-
+-func _ready() -> void:
+-	if category == "aero": yaw = -2.42
+-	elif category == "rims": yaw = -1.0
+-	clip_contents = true
+-	mouse_filter = Control.MOUSE_FILTER_STOP
+-	viewport = SubViewport.new()
+-	viewport.name = "PurchasePreviewViewport"
+-	viewport.transparent_bg = true
+-	viewport.own_world_3d = true
+-	viewport.msaa_3d = Viewport.MSAA_2X
+-	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-	add_child(viewport)
+-	var world := Node3D.new()
+-	viewport.add_child(world)
+-	var source: CarVisual = source_car.get_ref() as CarVisual if source_car != null else null
+-	if is_instance_valid(source) and source.model_ready:
+-		model = Node3D.new()
+-		model.name = "PurchaseCarSnapshot"
+-		world.add_child(model)
+-		model.scale = source.scale
+-		var inverse: Transform3D = source.global_transform.affine_inverse()
+-		for original: MeshInstance3D in source.find_children("*","MeshInstance3D",true,false):
+-			if original.mesh == null or not original.is_visible_in_tree(): continue
+-			var copy := MeshInstance3D.new()
+-			copy.name = original.name
+-			copy.mesh = original.mesh
+-			copy.material_override = original.material_override
+-			copy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-			for surface: int in original.mesh.get_surface_count():
+-				copy.set_surface_override_material(surface,original.get_surface_override_material(surface))
+-			model.add_child(copy)
+-			copy.transform = inverse*original.global_transform
+-		reused_meshes = true
+-	else:
+-		var car := CarVisual.new()
+-		car.vehicle_id = vehicle_id
+-		car.livery = livery.duplicate(true)
+-		car.customisation = customisation.duplicate(true)
+-		car.cooperative_build = true
+-		car.cache_rest_pose = false
+-		model = car
+-		world.add_child(car)
+-		while not car.model_ready:
+-			await get_tree().process_frame
+-			if _released or not is_inside_tree() or is_queued_for_deletion(): return
+-	var environment := WorldEnvironment.new()
+-	environment.environment = Environment.new()
+-	environment.environment.background_mode = Environment.BG_COLOR
+-	environment.environment.background_color = Color.TRANSPARENT
+-	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+-	environment.environment.ambient_light_color = Color("c0cbe1")
+-	environment.environment.ambient_light_energy = 0.7
+-	if ShowroomStudio.cached_sky != null:
+-		environment.environment.sky = ShowroomStudio.cached_sky
+-		environment.environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+-	world.add_child(environment)
+-	for data: Array in [[Vector3(-38,-40,0),Color("ffe0bc"),1.0],[Vector3(-22,135,0),Color("b4d2f0"),0.55]]:
+-		var light := DirectionalLight3D.new()
+-		light.rotation_degrees = data[0]
+-		light.light_color = data[1]
+-		light.light_energy = data[2]
+-		world.add_child(light)
+-	ShowroomStudio._contact(world,Vector3(0,0.003,0),Vector2(2.4,4.7)*HandlingConfig.BODY_SCALE,0.62)
+-	camera = Camera3D.new()
+-	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+-	camera.fov = 38.0
+-	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+-	camera.current = true
+-	world.add_child(camera)
+-	var render := TextureRect.new()
+-	render.name = "PurchaseCarRender"
+-	render.texture = viewport.get_texture()
+-	render.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	render.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	var composite := ShaderMaterial.new()
+-	composite.shader = preload("res://ui/rivalry_car_composite.gdshader")
+-	composite.set_shader_parameter("linear_resolve",RenderingServer.get_current_rendering_method() != "gl_compatibility")
+-	render.material = composite
+-	add_child(render)
+-	MenuStyle.fill(render)
+-	callout = PartCallout.new()
+-	callout.preview = self
+-	callout.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	add_child(callout)
+-	MenuStyle.fill(callout)
+-	_collect_points()
+-	presentation_ready = true
+-	resized.connect(refresh)
+-	visibility_changed.connect(_visibility_changed)
+-	gui_input.connect(_drag)
+-	refresh()
+-	# Complete the initial native material draws without leaving an idle viewport running.
+-	if DisplayServer.get_name() != "headless":
+-		for frame: int in range(3):
+-			await RenderingServer.frame_post_draw
+-			if _released or not is_inside_tree() or is_queued_for_deletion(): return
+-			refresh()
+-
+-func _collect_points() -> void:
+-	for mesh: MeshInstance3D in model.find_children("*","MeshInstance3D",true,false):
+-		if mesh.mesh == null or not mesh.is_visible_in_tree(): continue
+-		var box: AABB = mesh.get_aabb()
+-		for x: float in [box.position.x,box.end.x]:
+-			for y: float in [box.position.y,box.end.y]:
+-				for z: float in [box.position.z,box.end.z]: points.append(mesh.to_global(Vector3(x,y,z)))
+-
+-func refresh() -> void:
+-	if _released or not presentation_ready or not is_inside_tree(): return
+-	if not is_visible_in_tree():
+-		viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-		return
+-	var screen: Transform2D = get_viewport().get_stretch_transform()*get_screen_transform()
+-	var pixels: Vector2 = size*Vector2(screen.x.length(),screen.y.length())
+-	pixels *= minf(1.0,1200.0/maxf(pixels.x,1.0))
+-	viewport.size = Vector2i(maxi(1,roundi(pixels.x)),maxi(1,roundi(pixels.y)))
+-	var center := Vector3.ZERO
+-	if not points.is_empty():
+-		var box := AABB(points[0],Vector3.ZERO)
+-		for point: Vector3 in points: box = box.expand(point)
+-		center = box.get_center()
+-	# A low, moderate-lens view fits the parked car to the road's perspective.
+-	var elevation: float = deg_to_rad(12.0)
+-	var direction := Vector3(sin(yaw)*cos(elevation),sin(elevation),-cos(yaw)*cos(elevation))
+-	camera.position = center+direction
+-	camera.look_at(center)
+-	camera.h_offset = 0
+-	camera.v_offset = 0
+-	var aspect: float = float(viewport.size.x)/maxi(1,viewport.size.y)
+-	var tangent: float = tan(deg_to_rad(camera.fov*0.5))
+-	var inverse: Basis = camera.global_basis.inverse()
+-	var distance: float = 1.0
+-	for world_point: Vector3 in points:
+-		var point: Vector3 = inverse*(world_point-center)
+-		var clearance: float = maxf(absf(point.y)/tangent,absf(point.x)/(tangent*aspect))*1.12
+-		distance = maxf(distance,point.z+clearance+camera.near)
+-	camera.position = center+direction*distance
+-	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+-	render_requests += 1
+-	if is_instance_valid(callout): callout.queue_redraw()
+-
+-func _drag(event: InputEvent) -> void:
+-	if not presentation_ready: return
+-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+-		pointer = -1 if event.pressed else -2
+-		previous = event.position
+-		accept_event()
+-	elif event is InputEventScreenTouch:
+-		if event.pressed and pointer == -2:
+-			pointer = event.index
+-			previous = event.position
+-		elif event.index == pointer: pointer = -2
+-		accept_event()
+-	elif (event is InputEventMouseMotion and pointer == -1) or (event is InputEventScreenDrag and event.index == pointer):
+-		yaw = wrapf(yaw-(event.position.x-previous.x)*0.008,-PI,PI)
+-		previous = event.position
+-		refresh()
+-		accept_event()
+-
+-func draw_callout(canvas: Control) -> void:
+-	if not presentation_ready or category.is_empty(): return
+-	if category == "hood" and cos(yaw)<0.1: return
+-	if category == "aero" and cos(yaw)>-0.1: return
+-	var anchor: Vector3 = {"hood":Vector3(0.45,1.0,-1.35),"aero":Vector3(0,1.4,1.84),"rims":Vector3(-0.83,0.4,-1.28),"body":Vector3(-0.9,0.35,-0.3)}.get(category,Vector3.ZERO)*HandlingConfig.BODY_SCALE
+-	if category == "aero":
+-		var profile: Dictionary = CompactAero.PROFILES.get(str(customisation.get("aero","stock")),{})
+-		var center: Vector3 = profile.get("center",CompactCoachwork.roof_point(0,0.94))
+-		anchor = center*HandlingConfig.BODY_SCALE
+-	if category in ["rims","body"]: anchor.x = absf(anchor.x)*signf(sin(yaw))
+-	if camera.is_position_behind(anchor): return
+-	var at: Vector2 = camera.unproject_position(anchor)*size/Vector2(viewport.size)
+-	if not Rect2(Vector2(8,8),size-Vector2(16,16)).has_point(at): return
+-	var font: Font = MenuStyle.DISPLAY
+-	var text: String = GameText.message(caption).to_upper()
+-	var font_size: int = 17
+-	var width: float = minf(size.x-36,font.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x+24)
+-	var label_at := Vector2(clampf(at.x+46,12,size.x-width-12),maxf(12,at.y-96))
+-	var box := Rect2(label_at,Vector2(width,32))
+-	canvas.draw_style_box(MenuStyle.box(Color("07151feb"),4),box)
+-	canvas.draw_rect(box,MenuStyle.ACCENT,false,1.5)
+-	canvas.draw_line(at,Vector2(box.position.x+12,box.end.y),MenuStyle.ACCENT,2,true)
+-	canvas.draw_circle(at,4,MenuStyle.ACCENT,true,-1,true)
+-	canvas.draw_string(font,box.position+Vector2(12,23),text,HORIZONTAL_ALIGNMENT_LEFT,width-24,font_size,MenuStyle.ACCENT)
+-
+-func _visibility_changed() -> void:
+-	pointer = -2
+-	refresh()
+-
+-func release() -> void:
+-	_released = true
+-	pointer = -2
+-	if is_instance_valid(viewport):
+-		viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-		viewport.queue_free()
+-	presentation_ready = false
+-
+-func _exit_tree() -> void: release()
+-
+-func _notification(what: int) -> void:
+-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT: pointer = -2
+--- a/game/ui/garage_cosmetic_shelf.gd
++++ /dev/null
+@@ -1,238 +0,0 @@
+-extends VBoxContainer
+-## One native photo and a bounded, snapping row of cosmetic choices.
+-const Swipe = preload("res://ui/track_carousel.gd")
+-var photo: TextureRect
+-var title: Label
+-var state: Label
+-var price: Label
+-var equip: Button
+-var cancel: Button
+-var scroll: ScrollContainer
+-var cards: GridContainer
+-var counter: Label
+-var _status_row: HBoxContainer
+-var _information: HBoxContainer
+-var _choice_row: HBoxContainer
+-var _left: Button
+-var _right: Button
+-var detail_viewport: SubViewport
+-var _detail_camera: Camera3D
+-var _showroom: CarShowroom
+-var _category: String
+-var _model_state: Array = []
+-var _equipped: bool = true
+-var catalogue_mode: bool = true
+-var _laying_out: bool = false
+-
+-func _init(catalogue: bool = true) -> void:
+-	catalogue_mode = catalogue
+-	size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	add_theme_constant_override("separation",8)
+-	photo = TextureRect.new()
+-	photo.name = "CosmeticDetailPhoto"
+-	photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-	photo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+-	photo.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	photo.custom_minimum_size.y = 64
+-	photo.clip_contents = true
+-	photo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	add_child(photo)
+-	photo.visible = not catalogue_mode
+-	_information = HBoxContainer.new()
+-	_information.add_theme_constant_override("separation",8)
+-	add_child(_information)
+-	title = MenuStyle.label("",22)
+-	title.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	title.name = "CosmeticPreviewTitle"
+-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	_information.add_child(title)
+-	state = MenuStyle.label("Equipped",14)
+-	state.name = "CosmeticPreviewState"
+-	state.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+-	state.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	state.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	var badge: StyleBoxFlat = MenuStyle.box(Color("302912"),4)
+-	badge.set_corner_radius_all(3)
+-	state.add_theme_stylebox_override("normal",badge)
+-	_information.add_child(state)
+-	var space := Control.new()
+-	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	_information.add_child(space)
+-	price = MenuStyle.label("",17)
+-	price.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	price.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+-	price.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	_information.add_child(price)
+-	_status_row = HBoxContainer.new()
+-	_status_row.hide()
+-	add_child(_status_row)
+-	counter = MenuStyle.label("",14,true)
+-	_status_row.add_child(counter)
+-	var divider := HSeparator.new()
+-	divider.visible = not catalogue_mode
+-	add_child(divider)
+-	_choice_row = HBoxContainer.new()
+-	_choice_row.add_theme_constant_override("separation",4)
+-	add_child(_choice_row)
+-	if catalogue_mode:
+-		_choice_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		move_child(_choice_row,0)
+-	_left = _arrow("‹","Previous options",-1)
+-	_choice_row.add_child(_left)
+-	scroll = preload("res://ui/vertical_swipe_scroll.gd").new() if catalogue_mode else Swipe.new()
+-	scroll.name = "CosmeticCarousel"
+-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if catalogue_mode else ScrollContainer.SCROLL_MODE_SHOW_NEVER
+-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO if catalogue_mode else ScrollContainer.SCROLL_MODE_DISABLED
+-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	scroll.custom_minimum_size.y = 0 if catalogue_mode else 104
+-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL if catalogue_mode else Control.SIZE_FILL
+-	scroll.follow_focus = true
+-	_choice_row.add_child(scroll)
+-	var holder := MarginContainer.new()
+-	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	scroll.add_child(holder)
+-	cards = GridContainer.new()
+-	cards.columns = 2 if catalogue_mode else 100
+-	cards.add_theme_constant_override("v_separation",10)
+-	cards.add_theme_constant_override("h_separation",8)
+-	holder.add_child(cards)
+-	_right = _arrow("›","Next options",1)
+-	_choice_row.add_child(_right)
+-	_left.visible = not catalogue_mode
+-	_right.visible = not catalogue_mode
+-	equip = MenuStyle.button("Equip",func() -> void: pass,true)
+-	equip.name = "CosmeticEquip"
+-	equip.custom_minimum_size.y = 52
+-	equip.add_theme_font_size_override("font_size",21)
+-	equip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	add_child(equip)
+-	cancel = MenuStyle.button("Cancel preview",func() -> void: pass)
+-	cancel.name = "CosmeticCancelPreview"
+-	cancel.tooltip_text = "Cancel preview"
+-	cancel.accessibility_name = "Cancel preview"
+-	cancel.custom_minimum_size = Vector2(52,48)
+-	cancel.add_theme_font_size_override("font_size",17)
+-	for ink: String in ["normal","hover","pressed","disabled"]:
+-		cancel.add_theme_stylebox_override(ink,MenuStyle.box(Color.TRANSPARENT,0))
+-	cancel.add_theme_color_override("font_color",Color("83b5ca"))
+-	add_child(cancel)
+-	resized.connect(_layout_cards)
+-	scroll.resized.connect(_layout_cards)
+-	visibility_changed.connect(_visibility_changed)
+-
+-func _arrow(glyph: String, hint: String, direction: int) -> Button:
+-	var button: Button = MenuStyle.button(glyph,func() -> void: scroll.settle_cards(direction))
+-	button.name = "CarouselPrevious" if direction < 0 else "CarouselNext"
+-	button.tooltip_text = hint
+-	button.accessibility_name = hint
+-	button.custom_minimum_size = Vector2(52,52)
+-	button.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	button.add_theme_font_size_override("font_size",32)
+-	for ink: String in ["normal","disabled"]:
+-		button.add_theme_stylebox_override(ink,MenuStyle.box(Color.TRANSPARENT,0))
+-	button.add_theme_stylebox_override("hover",MenuStyle.box(Color("1a2b35"),0))
+-	return button
+-
+-func _layout_cards() -> void:
+-	if not is_inside_tree() or _laying_out: return
+-	_laying_out = true
+-	if catalogue_mode:
+-		photo.hide()
+-		cards.columns = 2
+-		var compact: bool = get_viewport_rect().size.y < 650
+-		add_theme_constant_override("separation",2 if compact else 8)
+-		equip.custom_minimum_size.y = 48 if compact else 52
+-		for card: Control in cards.get_children():
+-			var height: float = (156.0 if compact else 220.0) if card is CompactKitThumbnail else (132.0 if compact else 172.0)
+-			card.custom_minimum_size = Vector2(128,height)
+-			if card is CompactKitThumbnail: card.image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-			var caption: Label = card.get_node_or_null("KitOptionTitle")
+-			if caption != null: caption.add_theme_font_size_override("font_size",18)
+-		_laying_out = false
+-		return
+-	var compact: bool = get_viewport_rect().size.y < 650
+-	var short: bool = get_viewport_rect().size.y < 800
+-	# Keep the detail preview on short screens too; the removed footer makes room.
+-	photo.visible = true
+-	photo.custom_minimum_size.y = 64 if compact else 112 if short else 144
+-	title.custom_minimum_size.x = minf(title.get_theme_font("font").get_string_size(title.text,HORIZONTAL_ALIGNMENT_LEFT,-1,22).x+2,size.x*0.52)
+-	add_theme_constant_override("separation",2 if compact else 8 if short else 12)
+-	equip.custom_minimum_size.y = 48 if compact else 52
+-	cancel.custom_minimum_size.y = 48
+-	cancel.visible = not _equipped
+-	var visible_cards: int = 4 if size.x >= 460 else 3 if size.x >= 340 else 2
+-	var width: float = maxf(76.0,floorf((scroll.size.x-6.0*(visible_cards-1))/visible_cards))
+-	var card_height: float = 84 if compact else 112 if short else 122
+-	cards.add_theme_constant_override("h_separation",6)
+-	scroll.custom_minimum_size.y = card_height
+-	scroll.snap_stride = roundi(width)+6
+-	for card: Control in cards.get_children():
+-		card.custom_minimum_size = Vector2(width,card_height)
+-		var option_title: Label = card.get_node_or_null("KitOptionTitle")
+-		if option_title != null: option_title.add_theme_font_size_override("font_size",14 if width<84 else 16)
+-	if is_instance_valid(detail_viewport):
+-		detail_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if photo.visible and is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+-	_laying_out = false
+-
+-func reveal(card: Control) -> void:
+-	if not is_instance_valid(card) or not is_visible_in_tree() or card.get_parent()!=cards: return
+-	if not catalogue_mode: scroll._stop_snap()
+-	scroll.ensure_control_visible(card)
+-
+-func _visibility_changed() -> void:
+-	if is_visible_in_tree():
+-		_layout_cards.call_deferred()
+-		return
+-	if not catalogue_mode:
+-		scroll._stop_snap()
+-		scroll.pointer = -2
+-		scroll.target = null
+-	if is_instance_valid(detail_viewport): detail_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-
+-func show_choice(texture: Texture2D, label: String, status: String, cost: String, index: int, total: int) -> void:
+-	photo.texture = texture
+-	GameText.bind_upper(title,label)
+-	_equipped = status == "Equipped"
+-	state.text = "PREVIEW"
+-	state.visible = not _equipped
+-	GameText.bind_upper(price,cost)
+-	counter.text = "%d / %d" % [index+1,total]
+-	GameText.bind(equip,"Equipped" if status == "Equipped" else "Equip" if cost.is_empty() or cost == "Owned" else "Unlock & equip · {cost}",{"cost":cost})
+-	equip.disabled = _equipped
+-	equip.visible = not _equipped
+-	cancel.disabled = _equipped
+-	cancel.visible = not _equipped
+-	_layout_cards.call_deferred()
+-
+-func present_part(showroom: CarShowroom, category: String) -> void:
+-	if catalogue_mode: return
+-	_showroom = showroom
+-	_category = category
+-	if DisplayServer.get_name() == "headless" or not is_inside_tree(): return
+-	if detail_viewport == null:
+-		# Share the actual showroom world and car; one extra camera, no model copy.
+-		detail_viewport = SubViewport.new()
+-		detail_viewport.name = "SelectedPartDetail"
+-		detail_viewport.size = Vector2i(768,384)
+-		detail_viewport.msaa_3d = Viewport.MSAA_2X
+-		detail_viewport.gui_disable_input = true
+-		detail_viewport.world_3d = showroom.showroom_viewport.find_world_3d()
+-		add_child(detail_viewport)
+-		_detail_camera = Camera3D.new()
+-		_detail_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+-		detail_viewport.add_child(_detail_camera)
+-		_detail_camera.current = true
+-	photo.texture = detail_viewport.get_texture()
+-	_update_detail()
+-
+-func _update_detail() -> void:
+-	var frame: Transform3D = _showroom.car.global_transform
+-	preload("res://ui/garage_part_photos.gd").pose(_detail_camera,_category,frame,_showroom.car.vehicle_id)
+-	_model_state = [frame,_showroom.customisation.duplicate(true),_showroom.livery.duplicate(true)]
+-	detail_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if photo.visible and is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+-
+-func _process(_delta: float) -> void:
+-	if detail_viewport == null or not is_visible_in_tree() or not photo.visible or not is_instance_valid(_showroom): return
+-	if _model_state != [_showroom.car.global_transform,_showroom.customisation,_showroom.livery]: _update_detail()
+--- a/game/ui/garage_lp_box.gd
++++ /dev/null
+@@ -1,185 +0,0 @@
+-extends Control
+-## One bounded sleeve stack with direct mouse/touch scrubbing and eased flips.
+-const Library = preload("res://soundtrack/record_library.gd")
+-signal browsed(index: int)
+-signal activated(id: String)
+-signal flipping(position: float)
+-var browse_index: int = 0
+-var display_position: float = 0.0:
+-	set(value):
+-		display_position = clampf(value,0,Library.CATALOG.size()-1)
+-		queue_redraw()
+-		if is_node_ready(): flipping.emit(display_position)
+-var motion: Tween
+-var pointer: int = -2
+-var press_position := Vector2.ZERO
+-var press_display: float = 0.0
+-var moved: bool = false
+-
+-func _ready() -> void:
+-	name = "GarageLPBox"
+-	custom_minimum_size = Vector2(256,190)
+-	size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	focus_mode = Control.FOCUS_ALL
+-	accessibility_name = "LP collection"
+-	accessibility_description = "Swipe up or down, use the mouse wheel, or press the arrow keys to browse records."
+-	mouse_filter = Control.MOUSE_FILTER_STOP
+-	clip_contents = true
+-	resized.connect(queue_redraw)
+-	visibility_changed.connect(_visibility_changed)
+-	display_position = browse_index
+-
+-func flip_by(direction: int) -> void:
+-	flip_to(browse_index+direction)
+-
+-func flip_to(index: int) -> void:
+-	if motion != null: motion.kill()
+-	pointer = -2
+-	browse_index = clampi(index,0,Library.CATALOG.size()-1)
+-	browsed.emit(browse_index)
+-	motion = create_tween()
+-	motion.tween_property(self,"display_position",float(browse_index),0.32).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+-	motion.tween_callback(_settled)
+-
+-func _settled() -> void:
+-	motion = null
+-
+-func finish() -> void:
+-	if motion != null: motion.kill()
+-	motion = null
+-	pointer = -2
+-	display_position = browse_index
+-
+-func _visibility_changed() -> void:
+-	if not is_visible_in_tree(): finish()
+-
+-func _press(location: Vector2, id: int) -> void:
+-	if pointer != -2: return
+-	if motion != null: motion.kill()
+-	motion = null
+-	pointer = id
+-	press_position = location
+-	press_display = display_position
+-	moved = false
+-	grab_focus()
+-
+-func _move(location: Vector2, id: int) -> void:
+-	if pointer != id: return
+-	var travel: float = location.y-press_position.y
+-	if absf(travel)>6: moved = true
+-	display_position = press_display-travel/90.0
+-
+-func _release(id: int, canceled: bool = false) -> void:
+-	if pointer != id: return
+-	pointer = -2
+-	if canceled:
+-		flip_to(browse_index)
+-	elif moved:
+-		flip_to(roundi(display_position))
+-	else:
+-		activated.emit(Library.CATALOG[browse_index].id)
+-		flip_to(browse_index)
+-
+-func _gui_input(event: InputEvent) -> void:
+-	if event is InputEventMouseButton and event.device != InputEvent.DEVICE_ID_EMULATION:
+-		if event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP,MOUSE_BUTTON_WHEEL_DOWN]:
+-			flip_by(1 if event.button_index==MOUSE_BUTTON_WHEEL_DOWN else -1)
+-		elif event.button_index==MOUSE_BUTTON_LEFT:
+-			if event.pressed: _press(event.position,-1)
+-			else: _release(-1)
+-		else: return
+-	elif event is InputEventMouseMotion and pointer == -1:
+-		_move(event.position,-1)
+-	elif event is InputEventScreenTouch:
+-		if event.pressed: _press(event.position,event.index)
+-		else: _release(event.index,event.canceled)
+-	elif event is InputEventScreenDrag:
+-		_move(event.position,event.index)
+-	elif event is InputEventKey and event.pressed:
+-		if event.keycode in [KEY_DOWN,KEY_RIGHT]: flip_by(1)
+-		elif event.keycode in [KEY_UP,KEY_LEFT]: flip_by(-1)
+-		elif event.keycode in [KEY_ENTER,KEY_SPACE]: activated.emit(Library.CATALOG[browse_index].id)
+-		else: return
+-	else: return
+-	accept_event()
+-
+-func _notification(what: int) -> void:
+-	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+-
+-func _draw() -> void:
+-	var width: float = size.x
+-	var compact: bool = size.y < 240
+-	var front_height: float = 26 if compact else 55
+-	var side: float = minf(width-56,size.y-front_height-(18 if compact else 20))
+-	var bottom: float = size.y-front_height-(8 if compact else 4)
+-	var left: float = (width-side)*0.5-13
+-	var right: float = width-left
+-	# A deep open walnut crate. The returns sit behind the sleeves; the front
+-	# overlaps their feet so a turning record stays physically inside the box.
+-	var shadow := MenuStyle.box(Color(0,0,0,0.25),0)
+-	shadow.set_corner_radius_all(12)
+-	draw_style_box(shadow,Rect2(left-2,bottom+front_height-36,right-left+6,47))
+-	draw_rect(Rect2(left+8,bottom-93,right-left-16,110),Color("172026"))
+-	wood_quad(PackedVector2Array([Vector2(left,bottom-66),Vector2(left+15,bottom-79),Vector2(left+15,bottom+front_height-28),Vector2(left,bottom+front_height-3)]),Color("94633e"),Color("4c3327"))
+-	wood_quad(PackedVector2Array([Vector2(right-15,bottom-79),Vector2(right,bottom-66),Vector2(right,bottom+front_height-3),Vector2(right-15,bottom+front_height-28)]),Color("ad7648"),Color("543828"))
+-	for index: int in range(Library.CATALOG.size()-1,-1,-1):
+-		var distance: float = index-display_position
+-		if distance < -1.0 or distance > (3.0 if compact else 5.5): continue
+-		var depth: float = maxf(0,distance)
+-		var card_side: float = side*(1.0-depth*0.018)
+-		var height: float = card_side
+-		var alpha: float = 1.0
+-		var top: float = bottom-card_side-depth*(4 if compact else 6)
+-		if distance<0:
+-			var fall: float = -distance
+-			height *= maxf(0.04,cos(fall*PI*0.5))
+-			top = bottom-height+fall*8
+-			alpha = 1.0-smoothstep(0.65,1.0,fall)
+-		var rect := Rect2((width-card_side)*0.5,top,card_side,height)
+-		draw_rect(Rect2(rect.position+Vector2(3,4),rect.size),Color(0,0,0,0.48*alpha))
+-		draw_rect(rect.grow(2),Color(0.73,0.73,0.66,alpha))
+-		draw_texture_rect(Library.cover(Library.CATALOG[index].id),rect,false,Color(1,1,1,alpha))
+-		draw_rect(rect.grow(-4),Color(0.76,0.82,0.81,0.30*alpha),false,1.0)
+-		# Restrained sleeve varnish and a seated paper edge, rather than a flat card.
+-		draw_polygon(PackedVector2Array([rect.position,rect.position+Vector2(card_side,0),rect.end]),PackedColorArray([Color(1,1,1,0.07*alpha),Color(1,1,1,0.025*alpha),Color(1,1,1,0)]))
+-		if distance>=0 and height>25:
+-			var title: String = Library.CATALOG[index].title.to_upper()
+-			var font_size: int = clampi(roundi(card_side*0.065),10,18)
+-			draw_string(MenuStyle.DISPLAY,rect.position+Vector2(11,font_size+10),title,HORIZONTAL_ALIGNMENT_LEFT,card_side-20,font_size,Color(0,0,0,0.6*alpha))
+-			draw_string(MenuStyle.DISPLAY,rect.position+Vector2(10,font_size+9),title,HORIZONTAL_ALIGNMENT_LEFT,card_side-20,font_size,Color(0.96,0.94,0.85,alpha))
+-			if distance<0.5 and not Library.playable(Library.CATALOG[index].id):
+-				var small_stamp: bool = card_side<120
+-				var caption: String = "COMING LATER" if small_stamp else "MUSIC COMING LATER"
+-				caption = tr(caption)
+-				var stamp := Rect2(rect.position+Vector2(6,height-(23 if small_stamp else 29)),Vector2(card_side-12,15 if small_stamp else 21))
+-				draw_rect(stamp,Color(0.025,0.055,0.07,0.93*alpha))
+-				draw_string(MenuStyle.DISPLAY,stamp.position+Vector2(4,11 if small_stamp else 15),caption,HORIZONTAL_ALIGNMENT_LEFT,stamp.size.x-8,9 if small_stamp else 12,Color(0.78,0.81,0.78,alpha))
+-	var front := Rect2(left,bottom-3,right-left,front_height)
+-	wood_quad(PackedVector2Array([front.position,Vector2(right,bottom-3),front.end,Vector2(left,bottom+front_height-3)]),Color("94633f"),Color("65442f"))
+-	# Broad, quiet grain is authored deterministically, with no image or RNG work.
+-	for row: int in range(9):
+-		var y: float = bottom+2+row*(front_height-7)/9.0
+-		var points := PackedVector2Array()
+-		for column: int in range(13):
+-			points.append(Vector2(lerpf(left+4,right-4,column/12.0),y+sin(column*0.7+row*0.53)*0.8))
+-		draw_polyline(points,Color(0.16,0.08,0.035,0.12 if row%3 else 0.23),0.65,true)
+-	draw_line(Vector2(left,bottom-3),Vector2(right,bottom-3),Color("c29460"),2,true)
+-	draw_line(Vector2(left+1,bottom+front_height-4),Vector2(right-1,bottom+front_height-4),Color("3d2d25"),2,true)
+-	# Recessed handhold, with a warm lower bevel.
+-	var handle := Rect2(width*0.5-27,bottom+4,54,8 if compact else 12)
+-	draw_style_box(MenuStyle.box(Color("b48350"),0),Rect2(handle.position+Vector2(0,1),handle.size+Vector2(0,1)))
+-	draw_style_box(MenuStyle.box(Color("241e1a"),0),handle)
+-	for x: float in [left+7,right-7]:
+-		for y: float in [bottom+6,bottom+front_height-12]:
+-			draw_circle(Vector2(x,y),1.5,Color("382d25"),true,-1,true)
+-			draw_line(Vector2(x-0.7,y-0.4),Vector2(x+0.7,y+0.4),Color("a18560"),0.7,true)
+-	if not compact:
+-		draw_string(MenuStyle.DISPLAY,Vector2(left+15,bottom+front_height-14),"BMT / RECORDS",HORIZONTAL_ALIGNMENT_LEFT,right-left-30,13,Color("cead7e"))
+-	if has_focus():
+-		var focus := MenuStyle.box(Color.TRANSPARENT,0)
+-		focus.border_color = MenuStyle.ACCENT
+-		focus.set_border_width_all(1)
+-		draw_style_box(focus,Rect2(2,2,width-4,size.y-4))
+-
+-func wood_quad(points: PackedVector2Array, top: Color, bottom: Color) -> void:
+-	draw_polygon(points,PackedColorArray([top,top,bottom,bottom]))
+--- a/game/ui/garage_opening_facade.gd
++++ /dev/null
+@@ -1,149 +0,0 @@
+-extends RefCounted
+-## Temporary live geometry while the original full finishes take their first draws.
+-var items: Array[Dictionary]=[]
+-var shaders: Dictionary={}
+-var materials: Dictionary={}
+-
+-func build(pending: Array[Dictionary]) -> void:
+-	for job: Dictionary in pending:
+-		var source: Object=job.node.get_ref()
+-		if not source is MeshInstance3D: continue
+-		var copy:=MeshInstance3D.new()
+-		copy.name="OpeningLiveGeometry"
+-		copy.set_meta("garage_opening_proxy",true)
+-		copy.mesh=source.mesh
+-		copy.transform=source.transform
+-		copy.layers=source.layers
+-		copy.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-		if source.material_override!=null: copy.material_override=_finish(source.material_override)
+-		else:
+-			for index: int in range(source.mesh.get_surface_count()): copy.set_surface_override_material(index,_finish(source.get_active_material(index)))
+-		if source.material_overlay!=null: copy.material_overlay=_finish(source.material_overlay)
+-		var parent: Node=source.get_parent()
+-		if source.layers&4==0:
+-			while parent.get_parent() is Node3D: parent=parent.get_parent()
+-		parent.add_child(copy)
+-		if parent!=source.get_parent(): copy.global_transform=source.global_transform
+-		items.append({"source":weakref(source),"copy":copy,"layers":source.layers,"signature":_signature(source)})
+-		source.layers=8
+-
+-func _signature(source: MeshInstance3D) -> Array:
+-	var result: Array=[source.mesh,source.material_overlay]
+-	for surface: int in range(source.mesh.get_surface_count()):
+-		var material: Material=source.get_active_material(surface)
+-		result.append(material)
+-		result.append(material.shader if material is ShaderMaterial else null)
+-	return result
+-
+-func refresh(world: Node,stage: Node) -> void:
+-	var known: Dictionary={}
+-	for index: int in range(items.size()-1,-1,-1):
+-		var item: Dictionary=items[index]
+-		var source: Object=item.source.get_ref()
+-		if not is_instance_valid(source) or not source.is_inside_tree():
+-			if is_instance_valid(item.copy):
+-				if item.copy.get_parent()!=null: item.copy.get_parent().remove_child(item.copy)
+-				item.copy.free()
+-			items.remove_at(index)
+-			continue
+-		known[source]=true
+-		# Kit rebuilding reapplies reflection membership to the whole turntable.
+-		# Keep every held original outside the visible camera during preparation.
+-		source.layers=8
+-		source.hide()
+-		var signature: Array=_signature(source)
+-		if signature==item.signature: continue
+-		item.signature=signature
+-		item.copy.mesh=source.mesh
+-		item.copy.material_overlay=_finish(source.material_overlay)
+-		if source.material_override==null: item.copy.material_override=null
+-		for surface: int in range(source.mesh.get_surface_count()):
+-			var material: Material=source.get_active_material(surface)
+-			materials.erase(material)
+-			if source.material_override!=null: item.copy.material_override=_finish(material)
+-			else: item.copy.set_surface_override_material(surface,_finish(material))
+-		stage.queue_geometry(source)
+-	for source: Node in world.find_children("*","MeshInstance3D",true,false):
+-		if known.has(source) or source.has_meta("garage_opening_proxy") or source.has_meta("garage_opening_warm") or not source.is_visible_in_tree(): continue
+-		if not stage.queue_geometry(source): continue
+-		build([{"node":weakref(source)}])
+-	sync_parameters()
+-
+-func sync_poses() -> void:
+-	for item: Dictionary in items:
+-		var source: Object=item.source.get_ref()
+-		if not is_instance_valid(source) or not is_instance_valid(item.copy): continue
+-		if item.copy.get_parent()!=source.get_parent():
+-			item.copy.global_transform=source.global_transform
+-			item.copy.visible=source.get_parent().is_visible_in_tree()
+-		elif item.copy.transform!=source.transform: item.copy.transform=source.transform
+-
+-func sync_parameters() -> void:
+-	sync_poses()
+-	for original: Material in materials:
+-		var target: ShaderMaterial=materials[original]
+-		if original is ShaderMaterial:
+-			for declaration: Dictionary in target.shader.get_shader_uniform_list():
+-				var value: Variant=original.get_shader_parameter(declaration.name)
+-				if value!=null and target.get_shader_parameter(declaration.name)!=value: target.set_shader_parameter(declaration.name,value)
+-		else:
+-			if target.get_shader_parameter("paint_color")!=original.albedo_color: target.set_shader_parameter("paint_color",original.albedo_color)
+-
+-func _finish(original: Material) -> Material:
+-	if original==null: return null
+-	if materials.has(original): return materials[original]
+-	if original is ShaderMaterial and original.shader.code.contains("unshaded"): return original
+-	var alpha: bool=original is StandardMaterial3D and original.transparency!=BaseMaterial3D.TRANSPARENCY_DISABLED
+-	var cull: int=original.cull_mode if original is StandardMaterial3D else BaseMaterial3D.CULL_BACK
+-	var key: String=str(alpha)+"-"+str(cull)
+-	if not shaders.has(key):
+-		var shader:=Shader.new()
+-		# One common light finish retains the actual livery, stickers and wash
+-		# volumes without creating a new lighting program for every room finish.
+-		var code: String=preload("res://vehicle/vehicle_weathering.gdshader").code
+-		code=code.replace("render_mode diffuse_burley, specular_schlick_ggx;","render_mode unshaded,"+("cull_front" if cull==BaseMaterial3D.CULL_FRONT else "cull_disabled" if cull==BaseMaterial3D.CULL_DISABLED else "cull_back")+";")
+-		code=code.replace("void vertex() {","uniform vec4 opening_glow:source_color=vec4(0.0);\nuniform float opening_grow=0.0;\nvarying vec3 opening_normal;\nvoid vertex() {\n VERTEX+=NORMAL*opening_grow;\n opening_normal=MODEL_NORMAL_MATRIX*NORMAL;")
+-		var end: int=code.rfind("}")
+-		code=code.insert(end,"\n ALBEDO*=0.48+0.52*max(0.0,dot(normalize(opening_normal),normalize(vec3(-0.5,0.9,-0.4))));\n EMISSION=opening_glow.rgb;\n"+("ALPHA=paint_color.a;\n" if alpha else ""))
+-		shader.code=code
+-		shaders[key]=shader
+-	var result:=ShaderMaterial.new()
+-	result.shader=shaders[key]
+-	if original is ShaderMaterial and (original.shader.code.contains("garage_paint_progress") or original.shader.code.contains("garage_kit_progress")):
+-		var motion_code: String=original.shader.code.replace("render_mode ","render_mode unshaded,")
+-		if not shaders.has(motion_code):
+-			var motion_shader:=Shader.new()
+-			motion_shader.code=motion_code
+-			shaders[motion_code]=motion_shader
+-		result.shader=shaders[motion_code]
+-	result.set_shader_parameter("mesh_to_body",Transform3D.IDENTITY)
+-	result.set_shader_parameter("mesh_to_wheel",Transform3D.IDENTITY)
+-	if original is ShaderMaterial:
+-		for declaration: Dictionary in result.shader.get_shader_uniform_list():
+-			var value: Variant=original.get_shader_parameter(declaration.name)
+-			if value!=null: result.set_shader_parameter(declaration.name,value)
+-		var pigment: Variant=null
+-		for parameter: String in ["paint_color","finish_color","timber_color","color"]:
+-			pigment=original.get_shader_parameter(parameter)
+-			if pigment!=null: break
+-		result.set_shader_parameter("paint_color",pigment if pigment!=null else Color("53616b"))
+-	else:
+-		result.set_shader_parameter("paint_color",original.albedo_color)
+-		result.set_shader_parameter("opening_glow",original.emission*original.emission_energy_multiplier if original.emission_enabled else Color.BLACK)
+-		if original.get("grow")==true: result.set_shader_parameter("opening_grow",original.get("grow_amount"))
+-	if original.next_pass!=null: result.next_pass=_finish(original.next_pass)
+-	materials[original]=result
+-	return result
+-
+-func restore() -> void:
+-	for item: Dictionary in items:
+-		var source: Object=item.source.get_ref()
+-		if is_instance_valid(source):
+-			source.layers=item.layers
+-			source.show()
+-		if is_instance_valid(item.copy):
+-			if item.copy.get_parent()!=null: item.copy.get_parent().remove_child(item.copy)
+-			item.copy.free()
+-	items.clear()
+-	materials.clear()
+-	shaders.clear()
+--- a/game/editor/jump_style_picker.gd
++++ /dev/null
+@@ -1,15 +0,0 @@
+-extends RefCounted
+-## Editor controls remain outside the data-only verification project.
+-
+-static func make(profile: String, changed: Callable, include_legacy: bool = false) -> OptionButton:
+-	var button := OptionButton.new()
+-	button.name = "JumpStyle"
+-	button.custom_minimum_size = Vector2(175,44)
+-	button.tooltip_text = "Jump or bump style"
+-	EditorStyle.apply(button)
+-	var choices: Array[String] = JumpProfiles.IDS.duplicate()
+-	if include_legacy: choices.push_front("legacy")
+-	for choice: String in choices: button.add_item(JumpProfiles.label(choice))
+-	button.select(maxi(0,choices.find(profile)))
+-	button.item_selected.connect(func(index: int) -> void: changed.call(choices[index]))
+-	return button
+--- a/game/vehicle/hovercraft_surface.gd
++++ /dev/null
+@@ -1,168 +0,0 @@
+-extends RefCounted
+-## Original model-space surfaces. Immutable meshes are shared; finishes stay private.
+-const ASSET_ROOT: String = "res://assets/vehicles/hovercraft_body_v2"
+-static var meshes: Dictionary = {}
+-static var use_baked: bool = true
+-static var source_signature: String = ""
+-
+-static func signature() -> String:
+-	if source_signature.is_empty():
+-		source_signature = FileAccess.get_sha256("res://vehicle/hovercraft_model.gd")+FileAccess.get_sha256("res://vehicle/hovercraft_surface.gd")
+-	return source_signature
+-
+-static func _key(label: String, simple: bool) -> String:
+-	return ("race_" if simple else "full_")+label
+-
+-static func _cached(key: String) -> ArrayMesh:
+-	if meshes.has(key): return meshes[key]
+-	var path: String = ASSET_ROOT.path_join(key+".res")
+-	if use_baked and ResourceLoader.exists(path):
+-		var saved: ArrayMesh = load(path)
+-		if not OS.has_feature("editor") or saved.get_meta("hovercraft_sources","") == signature():
+-			meshes[key] = saved
+-			return saved
+-	return null
+-
+-static func instance(parent: Node3D, mesh: ArrayMesh, material: Material, label: String) -> MeshInstance3D:
+-	var node := MeshInstance3D.new()
+-	node.name = label
+-	node.mesh = mesh
+-	node.material_override = material
+-	parent.add_child(node)
+-	return node
+-
+-static func surface(parent: Node3D, label: String, columns: int, rows: int, point: Callable, hint: Callable, material: Material, simple: bool) -> MeshInstance3D:
+-	var key: String = _key(label,simple)
+-	var mesh: ArrayMesh = _cached(key)
+-	if mesh == null:
+-		mesh = ArrayMesh.new()
+-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,_arrays(columns,rows,point,hint))
+-		meshes[key] = mesh
+-	return instance(parent,mesh,material,label)
+-
+-static func _arrays(columns: int, rows: int, point: Callable, hint: Callable) -> Array:
+-	var vertices := PackedVector3Array()
+-	var normals := PackedVector3Array()
+-	var uv := PackedVector2Array()
+-	var indices := PackedInt32Array()
+-	for row: int in range(rows+1):
+-		for column: int in range(columns+1):
+-			var u: float = float(column)/columns
+-			var v: float = float(row)/rows
+-			var p: Vector3 = point.call(u,v)
+-			var du: Vector3 = point.call(u+0.0001,v)-point.call(u-0.0001,v)
+-			var dv: Vector3 = point.call(u,v+0.0001)-point.call(u,v-0.0001)
+-			var n: Vector3 = du.cross(dv).normalized()
+-			var expected: Vector3 = hint.call(u,v)
+-			if n.length_squared() < 0.5: n = expected.normalized()
+-			if n.dot(expected) < 0.0: n = -n
+-			vertices.append(p)
+-			normals.append(n)
+-			uv.append(Vector2(u,v))
+-	for row: int in range(rows):
+-		for column: int in range(columns):
+-			var a: int = row*(columns+1)+column
+-			for tri: Vector3i in [Vector3i(a,a+1,a+columns+2),Vector3i(a,a+columns+2,a+columns+1)]:
+-				var cross: Vector3 = (vertices[tri.y]-vertices[tri.x]).cross(vertices[tri.z]-vertices[tri.x])
+-				if cross.length_squared() < 1e-16: continue
+-				indices.append(tri.x)
+-				if cross.dot(normals[tri.x]+normals[tri.y]+normals[tri.z]) > 0.0:
+-					indices.append(tri.z); indices.append(tri.y)
+-				else:
+-					indices.append(tri.y); indices.append(tri.z)
+-	var arrays: Array = []
+-	arrays.resize(Mesh.ARRAY_MAX)
+-	arrays[Mesh.ARRAY_VERTEX] = vertices
+-	arrays[Mesh.ARRAY_NORMAL] = normals
+-	arrays[Mesh.ARRAY_TEX_UV] = uv
+-	arrays[Mesh.ARRAY_INDEX] = indices
+-	return arrays
+-
+-static func rounded_box(parent: Node3D, label: String, size: Vector3, center: Vector3, radius: float, material: Material, simple: bool) -> MeshInstance3D:
+-	var key: String = _key(label,simple)
+-	var mesh: ArrayMesh = _cached(key)
+-	if mesh == null:
+-		var steps: int = 1 if simple else 2
+-		var columns: int = 2*steps+1
+-		var vertices := PackedVector3Array()
+-		var normals := PackedVector3Array()
+-		var uv := PackedVector2Array()
+-		var indices := PackedInt32Array()
+-		var half: Vector3 = size*0.5
+-		var inner: Vector3 = half-Vector3.ONE*radius
+-		for face: Array in [[Vector3.RIGHT,Vector3.UP,Vector3.BACK],[Vector3.LEFT,Vector3.UP,Vector3.FORWARD],[Vector3.UP,Vector3.BACK,Vector3.RIGHT],[Vector3.DOWN,Vector3.FORWARD,Vector3.RIGHT],[Vector3.BACK,Vector3.RIGHT,Vector3.UP],[Vector3.FORWARD,Vector3.LEFT,Vector3.UP]]:
+-			var n: Vector3 = face[0]
+-			var a: Vector3 = face[1]
+-			var b: Vector3 = face[2]
+-			var point: Callable = func(u: float,v: float) -> Vector3:
+-				var p: Vector3 = n*half+a*_bevel_coordinate(u,half.dot(a.abs()),radius,steps)+b*_bevel_coordinate(v,half.dot(b.abs()),radius,steps)
+-				var q: Vector3 = p.clamp(-inner,inner)
+-				return q+(p-q).normalized()*radius
+-			var arrays: Array = _arrays(columns,columns,point,func(_u: float,_v: float) -> Vector3: return n)
+-			var offset: int = vertices.size()
+-			vertices.append_array(arrays[Mesh.ARRAY_VERTEX])
+-			normals.append_array(arrays[Mesh.ARRAY_NORMAL])
+-			uv.append_array(arrays[Mesh.ARRAY_TEX_UV])
+-			for index: int in arrays[Mesh.ARRAY_INDEX]: indices.append(index+offset)
+-		var joined: Array = []
+-		joined.resize(Mesh.ARRAY_MAX)
+-		joined[Mesh.ARRAY_VERTEX] = vertices
+-		joined[Mesh.ARRAY_NORMAL] = normals
+-		joined[Mesh.ARRAY_TEX_UV] = uv
+-		joined[Mesh.ARRAY_INDEX] = indices
+-		mesh = ArrayMesh.new()
+-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,joined)
+-		meshes[key] = mesh
+-	var node: MeshInstance3D = instance(parent,mesh,material,label)
+-	node.position = center
+-	return node
+-
+-static func _bevel_coordinate(u: float, half: float, radius: float, steps: int) -> float:
+-	var index: float = clampf(u,0.0,1.0)*(2*steps+1)
+-	if index <= steps: return -half+radius-radius*cos(index/steps*PI*0.5)
+-	if index >= steps+1: return half-radius+radius*sin((index-steps-1)/steps*PI*0.5)
+-	return lerpf(-half+radius,half-radius,index-steps)
+-
+-static func tube(parent: Node3D, label: String, curve: Callable, radius: float, steps: int, material: Material, simple: bool) -> MeshInstance3D:
+-	var point: Callable = func(u: float,v: float) -> Vector3:
+-		var center: Vector3 = curve.call(u)
+-		var tangent: Vector3 = (curve.call(u+0.0001)-curve.call(u-0.0001)).normalized()
+-		var reference: Vector3 = Vector3.UP if absf(tangent.y) < 0.9 else Vector3.RIGHT
+-		var a: Vector3 = tangent.cross(reference).normalized()
+-		var b: Vector3 = tangent.cross(a).normalized()
+-		return center+(a*cos(v*TAU)+b*sin(v*TAU))*radius
+-	var hint: Callable = func(u: float,v: float) -> Vector3: return point.call(u,v)-curve.call(u)
+-	return surface(parent,label,steps,6 if simple else 8,point,hint,material,simple)
+-
+-static func ring(parent: Node3D, label: String, center: Vector3, radius: float, thickness: float, material: Material, simple: bool) -> MeshInstance3D:
+-	return tube(parent,label,func(u: float) -> Vector3: return center+Vector3(sin(u*TAU),cos(u*TAU),0)*radius,thickness,40 if simple else 56,material,simple)
+-
+-static func profile(points: Array[Vector2], t: float, closed: bool = false) -> Vector2:
+-	var count: int = points.size()
+-	var scaled: float = t*(count if closed else count-1)
+-	var index: int = floori(scaled)
+-	var f: float = scaled-index
+-	var p: Array[Vector2] = []
+-	for offset: int in [-1,0,1,2]:
+-		p.append(points[posmod(index+offset,count) if closed else clampi(index+offset,0,count-1)])
+-	return 0.5*((2.0*p[1])+(-p[0]+p[2])*f+(2.0*p[0]-5.0*p[1]+4.0*p[2]-p[3])*f*f+(-p[0]+3.0*p[1]-3.0*p[2]+p[3])*f*f*f)
+-
+-static func monotone_profile(points: Array[Vector2],t: float) -> Vector2:
+-	# Shape-preserving Hermite interpolation prevents a rolled lip crossing its deck.
+-	var last: int = points.size()-1
+-	var scaled: float = t*last
+-	if scaled < 0.0: return points[0]+(points[1]-points[0])*scaled
+-	if scaled > last: return points[last]+(points[last]-points[last-1])*(scaled-last)
+-	var index: int = mini(floori(scaled),last-1)
+-	var f: float = scaled-index
+-	var a: Vector2 = points[index]
+-	var b: Vector2 = points[index+1]
+-	var delta: Vector2 = b-a
+-	var previous: Vector2 = a-points[maxi(0,index-1)] if index > 0 else delta
+-	var following: Vector2 = points[mini(last,index+2)]-b if index+1 < last else delta
+-	var da := Vector2(_slope(previous.x,delta.x),_slope(previous.y,delta.y))
+-	var db := Vector2(_slope(delta.x,following.x),_slope(delta.y,following.y))
+-	return (2*f*f*f-3*f*f+1)*a+(f*f*f-2*f*f+f)*da+(-2*f*f*f+3*f*f)*b+(f*f*f-f*f)*db
+-
+-static func _slope(a: float,b: float) -> float:
+-	return 2.0*a*b/(a+b) if a*b > 0.0 else 0.0
+--- a/game/tests/bake_hovercraft_surfaces.gd
++++ /dev/null
+@@ -1,38 +0,0 @@
+-extends SceneTree
+-## Bake exactly the original runtime surfaces, and verify every stored array.
+-const Surface = preload("res://vehicle/hovercraft_surface.gd")
+-func _initialize() -> void: run.call_deferred()
+-func run() -> void:
+-	preload("res://ui/garage_car_cache.gd").enabled = false
+-	Surface.use_baked = false
+-	Surface.meshes.clear()
+-	for simple: bool in [false,true]:
+-		var car := CarVisual.new()
+-		car.vehicle_id = "hovercraft"
+-		car.simple_model = simple
+-		car.cache_rest_pose = false
+-		root.add_child(car)
+-		while not car.model_ready: await process_frame
+-		car.free()
+-	DirAccess.make_dir_recursive_absolute(Surface.ASSET_ROOT)
+-	var expected: Dictionary = Surface.meshes.duplicate()
+-	var rows: Array = []
+-	for key: String in expected:
+-		var mesh: ArrayMesh = expected[key]
+-		mesh.set_meta("hovercraft_sources",Surface.signature())
+-		var path: String = Surface.ASSET_ROOT.path_join(key+".res")
+-		assert(ResourceSaver.save(mesh,path,ResourceSaver.FLAG_COMPRESS) == OK)
+-		rows.append({"path":path,"sha256":FileAccess.get_sha256(path)})
+-	Surface.meshes.clear()
+-	Surface.use_baked = true
+-	for key: String in expected:
+-		var saved: ArrayMesh = Surface._cached(key)
+-		assert(saved != null and saved.get_meta("hovercraft_sources") == Surface.signature())
+-		assert(saved.get_surface_count() == 1 and saved.surface_get_material(0) == null)
+-		assert(saved.surface_get_arrays(0) == expected[key].surface_get_arrays(0))
+-	var output: String = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/surfaces.json"
+-	var file := FileAccess.open(output,FileAccess.WRITE)
+-	file.store_string(JSON.stringify({"arrays_exact":rows.size(),"sources":Surface.signature(),"resources":rows},"\t"))
+-	file.close()
+-	print("HOVERCRAFT_SURFACES: ",rows.size()," saved resources with exact arrays and private material slots")
+-	quit()
+--- a/game/backend/race_compatibility.gd
++++ b/game/backend/race_compatibility.gd
+@@ -1,10 +1,6 @@
+ extends RefCounted
+-## Explicit per-car equivalence; every other race-contract field stays exact.
+-## .75 and .76 change only Electric handling. Six unchanged cars retain .74 math.
+-const ELECTRIC_ONLY_PHYSICS: Array[String] = ["arcade-planar-0.74","arcade-planar-0.75","arcade-planar-0.76"]
+-const UNCHANGED_VEHICLES: Array[String] = ["compact","pickup","classic","formula","kart","forklift"]
++## Online races require the current physics contract and a playable vehicle.
+ 
+ static func physics_matches(version: String, vehicle_id: String) -> bool:
+ 	if vehicle_id not in VehicleCatalog.IDS: return false
+-	if version == VehicleSimulation.PHYSICS_VERSION: return true
+-	return vehicle_id in UNCHANGED_VEHICLES and version in ELECTRIC_ONLY_PHYSICS and VehicleSimulation.PHYSICS_VERSION in ELECTRIC_ONLY_PHYSICS
++	return version == VehicleSimulation.PHYSICS_VERSION
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2184,10 +2184,6 @@
+ 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
+ 		_retained_garage.refresh_cosmetics()
+ 
+-func _garage_pictures_ready() -> bool:
+-	if DisplayServer.get_name()=="headless": return true
+-	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
+-
+ func _prepare_garage_pictures() -> bool:
+ 	# Explicit callers can request a complete snapshot. Startup/navigation
+ 	# never await this optional work; visible missing views use car ghosts.
+@@ -2417,9 +2413,6 @@
+ 
+ func _rotate_object() -> void:
+ 	_feature_resource("res://core/features/editor.gd").run_rotate_object(self)
+-
+-func _selected_object_properties() -> void:
+-	_feature_resource("res://core/features/editor.gd").run_selected_object_properties(self)
+ 
+ func _object_property_editing(property: String) -> void:
+ 	_feature_resource("res://core/features/editor.gd").run_object_property_editing(self ,property)
+--- a/game/core/features/editor.gd
++++ b/game/core/features/editor.gd
+@@ -918,9 +918,6 @@
+ func run_rotate_object(app: Node) -> void:
+ 	app._set_object_rotation(preload("res://editor/object_rotation.gd").next_angle(app._object_rotation()))
+ 
+-func run_selected_object_properties(app: Node) -> void:
+-	app._object_property_editing("")
+-
+ func run_object_property_editing(app: Node, property: String) -> void:
+ 	app.editor_object_property = property
+ 	app._build_editor_tools()
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -262,27 +262,6 @@
+ 	if is_instance_valid(kit_cards) and section == "tuning":
+ 		_refresh_kit_preview()
+ 	if not _cosmetic_preview.is_empty() and str(_cosmetic_preview.scope) != str(economy.scope): _cancel_cosmetic_preview()
+-
+-func _shop_badge(tile: Control, id: String) -> void:
+-	if economy == null: return
+-	var badge: Label = tile.get_node_or_null("CoinPrice") as Label
+-	if badge == null:
+-		badge = MenuStyle.label("",13)
+-		badge.name = "CoinPrice"
+-		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		badge.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b1823"),3))
+-		badge.position = Vector2(7,7)
+-		tile.add_child(badge)
+-	if tile is CompactKitThumbnail:
+-		badge.remove_theme_stylebox_override("normal")
+-		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-		badge.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+-		badge.offset_left = 4
+-		badge.offset_right = -4
+-		badge.offset_top = -25
+-		badge.offset_bottom = -5
+-	badge.text = economy.caption(id)
+-	badge.add_theme_color_override("font_color",MenuStyle.MUTED if economy.owns(id) else MenuStyle.ACCENT)
+ 
+ func _require_owned(id: String, title: String, apply: Callable) -> bool:
+ 	if economy == null or economy.owns(id): return true
+--- a/game/ui/garage_workshop.gd
++++ b/game/ui/garage_workshop.gd
+@@ -58,12 +58,6 @@
+ 	var beam: MeshInstance3D = GarageEnvironment.box(root,(a+b)*0.5,Vector3(width,a.distance_to(b),width),material)
+ 	beam.quaternion = Quaternion(Vector3.UP,(b-a).normalized())
+ 
+-static func _bottle(root: Node3D, at: Vector3, height: float) -> void:
+-	GarageFurnishings.bottle(root,at,height)
+-
+-static func _toolbox(root: Node3D, at: Vector3) -> void:
+-	GarageFurnishings.case_model(root,at)
+-
+ static func _poster(root: Node3D) -> void:
+ 	var poster := Node3D.new()
+ 	poster.name = "GarageLeftPoster"
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -1173,11 +1173,6 @@
+ 
+ static func _comparison_ready(snapshot: Dictionary) -> bool:
+ 	return snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS and snapshot.get("race_distribution") is Dictionary and snapshot.get("lap_distribution") is Dictionary
+-
+-static func _cached_frame_query(distribution: Dictionary, metric: String) -> String:
+-	var edges: Array = distribution.get("edges_ms",[])
+-	if edges.size() < 2: return ""
+-	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),metric,roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)]
+ 
+ static func _snapshot_frame(snapshot: Dictionary) -> Dictionary:
+ 	if snapshot.get("_comparison_packet") is Dictionary: return snapshot._comparison_packet
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -111,7 +111,6 @@
+ const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+ const ROAD_CACHE_MAX_ENTRIES: int = 8
+ static var _road_mesh_cache: Array[Dictionary] = []
+-static var _pending_road_bakes: Dictionary = {}
+ 
+ static func race_roads_need_preparation(track: NativeTrack) -> bool:
+ 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return false
+@@ -1220,29 +1219,12 @@
+ 		if has_meta(name): metadata[name] = get_meta(name)
+ 	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes,"geometry_key":geometry_key}
+ 	_admit_road_entry(entry)
+-	var id: String = ROAD_DISK_CACHE.identity(key)
+-	if persist_road_meshes and ((not _menu_slices and not editor_preview) or _pending_road_bakes.has(id)):
++	if persist_road_meshes and not _menu_slices and not editor_preview:
+ 		ROAD_DISK_CACHE.write_entry(entry)
+-		_pending_road_bakes.erase(id)
+-
+-
+-static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree = null) -> void:
+-	if owner_tree != null:
+-		preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
+-		return
+-	# Synchronous legacy helper retained for offline tools and cache fixtures.
+-	# Saving can reuse the completed editor road, or its pending sliced build.
+-	# Never rebuild scenery synchronously in the Save handler.
+-	if track == null or ROAD_DISK_CACHE.directory.is_empty(): return
+-	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+-	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
+-	for entry: Dictionary in _road_mesh_cache:
+-		if entry.key == key:
+-			ROAD_DISK_CACHE.write_entry(entry)
+-			_pending_road_bakes.erase(ROAD_DISK_CACHE.identity(key))
+-			return
+-	if _pending_road_bakes.size() >= 8: _pending_road_bakes.erase(_pending_road_bakes.keys()[0])
+-	_pending_road_bakes[ROAD_DISK_CACHE.identity(key)] = true
++
++
++static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree) -> void:
++	preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
+ 
+ 
+ static func _admit_road_entry(entry: Dictionary) -> void:
+--- a/game/tests/test_translation_gaps.gd
++++ b/game/tests/test_translation_gaps.gd
+@@ -71,7 +71,7 @@
+ 	var music: Control = preload("res://ui/garage_records_menu.gd").new()
+ 	music.records = records
+ 	stage.add_child(music)
+-	var shelf: Control = preload("res://ui/garage_cosmetic_shelf.gd").new()
++	var shelf: Control = preload("res://ui/garage_parts_list.gd").new()
+ 	stage.add_child(shelf)
+ 	var biomes := HBoxContainer.new()
+ 	stage.add_child(biomes)
+@@ -81,7 +81,8 @@
+ 	var biome_picker := VBoxContainer.new()
+ 	stage.add_child(biome_picker)
+ 	biome_owner._choose_biome(biome_picker,true)
+-	var part: CompactKitThumbnail = CompactKitThumbnail.make("hood",VehicleCustomisation.OPTIONS.hood[1],true,func() -> void: pass)
++	var part: Button = preload("res://ui/garage_part_option.gd").new()
++	part.setup(1,VehicleCustomisation.OPTIONS.hood[1],VehicleCustomisation.label("hood"),func() -> void: pass)
+ 	shelf.cards.add_child(part)
+ 	var album: Control = preload("res://ui/achievements_menu.gd").new()
+ 	album.service = service
+@@ -152,9 +153,9 @@
+ 			check(not catalog.get_message(VehicleCustomisation.LABELS[category]).is_empty(),"part category "+category)
+ 			for option: Array in VehicleCustomisation.OPTIONS[category]:
+ 				check(not catalog.get_message(str(option[1])).is_empty(),"part option "+str(option[1]))
+-		shelf.show_choice(null,"Twin louvres","Equipped","Owned",1,10)
+-		check(text(shelf.title) == GameText.message("Twin louvres").to_upper(),"selected part translates before casing")
+-		check(text(part.get_node("KitOptionTitle")) == GameText.message("Twin louvres"),"actual part thumbnail caption")
++		shelf.show_choice("Twin louvres",true,true,0,1,10,"hood")
++		check(shelf.selected_title == GameText.message("Twin louvres"),"selected part translates before casing")
++		check(text(part.title) == GameText.message("Twin louvres").to_upper(),"actual part option caption")
+ 		await present(shelf,"part-fi" if code == "fi" else "")
+ 		records.settings.music_enabled = true
+ 		music._refresh()
+--- a/game/tests/probe_garage_app_lifetime.gd
++++ b/game/tests/probe_garage_app_lifetime.gd
+@@ -1,25 +1,11 @@
+ extends "res://tests/test_app.gd"
+ func _initialize() -> void:
+-	for variant: String in ["car","room"]:
+-		if "--only-"+variant+"-facade" not in OS.get_cmdline_user_args(): continue
+-		var script: Script=load("res://ui/garage_opening_facade.gd")
+-		var source: String=script.source_code
+-		var comparison: String="==" if variant=="car" else "!="
+-		script.source_code=source.replace("\t\tif not source is MeshInstance3D: continue", "\t\tif not source is MeshInstance3D: continue\n\t\tif source.layers&4"+comparison+"0: continue")
+-		assert(script.reload(true)==OK)
+ 	if "--no-staging" in OS.get_cmdline_user_args():
+ 		var script: Script=load("res://ui/garage_opening_showroom.gd")
+ 		var source: String=script.source_code
+ 		var begin: int=source.find("\t# One MSAA level")
+ 		var end: int=source.find("\nfunc _current_preparation()",begin)
+ 		script.source_code=source.substr(0,begin)+"\tpreparing=false\n\tinteraction_ready=true\n\tset_process(true)\n\tstudio_prepared.emit()\n"+source.substr(end)
+-		assert(script.reload(true)==OK)
+-	if "--no-facade" in OS.get_cmdline_user_args():
+-		var script: Script=load("res://ui/garage_opening_facade.gd")
+-		var source: String=script.source_code
+-		var begin: int=source.find("func build(")
+-		var end: int=source.find("\nfunc _signature",begin)
+-		script.source_code=source.substr(0,begin)+"func build(_pending: Array[Dictionary]) -> void:\n\tpass\n"+source.substr(end)
+ 		assert(script.reload(true)==OK)
+ 	if "--no-studio-resource-threads" in OS.get_cmdline_user_args():
+ 		var script: Script=load("res://ui/garage_opening_showroom.gd")
+--- a/game/tests/test_road_cache.gd
++++ b/game/tests/test_road_cache.gd
+@@ -1,5 +1,7 @@
+ extends SceneTree
+ const CACHE = preload("res://track/road_mesh_disk_cache.gd")
++const ROADS = preload("res://editor/road_preparation.gd")
++const BAKES = preload("res://track/road_cache_bakes.gd")
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -30,6 +32,12 @@
+ 			data.append([uniform.name,value])
+ 		result.append(data)
+ 	return result
++
++func wait_for_bake() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (BAKES.job != null or BAKES.pending_track != null) and Time.get_ticks_msec() < deadline:
++		await process_frame
++	check(BAKES.job == null and BAKES.pending_track == null,"saved-road worker finishes within deadline")
+ 
+ func run() -> void:
+ 	CACHE.directory = "user://road_cache_test_"+TrackLibrary.unique_id()
+@@ -74,17 +82,26 @@
+ 		DirAccess.remove_absolute(path+".sha256")
+ 		check(CACHE.read_entry(key).is_empty(),"interrupted checksum commit is a cache miss")
+ 		NativeTrackVisual._road_mesh_cache.clear()
+-		NativeTrackVisual.request_saved_road_bake(track)
++		var geometry_key: String = ROADS.key_for(track)
++		var expected_packet: Dictionary = ROADS.prepare(track,true)
++		check(not expected_packet.get("parts",[]).is_empty(),theme+" numeric road fixture is nonempty")
++		NativeTrackVisual.request_saved_road_bake(track,self)
+ 		var editor := NativeTrackVisual.new()
+ 		editor.editor_preview = true
+ 		editor.theme_id = theme
+ 		editor.colors = TrackTheme.palette(theme)
+ 		root.add_child(editor)
+ 		await editor._build_creator_roads(track)
+-		check(not CACHE.read_entry(key).is_empty(),"saved editor road is baked when pending geometry completes")
+-		DirAccess.remove_absolute(path+".sha256")
+-		NativeTrackVisual.request_saved_road_bake(track)
+-		check(not CACHE.read_entry(key).is_empty(),"save immediately bakes an already completed editor road")
++		await wait_for_bake()
++		var saved: Dictionary = CACHE.read_arrays(key,geometry_key)
++		check(not saved.is_empty(),"saved editor road is baked by the production worker")
++		check(saved.get("parts") == expected_packet.get("parts") and saved.get("metadata") == expected_packet.get("metadata"),theme+" numeric road geometry and metadata survive save/load exactly")
++		var arrays_path: String = CACHE.directory.path_join(CACHE.identity(key)+".arrays")
++		DirAccess.remove_absolute(arrays_path+".sha256")
++		check(CACHE.read_arrays(key,geometry_key).is_empty(),"interrupted numeric checksum commit is a cache miss")
++		NativeTrackVisual.request_saved_road_bake(track,self)
++		await wait_for_bake()
++		check(not CACHE.read_arrays(key,geometry_key).is_empty(),"save rebakes an already completed editor road")
+ 		editor.free()
+ 		await process_frame
+ 	var unrelated: String = CACHE.directory.path_join("player-file.json")
+--- a/game/tests/test_road_cache_final_geometry.gd
++++ b/game/tests/test_road_cache_final_geometry.gd
+@@ -1,5 +1,7 @@
+ extends SceneTree
+ const CACHE = preload("res://track/road_mesh_disk_cache.gd")
++const ROADS = preload("res://editor/road_preparation.gd")
++const BAKES = preload("res://track/road_cache_bakes.gd")
+ var checks: int = 0
+ var failures: int = 0
+ 
+@@ -30,6 +32,12 @@
+ 			data.append([uniform.name,value])
+ 		result.append(data)
+ 	return result
++
++func wait_for_bake() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (BAKES.job != null or BAKES.pending_track != null) and Time.get_ticks_msec() < deadline:
++		await process_frame
++	check(BAKES.job == null and BAKES.pending_track == null,"saved-road worker finishes within deadline")
+ 
+ func run() -> void:
+ 	CACHE.directory = "user://road_cache_test_"+TrackLibrary.unique_id()
+@@ -74,18 +82,27 @@
+ 		DirAccess.remove_absolute(path+".sha256")
+ 		check(CACHE.read_entry(key).is_empty(),"interrupted checksum commit is a cache miss")
+ 		NativeTrackVisual._road_mesh_cache.clear()
+-		NativeTrackVisual.request_saved_road_bake(track)
++		var geometry_key: String = ROADS.key_for(track)
++		var expected_packet: Dictionary = ROADS.prepare(track,true)
++		check(not expected_packet.get("parts",[]).is_empty(),theme+" numeric road fixture is nonempty")
++		NativeTrackVisual.request_saved_road_bake(track,self)
+ 		var editor := NativeTrackVisual.new()
+ 		editor.editor_preview = true
+-		editor.prepare_editor_roads = false # This legacy resource API stores final racing geometry.
++		editor.prepare_editor_roads = false # Exercise a preview of the final racing geometry.
+ 		editor.theme_id = theme
+ 		editor.colors = TrackTheme.palette(theme)
+ 		root.add_child(editor)
+ 		await editor._build_creator_roads(track)
+-		check(not CACHE.read_entry(key).is_empty(),"saved editor road is baked when pending geometry completes")
+-		DirAccess.remove_absolute(path+".sha256")
+-		NativeTrackVisual.request_saved_road_bake(track)
+-		check(not CACHE.read_entry(key).is_empty(),"save immediately bakes an already completed editor road")
++		await wait_for_bake()
++		var saved: Dictionary = CACHE.read_arrays(key,geometry_key)
++		check(not saved.is_empty(),"saved editor road is baked by the production worker")
++		check(saved.get("parts") == expected_packet.get("parts") and saved.get("metadata") == expected_packet.get("metadata"),theme+" numeric road geometry and metadata survive save/load exactly")
++		var arrays_path: String = CACHE.directory.path_join(CACHE.identity(key)+".arrays")
++		DirAccess.remove_absolute(arrays_path+".sha256")
++		check(CACHE.read_arrays(key,geometry_key).is_empty(),"interrupted numeric checksum commit is a cache miss")
++		NativeTrackVisual.request_saved_road_bake(track,self)
++		await wait_for_bake()
++		check(not CACHE.read_arrays(key,geometry_key).is_empty(),"save rebakes an already completed editor road")
+ 		editor.free()
+ 		await process_frame
+ 	var unrelated: String = CACHE.directory.path_join("player-file.json")
+--- a/game/tests/test_road_cache_f13_original_control.gd
++++ b/game/tests/test_road_cache_f13_original_control.gd
+@@ -35,7 +35,7 @@
+ func run() -> void:
+ 	frozen_visual = GDScript.new()
+ 	var text: String = FileAccess.get_file_as_string("res://../docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/before/game__track__native_track_visual.gd").replace("\r\n","\n")
+-	frozen_visual.source_code = "extends NativeTrackVisual\n"
++	frozen_visual.source_code = "extends NativeTrackVisual\nstatic var _pending_road_bakes: Dictionary = {}\n"
+ 	for method: String in ["_build_creator_roads","_remember_road_meshes","request_saved_road_bake"]:
+ 		var begin: int = text.find("func "+method+"(")
+ 		if method == "request_saved_road_bake": begin -= 7
+--- a/game/tests/test_road_build_f13_original_control.gd
++++ b/game/tests/test_road_build_f13_original_control.gd
+@@ -23,7 +23,7 @@
+ func run() -> void:
+ 	frozen_visual = GDScript.new()
+ 	var text: String = FileAccess.get_file_as_string("res://../docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/before/game__track__native_track_visual.gd").replace("\r\n","\n")
+-	frozen_visual.source_code = "extends NativeTrackVisual\n"
++	frozen_visual.source_code = "extends NativeTrackVisual\nstatic var _pending_road_bakes: Dictionary = {}\n"
+ 	for method: String in ["_build_creator_roads","_remember_road_meshes","request_saved_road_bake"]:
+ 		var begin: int = text.find("func "+method+"(")
+ 		if method == "request_saved_road_bake": begin -= 7
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -13,7 +13,7 @@
+         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
+         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
+         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
+-        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd', 'game/ui/garage_lp_box.gd',
++        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd',
+         'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
+         'game/ui/garage_wash_geometry.gd', 'game/ui/garage_wash_tool.gd', 'game/ui/garage_hose_geometry.gd',
+         'game/ui/garage_hose_rig.gd'
+--- a/scripts/bake_garage_previews.gd
++++ b/scripts/bake_garage_previews.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Run with the pinned engine and a graphical renderer. Native game assets only.
+-const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
++const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+ 
+ func _sources() -> Dictionary:
+ 	var sources: Dictionary = {}
+--- a/game/ui/cosmetic_purchase_preview.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://b3lhx7l7o02m4
+--- a/game/ui/garage_cosmetic_shelf.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://btjbemgmi5bjw
+--- a/game/ui/garage_lp_box.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://divg8tjin5m6b
+--- a/game/ui/garage_opening_facade.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://bx6oobr3nwv31
+--- a/game/editor/jump_style_picker.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://bu76x2caplb4m
+--- a/game/vehicle/hovercraft_surface.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://vv4mfin0glet
+--- a/game/tests/bake_hovercraft_surfaces.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://66wuu1hi1pqk

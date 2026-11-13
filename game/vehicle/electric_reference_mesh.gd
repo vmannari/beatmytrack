@@ -59,6 +59,49 @@ static func ribbon(parent: Node3D,label: String,sample: Callable,count: int,radi
 		if n.length_squared()<0.1: n=Vector3.RIGHT
 		return n*cos(v*TAU)+tangent.cross(n).normalized()*sin(v*TAU))
 
+static func fitted_line(parent: Node3D,label: String,skin: MeshInstance3D,sample: Callable,count: int,width: float,material: Material,outward: Vector3,simple: bool) -> void:
+	# Thin flush strips follow the triangles actually rendered, including the
+	# lower-density exterior. An analytical offset can sink below those chords.
+	var key: String = label+"_fitted_v1"+("_simple" if simple else "")
+	var path: String = ASSET_ROOT.path_join(key.sha256_text().left(24)+".res")
+	if use_baked and not meshes.has(key) and ResourceLoader.exists(path): meshes[key] = load(path)
+	if not meshes.has(key):
+		assert(skin!=null and skin.mesh!=null,"Contour requires its actual exterior backing")
+		var tree: TriangleMesh = skin.mesh.generate_triangle_mesh()
+		var stations: Array = []
+		for index: int in range(count+1):
+			var t: float = index/float(count)
+			var center: Vector3 = sample.call(t)
+			var tangent: Vector3 = sample.call(minf(1,t+0.0001))-sample.call(maxf(0,t-0.0001))
+			var across: Vector3 = tangent.cross(outward).normalized()*width*0.5
+			var row: Array = []
+			for edge: float in [-1.0,1.0]:
+				var hit: Dictionary = tree.intersect_ray(center+across*edge+outward*0.20,-outward)
+				row.append(hit.position+outward*0.0008 if not hit.is_empty() else null)
+			stations.append(row)
+		var tool := SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for index: int in range(count):
+			if null in stations[index] or null in stations[index+1]: continue
+			var points: Array = [stations[index][0],stations[index][1],stations[index+1][1],stations[index+1][0]]
+			for triangle: Array in [[0,1,2],[0,2,3]]:
+				var cross: Vector3 = (points[triangle[1]]-points[triangle[0]]).cross(points[triangle[2]]-points[triangle[0]])
+				if cross.length_squared()<1e-20: continue
+				var order: Array = triangle.duplicate()
+				if cross.dot(outward)>0: order.reverse()
+				for corner: int in order:
+					tool.set_normal(outward)
+					tool.set_uv(Vector2(0,0))
+					tool.add_vertex(points[corner])
+		tool.index()
+		meshes[key] = tool.commit()
+	var node := MeshInstance3D.new()
+	node.name = label
+	node.mesh = meshes[key]
+	node.material_override = material
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(node)
+
 static func rounded(parent: Node3D,label: String,size: Vector3,center: Vector3,radius: float,material: Material) -> void:
 	var half: Vector3=size*0.5
 	var r: float=minf(radius,minf(half.x,minf(half.y,half.z))*0.95)

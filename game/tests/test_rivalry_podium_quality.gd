@@ -9,6 +9,8 @@ func run() -> void:
 		quit(0)
 		return
 	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-podium-polish-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/quality")
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--output="): evidence=ProjectSettings.globalize_path(argument.trim_prefix("--output="))
 	DirAccess.make_dir_recursive_absolute(evidence)
 	root.size = Vector2i(1280,720)
 	var backdrop := ColorRect.new()
@@ -22,7 +24,7 @@ func run() -> void:
 		var old: Control = make_preview(value,false,Vector2(30,155))
 		var polished: Control = make_preview(value,true,Vector2(660,155))
 		await draw()
-		check(polished.car.simple_model and old.car.simple_model,id+" keeps simple geometry in both native comparisons")
+		check(polished.car.simple_model and old.car.simple_model,id+" uses the approved reduced in both native comparisons")
 		check(polished.car.livery == old.car.livery and polished.car.customisation == old.car.customisation,id+" retains exact local colour and fitted-part choices")
 		check(is_equal_approx(polished.car.rotation.y,PI) and is_zero_approx(old.car.rotation.y),id+" applies the requested 180-degree turn only to the podium")
 		var source: StandardMaterial3D = polished.car.paint_materials.body

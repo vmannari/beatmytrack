@@ -37,7 +37,6 @@ func tick(app: Node) -> void:
 		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
 		CompactDetail.trim_front_cache()
 		preload("res://ui/garage_paint_icons.gd").images.clear()
-		CompactKitThumbnail.images.clear()
 	if is_instance_valid(app.editor_world): app.editor_world.trim_cache()
 	ObjectThumbnail.trim_cache()
 	retry = not READS.trim_cache() or retry
@@ -51,21 +50,24 @@ func tick(app: Node) -> void:
 	else: retry = true
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	if not force and not WORLDS.entries.is_empty():
-		# Prefer the completed world to a few idle preparation proxies. Evicting
-		# these never affects live effects; they are redrawn on the next entry.
-		var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
-		var effects = preload("res://vehicle/effect_render_preparation.gd")
-		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
-		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
-		# Preserve completed scenery before cheap CPU work and independent road
-		# GPU entries. Do not compete with any running preparation worker.
+		# Keep completed scenery and its initialized effect proxies before cheap
+		# CPU work and independent road GPU entries. Those road resources have
+		# verified artifact fallbacks; lost proxies require fresh covered draws.
+		# Do not compete with any running preparation worker.
 		if preload("res://editor/work_job.gd").pending.is_empty():
 			var roads: Dictionary = ROADS.residency()
-			excess = retained(app).retained_bytes-RETAINED_BUDGET
+			var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
 			ROADS.trim_cpu_to(maxi(0,int(roads.packets)+int(roads.sections)-excess))
 			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 			NativeTrackVisual.trim_private_road_cache(retained(app).retained_bytes-RETAINED_BUDGET)
 			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+		# If private road retention cannot meet the unchanged allowance, evict
+		# only the remaining excess from idle proxies before dropping the world.
+		# Active effects and in-flight preparation nodes retain their owners.
+		var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
+		var effects = preload("res://vehicle/effect_render_preparation.gd")
+		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
+		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
 	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
@@ -125,7 +127,7 @@ static func retained(app: Node) -> Dictionary:
 static func _option_texture_bytes() -> int:
 	var total: int = 0
 	var seen: Dictionary = {}
-	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images,CompactKitThumbnail.images]:
+	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images]:
 		for texture: Texture2D in cache.values():
 			if texture == null or seen.has(texture.get_instance_id()): continue
 			seen[texture.get_instance_id()] = true

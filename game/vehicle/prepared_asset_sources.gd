@@ -34,6 +34,7 @@ static func _files(directory: String, result: Array[String]) -> void:
 		if not child.begins_with("."): _files(directory.path_join(child),result)
 
 static func hashes(id: String) -> Dictionary:
+	id = VehicleCatalog.model_id(id)
 	if _snapshots.has(id): return _snapshots[id].duplicate()
 	var files: Array[String] = []
 	# Only declared consumed mesh roots need source-checkout binary validation.
@@ -79,6 +80,7 @@ static func runtime_projection(sources: Dictionary) -> Dictionary:
 	return result
 
 static func runtime_hashes(id: String) -> Dictionary:
+	id = VehicleCatalog.model_id(id)
 	if _runtime_snapshots.has(id): return _runtime_snapshots[id].duplicate()
 	var files: Array[String]=[]
 	_files("res://vehicle",files)

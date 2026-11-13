@@ -25,6 +25,17 @@ func run_load_daily_limits(app: Node, track: NativeTrack, vehicle: String, reque
 	var rules = preload("res://race/daily_elimination.gd").new()
 	return rules if rules.configure(data,str(track.metadata.get("cloud_version","")),vehicle) else null
 
+func _daily_ticket(app: Node, track: NativeTrack, vehicle: String) -> Dictionary:
+	if not app.online.client.signed_in() or int(app.online.client._capabilities.get("daily_lap_upload_version",0)) < 1: return {}
+	var owner: String = str(app.online.client.player.id)
+	var origin: String = str(app.online.client.base_url())
+	var issued: Dictionary = await app.cloud.ticket(track,false,vehicle,null,{},"daily_laps")
+	if not app.online.client.signed_in() or owner != str(app.online.client.player.id) or origin != str(app.online.client.base_url()): return {}
+	if not issued.is_empty():
+		issued._owner_id = owner
+		issued._origin = origin
+	return issued
+
 func run_daily_results(app: Node) -> void:
 	if app.game.has_node("DailyResults"): return
 	var request: Dictionary = app.game.get_meta("daily_request",{})
@@ -41,6 +52,7 @@ func run_daily_results(app: Node) -> void:
 	panel.rules = app.game.daily_elimination
 	panel.session = app.game.track_session
 	panel.result_saved = result_saved
+	panel.ticket_id = str(app.cloud_ticket.get("ticket_id",""))
 	panel.client = app.online.client
 	panel.cloud = app.cloud
 	panel.day = int(request.get("day",-1))
@@ -49,8 +61,14 @@ func run_daily_results(app: Node) -> void:
 	panel.track_name = str(app.game.native_track.metadata.get("name","Track of the Day"))
 	panel.theme_id = str(app.game.native_track.metadata.get("theme","pine"))
 	panel.retry_requested.connect(app._retry_race)
-	panel.return_requested.connect(app._leave_race)
+	panel.return_requested.connect(func() -> void:
+		if not app.cloud_ticket.is_empty():
+			app._save_result_upload(app.game,app.cloud_ticket,app.game.online_frames,"",app.game.online_rewinds)
+			if not app.cloud_ticket.is_empty(): return
+		app._leave_race())
 	layer.add_child(panel)
+	if not app.cloud_ticket.is_empty() and app.game.attempt_evidence.eligible(app.game.race_proof):
+		app._save_result_upload(app.game,app.cloud_ticket,app.game.online_frames,"",app.game.online_rewinds)
 
 func run_retry_daily_race(app: Node) -> void:
 	if app.cloud_starting or not app.game.preparation_complete: return
@@ -65,6 +83,15 @@ func run_retry_daily_race(app: Node) -> void:
 	if rules == null:
 		app._notice("Lap limits are unavailable. Return to Track of the Day and try again.")
 		return
+	# Do not discard a completed recording when durable save admission failed.
+	if not app.cloud_ticket.is_empty():
+		app._save_result_upload(active,app.cloud_ticket,active.online_frames,"",active.online_rewinds)
+		if not app.cloud_ticket.is_empty(): return
+	app.cloud_starting = true
+	var daily_ticket: Dictionary = await _daily_ticket(app,active.native_track,vehicle)
+	app.cloud_starting = false
+	if not is_instance_valid(active) or app.game != active or scope != app._daily_cache_scope(): return
+	app.cloud_ticket = daily_ticket
 	var results: Node = app.game.get_node_or_null("DailyResults")
 	if results != null:
 		app.game.remove_child(results)
@@ -156,6 +183,10 @@ func run_start_race(app: Node, track: NativeTrack, from_editor: bool, offline_on
 			app._notice("Lap limits are unavailable for this car. Try again shortly.")
 			return
 	app.cloud_ticket = {}
+	if daily_rules != null:
+		var daily_ticket: Dictionary = await _daily_ticket(app,track,selected_vehicle)
+		if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		app.cloud_ticket = daily_ticket
 	var road_overlap: RefCounted
 	if daily_rules == null and not offline_only and not from_editor and track.metadata.has("cloud_version") and app.online.client.signed_in():
 		loading.stage("Connecting race…")

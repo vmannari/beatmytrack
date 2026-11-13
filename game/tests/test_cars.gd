@@ -37,6 +37,13 @@ func _body_triangles(node: Node) -> int:
 	return triangles
 
 func _run() -> void:
+	var only_vehicle: String = ""
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--car="): only_vehicle = argument.trim_prefix("--car=")
+	if not only_vehicle.is_empty() and only_vehicle not in VehicleCatalog.IDS:
+		check(false,"known vehicle filter")
+		quit(1)
+		return
 	var soil: NativeTrack = _soil()
 	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
 	var keys: Array[String] = []
@@ -153,7 +160,7 @@ func _run() -> void:
 	# Existing conservative route driver: completion/replay evidence, not optimal lap balance.
 	for track_id: String in ["arto4", "hiekka", "ovaali3"]:
 		for id: String in VehicleCatalog.IDS:
-			if "--car=kart" in OS.get_cmdline_user_args() and id != "kart": continue
+			if not only_vehicle.is_empty() and id != only_vehicle: continue
 			await _laps(id,track_id)
 	print("CAR_METRICS ",JSON.stringify(metrics))
 	print("CAR_TESTS: %d checks, %d failures" % [checks,failures])

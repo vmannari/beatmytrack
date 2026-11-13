@@ -246,7 +246,7 @@ static func _normalize(data: Variant) -> Dictionary:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "control_layout":
 			if not ControlLayout.valid(preferences[field]): return {}
-		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "optional_analytics", "music_enabled", "drift_haptics"]:
+		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "reduced_car_models", "optional_analytics", "music_enabled", "drift_haptics"]:
 			if not preferences[field] is bool:
 				return {}
 		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:

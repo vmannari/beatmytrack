@@ -1,0 +1,2096 @@
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,9 +1,10 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-17-sculpted-wreck-cliff"
++const VERSION: String = "authored-props-18-selective-lods"
+ const GUARDRAIL = preload("res://track/guardrail_visual.gd")
+ const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
++const SCENERY_LODS = preload("res://track/scenery_mesh_lods.gd")
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+ static var pine_meshes: Dictionary = {}
+@@ -67,6 +68,7 @@
+ 	if warmed(kind,theme,float(packet.length),str(packet.color)): return true
+ 	var model: ArrayMesh = PropGeometry.finish(packet.tool,kind not in PropEgypt.KINDS and kind not in PropWinterCraft.KINDS and kind not in PropNight.KINDS)
+ 	if theme == "winter" and kind in WINTER_FINISH.KINDS: model = WINTER_FINISH.apply(model,kind,float(packet.length))
++	SCENERY_LODS.prepare_source(model,kind)
+ 	if kind == "tree": _admit(pine_meshes,TrackTheme.foliage(theme).to_html()+"/true",model,32)
+ 	else: _admit(meshes,_key(kind,theme,float(packet.length),str(packet.color)),model,CACHE_LIMIT)
+ 	return true
+@@ -108,10 +110,11 @@
+ 		# like deep triangular dents under the low Desert sun.
+ 		model = PropGeometry.finish(local,kind not in PropEgypt.KINDS and kind not in PropWinterCraft.KINDS and kind not in PropNight.KINDS)
+ 		if kit.theme_id == "winter" and kind in WINTER_FINISH.KINDS: model = WINTER_FINISH.apply(model,kind,length)
++		SCENERY_LODS.prepare_source(model,kind)
+ 		_admit(meshes,key,model,CACHE_LIMIT)
+ 	_touch(model)
+ 	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+-	if kind in PropWinterCraft.KINDS or kind in PropEgypt.KINDS or kind in PropNight.KINDS:
++	if kind in PropWinterCraft.KINDS or kind in PropEgypt.KINDS or kind in PropNight.KINDS or tool.get_meta("scenery_lods_enabled",false):
+ 		# Keep a building's overlapping trim in its original triangle order inside
+ 		# one spatial draw. These are triangle-corner ends, before hidden pruning.
+ 		var ends: PackedInt32Array = tool.get_meta("spatial_object_ends",PackedInt32Array())
+--- a/game/track/prop_geometry.gd
++++ b/game/track/prop_geometry.gd
+@@ -1,6 +1,7 @@
+ class_name PropGeometry
+ extends RefCounted
+ ## Original opaque, vertex-coloured prop geometry. No collision or simulation data.
++const SCENERY_LODS = preload("res://track/scenery_mesh_lods.gd")
+ 
+ # Opt in only while assembling one immutable prop. The cores are strictly
+ # inside closed boxes; they are never inferred from open foliage or a mesh AABB.
+@@ -88,6 +89,7 @@
+ 		offset = 0 if existing[Mesh.ARRAY_VERTEX] == null else existing[Mesh.ARRAY_VERTEX].size()/3
+ 	var hidden: PackedInt32Array = destination.get_meta("prop_hidden_triangles",PackedInt32Array())
+ 	for triangle: int in mesh.get_meta("prop_hidden_triangles",PackedInt32Array()): hidden.append(offset+triangle)
++	SCENERY_LODS.append_plan(destination,mesh,offset*3,pose)
+ 	destination.append_from(mesh,0,pose)
+ 	destination.set_meta("prop_hidden_triangles",hidden)
+ 	destination.set_meta("prop_triangle_count",offset+mesh.surface_get_array_len(0)/3)
+@@ -121,10 +123,12 @@
+ 
+ static func commit(tool: SurfaceTool) -> ArrayMesh:
+ 	assert(Thread.is_main_thread(),"Prop mesh publication belongs to the main thread")
+-	if not tool.has_meta("prop_hidden_triangles") or tool.get_meta("prop_hidden_triangles").is_empty(): return tool.commit()
+-	var result := ArrayMesh.new()
+-	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays(tool))
+-	return result
++	var result: ArrayMesh
++	if not tool.has_meta("prop_hidden_triangles") or tool.get_meta("prop_hidden_triangles").is_empty(): result = tool.commit()
++	else:
++		result = ArrayMesh.new()
++		result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays(tool))
++	return SCENERY_LODS.apply(tool,result)
+ 
+ class SolidBox extends RefCounted:
+ 	var center: Vector3
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,8 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-217-desert-road-relief"
++const VERSION: String = "track-kit-218-selective-scenery-lods"
++var scenery_lods: bool = true # False is an offline full-detail comparison control.
+ var piece_road_materials: bool = false
+ var desert_relief: RefCounted
+ const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+@@ -1988,6 +1989,10 @@
+ 	var egypt_tool := SurfaceTool.new(); egypt_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var egypt_count: int = 0
+ 	var winter_craft_tool:=SurfaceTool.new(); winter_craft_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if scenery_lods and not editor_preview:
++		winter_craft_tool.set_meta("scenery_lods_enabled",true)
++		for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
++			if object.kind == "container": tool.set_meta("scenery_lods_enabled",true); break
+ 	var winter_craft_count: int=0
+ 	var night_tool:=SurfaceTool.new(); night_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var night_count: int=0
+@@ -2113,6 +2118,7 @@
+ 		tool.index()
+ 		var mesh := MeshInstance3D.new()
+ 		mesh.mesh = PropGeometry.commit(tool)
++		_spatial_prop_objects(mesh,tool)
+ 		if _capture_editor_prop_arrays:
+ 			mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
+ 			mesh.set_meta("editor_prop_hidden",tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
+--- a/game/track/spatial_mesh_chunks.gd
++++ b/game/track/spatial_mesh_chunks.gd
+@@ -21,7 +21,7 @@
+ 	var count: int = indices.size() if not indices.is_empty() else vertices.size()
+ 	var extent: Vector3 = source.mesh.get_aabb().size
+ 	# Include boundary-vertex duplication and node allowance conservatively.
+-	var estimate: int = ceili((vertices.size()*96+count*4)*1.2)+MAX_CHUNKS*512
++	var estimate: int = ceili((vertices.size()*96+count*4)*1.2)+MAX_CHUNKS*512+int(source.mesh.get_meta("scenery_lod_bytes",0))*2
+ 	if adaptive and extra_budget >= 0 and estimate > extra_budget:
+ 		_attach(parent,source)
+ 		return [source]
+@@ -38,7 +38,8 @@
+ 		return [source]
+ 	# Numerical grouping/remapping does not need the scene tree or renderer.
+ 	# Running it on the existing worker removes repeated main-frame waits.
+-	var prepare: Callable = preload("res://track/spatial_mesh_preparation.gd").run.bind(arrays,indices,vertices,count,object_ends,object_centres,TILE_SIZE,MAX_CHUNKS)
++	var lod_packets: Array = preload("res://track/scenery_mesh_lods.gd").packets(source.mesh) if source.mesh is ArrayMesh else []
++	var prepare: Callable = preload("res://track/spatial_mesh_preparation.gd").run.bind(arrays,indices,vertices,count,object_ends,object_centres,TILE_SIZE,MAX_CHUNKS,lod_packets)
+ 	var prepared: Array = []
+ 	if cooperate.is_valid() and parent.is_inside_tree():
+ 		var job = preload("res://editor/work_job.gd").start(prepare,parent.get_tree())
+@@ -88,6 +89,7 @@
+ 			packet.vertex_data = packed
+ 			mesh.clear_surfaces()
+ 			mesh.set("_surfaces",[packet])
++		mesh = preload("res://track/scenery_mesh_lods.gd").attach(mesh,data.get("lods",{}))
+ 		var node := MeshInstance3D.new()
+ 		node.name = source_name if result.is_empty() else source_name+"_Tile_"+str(key.x)+"_"+str(key.y)
+ 		node.mesh = mesh
+--- a/game/track/spatial_mesh_preparation.gd
++++ b/game/track/spatial_mesh_preparation.gd
+@@ -1,6 +1,6 @@
+ extends RefCounted
+ ## CPU-only numeric spatial partition. Input arrays remain immutable.
+-static func run(cancelled: Callable, arrays: Array, indices: PackedInt32Array, vertices: PackedVector3Array, count: int, object_ends: PackedInt32Array, object_centres: PackedVector3Array, tile_size: float, max_chunks: int) -> Array[Dictionary]:
++static func run(cancelled: Callable, arrays: Array, indices: PackedInt32Array, vertices: PackedVector3Array, count: int, object_ends: PackedInt32Array, object_centres: PackedVector3Array, tile_size: float, max_chunks: int, lod_packets: Array = []) -> Array[Dictionary]:
+ 	var size: float = tile_size
+ 	var groups: Dictionary = {}
+ 	while true:
+@@ -21,6 +21,30 @@
+ 		if groups.size() <= max_chunks: break
+ 		size *= 2.0
+ 	if groups.size() <= 1: return []
++	var lod_groups: Dictionary = {}
++	for packet: Dictionary in lod_packets:
++		var parts: Dictionary = {}
++		var data: PackedByteArray = packet.data
++		var stride: int = packet.stride
++		var ends: PackedInt32Array = packet.object_ends
++		for start: int in range(0,data.size()/stride,3):
++			if start % 768 == 0 and cancelled.call(): return []
++			var triangle := PackedInt32Array()
++			for corner: int in range(3): triangle.append(data.decode_u16((start+corner)*stride) if stride == 2 else data.decode_u32((start+corner)*stride))
++			var center: Vector3 = (vertices[triangle[0]]+vertices[triangle[1]]+vertices[triangle[2]])/3.0
++			if not ends.is_empty(): center = object_centres[ends.bsearch(start+1)]
++			var key := Vector2i(floori(center.x/size),floori(center.z/size))
++			if not groups.has(key):
++				# A collapsed face can move its centroid across a tile edge. Keep it
++				# in an existing full-detail chunk; its actual AABB includes every vertex.
++				var distance: float = INF
++				var target: Vector2i = key
++				for candidate: Vector2i in groups:
++					var next: float = Vector2(candidate).distance_squared_to(Vector2(target))
++					if next < distance: distance = next; key = candidate
++			if not parts.has(key): parts[key] = PackedInt32Array()
++			parts[key].append_array(triangle)
++		lod_groups[float(packet.error)] = parts
+ 	var result: Array[Dictionary] = []
+ 	for key: Vector2i in groups:
+ 		if cancelled.call(): return []
+@@ -34,6 +58,18 @@
+ 				map[original] = used.size()
+ 				used.append(original)
+ 			chosen[corner] = map[original]
++		var lods: Dictionary = {}
++		for error: float in lod_groups:
++			var local: PackedInt32Array = lod_groups[error].get(key,PackedInt32Array())
++			# No reduced triangles assigned here means this full-detail chunk is
++			# retained. An empty LOD is not a supported renderer representation.
++			if local.is_empty(): continue
++			for corner: int in range(local.size()):
++				if corner % 512 == 0 and cancelled.call(): return []
++				var original: int = local[corner]
++				if not map.has(original): map[original] = used.size(); used.append(original)
++				local[corner] = map[original]
++			lods[error] = local
+ 		var part: Array = []
+ 		part.resize(Mesh.ARRAY_MAX)
+ 		for attribute: int in range(Mesh.ARRAY_INDEX):
+@@ -47,5 +83,7 @@
+ 					data[index*stride+component] = arrays[attribute][used[index]*stride+component]
+ 			part[attribute] = data
+ 		part[Mesh.ARRAY_INDEX] = chosen
+-		result.append({"key":key,"size":size,"arrays":part,"used":used})
++		var entry: Dictionary = {"key":key,"size":size,"arrays":part,"used":used}
++		if not lods.is_empty(): entry.lods = lods
++		result.append(entry)
+ 	return result
+--- a/game/editor/cache_bytes.gd
++++ b/game/editor/cache_bytes.gd
+@@ -9,7 +9,7 @@
+ 			var arrays: Array = value.surface_get_arrays(surface)
+ 			bytes += arrays[Mesh.ARRAY_VERTEX].size()*128
+ 			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*8
+-	return bytes
++	return bytes+int(value.get_meta("scenery_lod_bytes",0))+int(value.get_meta("scenery_lod_plan_bytes",0))
+ 
+ static func scene(node: Node, seen: Dictionary = {}, excluded: Dictionary = {}) -> int:
+ 	if excluded.has(node.get_instance_id()): return 0
+--- a/game/track/prepared_world_cache.gd
++++ b/game/track/prepared_world_cache.gd
+@@ -267,6 +267,7 @@
+ 			var arrays: Array = mesh.surface_get_arrays(surface)
+ 			mesh_bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
+ 			if arrays[Mesh.ARRAY_INDEX] != null: mesh_bytes += arrays[Mesh.ARRAY_INDEX].size()*4
++		mesh_bytes += int(mesh.get_meta("scenery_lod_bytes",0))+int(mesh.get_meta("scenery_lod_plan_bytes",0))
+ 		seen[mesh.get_instance_id()] = mesh_bytes
+ 		bytes += mesh_bytes
+ 	for child: Node in node.get_children(): bytes += _resource_bytes(child,seen)
+--- /dev/null
++++ b/game/track/scenery_mesh_lods.gd
+@@ -0,0 +1,108 @@
++class_name SceneryMeshLods
++extends RefCounted
++## Offline-authored corner maps; no mesh simplifier is used at runtime.
++const VERSION: String = "scenery-lods-1"
++const KINDS: Array[String] = ["ice_compact","snow_castle","container"]
++const ROOT: String = "res://assets/scenery_lods_v1/"
++const ERROR: float = 0.028
++
++static func signature(mesh: ArrayMesh) -> String:
++	var arrays: Array = mesh.surface_get_arrays(0)
++	# Paint may change. Geometry, normals, ordering and hidden-face ownership may not.
++	var digest := HashingContext.new()
++	digest.start(HashingContext.HASH_SHA256)
++	digest.update(var_to_bytes([arrays[Mesh.ARRAY_VERTEX],arrays[Mesh.ARRAY_NORMAL],mesh.get_meta("prop_hidden_triangles",PackedInt32Array())]))
++	return digest.finish().hex_encode()
++
++static func prepare_source(mesh: ArrayMesh, kind: String) -> void:
++	if kind not in KINDS: return
++	var path: String = ROOT+kind+".res"
++	if not ResourceLoader.exists(path): return
++	var asset: Resource = load(path)
++	if asset == null or asset.get_meta("version","") != VERSION or asset.get_meta("kind","") != kind: return
++	if asset.get_meta("signature","") != signature(mesh): return
++	var corners: PackedInt32Array = asset.get_meta("corners",PackedInt32Array())
++	var count: int = mesh.surface_get_array_len(0)
++	if corners.is_empty() or corners.size()%3 != 0 or corners.size() >= count or int(asset.get_meta("corner_count",0)) != count: return
++	for corner: int in corners:
++		if corner < 0 or corner >= count: return
++	mesh.set_meta("scenery_lod_plan",{"corners":corners,"count":count})
++	mesh.set_meta("scenery_lod_plan_bytes",corners.size()*4+256)
++
++static func append_plan(tool: SurfaceTool, mesh: ArrayMesh, offset: int, pose: Transform3D) -> void:
++	if not tool.get_meta("scenery_lods_enabled",false) or not mesh.has_meta("scenery_lod_plan"): return
++	var plan: Dictionary = mesh.get_meta("scenery_lod_plan")
++	var scale: Vector3 = pose.basis.get_scale().abs()
++	var plans: Array = tool.get_meta("scenery_lod_plans",[])
++	plans.append({"start":offset,"end":offset+int(plan.count),"corners":plan.corners,"error":ERROR*maxf(scale.x,maxf(scale.y,scale.z))})
++	tool.set_meta("scenery_lod_plans",plans)
++
++static func _range(indices: PackedInt32Array, start: int, end: int, hidden: PackedInt32Array) -> PackedInt32Array:
++	var result := PackedInt32Array()
++	var cursor: int = start
++	for index: int in range(hidden.bsearch(start/3),hidden.bsearch(end/3)):
++		var at: int = hidden[index]*3
++		if at > cursor: result.append_array(indices.slice(cursor,at))
++		cursor = at+3
++	if cursor < end: result.append_array(indices.slice(cursor,end))
++	return result
++
++static func apply(tool: SurfaceTool, source: ArrayMesh) -> ArrayMesh:
++	var plans: Array = tool.get_meta("scenery_lod_plans",[])
++	if plans.is_empty(): return source
++	var arrays: Array = tool.commit_to_arrays()
++	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	if indices.is_empty():
++		indices.resize(arrays[Mesh.ARRAY_VERTEX].size())
++		for index: int in range(indices.size()): indices[index] = index
++	var hidden: PackedInt32Array = tool.get_meta("prop_hidden_triangles",PackedInt32Array()).duplicate(); hidden.sort()
++	var ends: PackedInt32Array = tool.get_meta("spatial_object_ends",PackedInt32Array())
++	var lod_ends: PackedInt32Array = ends.duplicate()
++	for index: int in range(ends.size()): lod_ends[index] -= hidden.bsearch(ends[index]/3)*3
++	var reduced := PackedInt32Array()
++	var cursor: int = 0
++	var error: float = 0.0
++	for plan: Dictionary in plans:
++		if plan.start < cursor or plan.end > indices.size(): return source
++		reduced.append_array(_range(indices,cursor,plan.start,hidden))
++		for corner: int in plan.corners: reduced.append(indices[int(plan.start)+corner])
++		var removed: int = _range(indices,plan.start,plan.end,hidden).size()-plan.corners.size()
++		for index: int in range(ends.size()):
++			if ends[index] > plan.start and ends[index] < plan.end: return source
++			if ends[index] >= plan.end: lod_ends[index] -= removed
++		cursor = plan.end; error = maxf(error,float(plan.error))
++	reduced.append_array(_range(indices,cursor,indices.size(),hidden))
++	var result: ArrayMesh = attach(source,{error:reduced})
++	if not lod_ends.is_empty(): result.set_meta("scenery_lod_object_ends",lod_ends)
++	return result
++
++static func attach(source: ArrayMesh, levels: Dictionary) -> ArrayMesh:
++	if levels.is_empty(): return source
++	var surfaces: Array = source.get("_surfaces").duplicate(true)
++	var packet: Dictionary = surfaces[0]
++	var stride: int = packet.index_data.size()/int(packet.index_count) if int(packet.get("index_count",0)) > 0 else (2 if int(packet.vertex_count) <= 65536 else 4)
++	var packed_levels: Array = []
++	var bytes: int = 0
++	for error: float in levels:
++		var indices: PackedInt32Array = levels[error]
++		var data := PackedByteArray(); data.resize(indices.size()*stride)
++		for index: int in range(indices.size()):
++			if stride == 2: data.encode_u16(index*stride,indices[index])
++			else: data.encode_u32(index*stride,indices[index])
++		packed_levels.append(error); packed_levels.append(data); bytes += data.size()*4
++	packet.lods = packed_levels
++	var result := ArrayMesh.new(); result.set("_surfaces",surfaces)
++	result.custom_aabb = source.custom_aabb; result.shadow_mesh = source.shadow_mesh
++	for key: StringName in source.get_meta_list(): result.set_meta(key,source.get_meta(key))
++	result.set_meta("scenery_lod_bytes",bytes)
++	return result
++
++static func packets(mesh: ArrayMesh) -> Array:
++	if not mesh.has_meta("scenery_lod_bytes"): return []
++	var surface: Dictionary = mesh.get("_surfaces")[0]
++	var stride: int = surface.index_data.size()/int(surface.index_count)
++	var result: Array = []
++	var levels: Array = surface.get("lods",[])
++	for index: int in range(0,levels.size(),2):
++		result.append({"error":levels[index],"data":levels[index+1],"stride":stride,"object_ends":mesh.get_meta("scenery_lod_object_ends",PackedInt32Array())})
++	return result
+--- /dev/null
++++ b/game/tests/bake_scenery_mesh_lods.gd
+@@ -0,0 +1,40 @@
++extends SceneTree
++## TSO01: offline-only source-corner maps for the three accepted prop candidates.
++const LODS = preload("res://track/scenery_mesh_lods.gd")
++const GENERATOR = preload("res://tests/support/track_asset_lod_review.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(LODS.ROOT))
++	for kind: String in LODS.KINDS:
++		CreatorPropVisual.trim_cache()
++		var visual := NativeTrackVisual.new(); visual.scenery_lods = false; visual._capture_editor_prop_arrays = true
++		var track := NativeTrack.new(); track.metadata = {"creator_document":{"objects":[{"kind":kind,"position":[0.0,0.0],"rotation":0.0}]}}
++		await visual._build_placed_objects(track)
++		var node: MeshInstance3D
++		for child: Node in visual.get_children():
++			if child is MeshInstance3D and not child.is_in_group("contact_lighting"): node = child; break
++		assert(node != null)
++		var source: ArrayMesh = CreatorPropVisual.meshes[CreatorPropVisual._key(kind,"pine",-1.0,"")]
++		var unpruned: Array = node.get_meta("editor_prop_arrays")
++		var expanded: PackedInt32Array = unpruned[Mesh.ARRAY_INDEX]
++		assert(expanded.size() == source.surface_get_array_len(0))
++		var first_corner: Dictionary = {}
++		for corner: int in range(expanded.size()):
++			if not first_corner.has(expanded[corner]): first_corner[expanded[corner]] = corner
++		var policy = GENERATOR.new()
++		var mesh: ArrayMesh = policy.prepare(node.mesh)
++		var packet: Dictionary = mesh.get("_surfaces")[0]
++		var levels: Array = packet.lods
++		var stride: int = packet.index_data.size()/int(packet.index_count)
++		var data: PackedByteArray = levels[1]
++		var corners := PackedInt32Array()
++		for index: int in range(data.size()/stride):
++			var vertex: int = data.decode_u16(index*stride) if stride == 2 else data.decode_u32(index*stride)
++			corners.append(first_corner[vertex])
++		var asset := Resource.new()
++		asset.set_meta("version",LODS.VERSION); asset.set_meta("kind",kind)
++		asset.set_meta("signature",LODS.signature(source)); asset.set_meta("corner_count",expanded.size()); asset.set_meta("corners",corners)
++		assert(ResourceSaver.save(asset,LODS.ROOT+kind+".res",ResourceSaver.FLAG_COMPRESS) == OK)
++		print("SCENERY_LOD_BAKE ",kind," ",node.mesh.surface_get_array_index_len(0)/3," -> ",corners.size()/3)
++		visual.free()
++	quit()
+--- /dev/null
++++ b/game/tests/test_scenery_mesh_lods.gd
+@@ -0,0 +1,189 @@
++extends "res://tests/review_track_asset_simplification_2026_11_07.gd"
++## TSO01-TSO04: production batches, exact masters, cache fences and native views.
++const POLICY = preload("res://track/scenery_mesh_lods.gd")
++const WORLDS = preload("res://track/prepared_world_cache.gd")
++const BYTES = preload("res://editor/cache_bytes.gd")
++
++func make(theme: String, objects: Array, reduced: bool, editor: bool = false) -> NativeTrackVisual:
++	var visual := NativeTrackVisual.new(); visual.theme_id = theme; visual.colors = TrackTheme.palette(theme)
++	visual.scenery_lods = reduced; visual.editor_preview = editor; visual._suppress_night_fx = true
++	var track := NativeTrack.new(); track.metadata = {"creator_document":{"objects":objects.duplicate(true)},"scenery_objects":[],"theme":theme}
++	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)
++	var original: Dictionary = track.metadata.duplicate(true)
++	await visual._build_placed_objects(track)
++	check(track.metadata == original,"canonical placements, dimensions and cosmetic data remain exact")
++	return visual
++
++func objects(kind: String, scale: float = 1.0, count: int = 1) -> Array:
++	var result: Array = []
++	for index: int in range(count):
++		var object: Dictionary = {"kind":kind,"position":[(index%3-1)*80.0 if count>1 else 0.0,(index/3)*80.0 if count>1 else 0.0],"rotation":37.0 if scale != 1.0 else 0.0,"scale":scale}
++		if kind == "container" and scale != 1.0: object.color = "c54a38"
++		result.append(object)
++	return result
++
++func meshes(visual: Node) -> Array:
++	var parts: Array = []; collect(visual,parts); return parts
++
++func triangles(mesh: Mesh, reduced: bool = false) -> int:
++	var model: Mesh = first_lod(mesh) if reduced else mesh
++	var arrays: Array = model.surface_get_arrays(0)
++	return (arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size())/3
++
++func triangle_set(parts: Array, reduced: bool) -> Array[String]:
++	var result: Array[String] = []
++	for part: Dictionary in parts:
++		var mesh: Mesh = first_lod(part.mesh) if reduced else part.mesh
++		var arrays: Array = mesh.surface_get_arrays(0)
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++		for start: int in range(0,indices.size(),3):
++			var values: Array = []
++			for corner: int in range(3):
++				var index: int = indices[start+corner]
++				for attribute: int in [Mesh.ARRAY_VERTEX,Mesh.ARRAY_NORMAL,Mesh.ARRAY_COLOR]: values.append(arrays[attribute][index])
++			result.append(var_to_bytes(values).hex_encode())
++	result.sort(); return result
++
++func structural() -> void:
++	for theme: String in TrackTheme.IDS:
++		for kind: String in POLICY.KINDS:
++			for scale: float in [0.5,1.0,2.0]:
++				var before: NativeTrackVisual = await make(theme,objects(kind,scale),false)
++				var after: NativeTrackVisual = await make(theme,objects(kind,scale),true)
++				var a: Array = meshes(before); var b: Array = meshes(after)
++				check(a.size()==b.size(),"original draw grouping retained")
++				for index: int in range(a.size()):
++					var old: Dictionary = a[index].mesh.get("_surfaces")[0].duplicate(true)
++					var now: Dictionary = b[index].mesh.get("_surfaces")[0].duplicate(true)
++					now.erase("lods")
++					check(old==now,"full-detail GPU positions/normals/colours/indices remain byte-exact")
++					check(b[index].mesh.has_meta("scenery_lod_bytes"),theme+"/"+kind+" source signature accepts saved paint and scale")
++					check(triangles(b[index].mesh,true)<triangles(a[index].mesh)*0.52,"approved lower level survives joined assembly")
++					check(BYTES.mesh(b[index].mesh)>BYTES.mesh(a[index].mesh),"additional LOD memory is accounted within existing budgets")
++				before.free(); after.free()
++	for kind: String in ["tree","igloo","egypt_pyramid","grandstand","abandoned_warehouse","crate"]:
++		var visual: NativeTrackVisual = await make("pine",objects(kind),true)
++		for part: Dictionary in meshes(visual): check(not part.mesh.has_meta("scenery_lod_bytes"),"unapproved "+kind+" retains its original geometry")
++		visual.free()
++	for kind: String in POLICY.KINDS:
++		var visual: NativeTrackVisual = await make("pine",objects(kind),true,true)
++		for part: Dictionary in meshes(visual): check(not part.mesh.has_meta("scenery_lod_bytes"),"editor retains full detail")
++		visual.free()
++		CreatorPropVisual.trim_cache()
++		check(CreatorPropVisual.publish_warm(CreatorPropVisual.warm(Callable(),kind,"pine")),"worker-prepared source publishes")
++		visual = await make("pine",objects(kind),true)
++		check(meshes(visual)[0].mesh.has_meta("scenery_lod_bytes"),"warm source retains approved reduction")
++		visual.free()
++	var wrong := ArrayMesh.new(); var sphere := SphereMesh.new(); wrong.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,sphere.surface_get_arrays(0))
++	POLICY.prepare_source(wrong,"container")
++	check(not wrong.has_meta("scenery_lod_plan"),"changed/mismatched geometry fails closed to full detail")
++	for kind: String in POLICY.KINDS:
++		var visual: NativeTrackVisual = await make("winter" if kind != "container" else "pine",objects(kind,1.0,6),true)
++		var original: Array = meshes(visual)
++		var full: Array[String] = triangle_set(original,false)
++		var low: Array[String] = triangle_set(original,true)
++		await visual._partition_bank_meshes()
++		var parts: Array = []
++		for node: MeshInstance3D in visual.find_children("*","MeshInstance3D",true,false):
++			if node.has_meta("spatial_mesh_tile"): parts.append({"node":node,"mesh":node.mesh,"instances":1})
++		check(parts.size()>original.size(),kind+" spatial batching remains active, including adaptive hidden draw views")
++		check(triangle_set(parts,false)==full,"spatial worker preserves every master triangle and attribute")
++		check(triangle_set(parts,true)==low,"spatial worker preserves every reduced triangle exactly once")
++		WORLDS.trim_cache()
++		var track := NativeTrack.new(); track.metadata = {"theme":visual.theme_id}
++		WORLDS.remember([kind,"lod-test"],visual,track)
++		var restored := NativeTrackVisual.new()
++		check(WORLDS.restore([kind,"lod-test"],restored),"prepared world remains inside its unchanged byte budget")
++		check(triangle_set(meshes(restored),true)==low,"prepared world restoration retains reduced index buffers")
++		restored.free(); visual.free(); WORLDS.trim_cache()
++	var mixed: Array = objects("container",0.5,3)+objects("snow_castle",1.0,3)+objects("ice_compact",2.0,3)+objects("igloo",1.0,3)
++	for index: int in range(mixed.size()): mixed[index].position = [float((index%4)*40-60),float((index/4)*40-40)]
++	var mixed_visual: NativeTrackVisual = await make("winter",mixed,true)
++	var mixed_full: Array[String] = triangle_set(meshes(mixed_visual),false)
++	var mixed_low: Array[String] = triangle_set(meshes(mixed_visual),true)
++	await mixed_visual._partition_bank_meshes()
++	var mixed_parts: Array = []
++	for node: MeshInstance3D in mixed_visual.find_children("*","MeshInstance3D",true,false):
++		if node.has_meta("spatial_mesh_tile"): mixed_parts.append({"node":node,"mesh":node.mesh,"instances":1})
++	check(triangle_set(mixed_parts,false)==mixed_full,"mixed-scale and protected props retain every master triangle through splitting")
++	check(triangle_set(mixed_parts,true)==mixed_low,"mixed families retain protected full geometry and all approved reduced triangles")
++	mixed_visual.free()
++	for theme: String in ["pine","winter","night_city"]:
++		var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++		track.metadata.theme = theme
++		track.metadata.scenery_objects = []
++		for index: int in range(POLICY.KINDS.size()): track.metadata.scenery_objects.append({"kind":POLICY.KINDS[index],"position":[float(index*20-20),-55.0],"rotation":0.0})
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.vehicle_id = "compact"; game.initial_track = track; game.production_mode = true; game.attempt_practice = true; game.hitch_diagnostics_enabled = false
++		root.add_child(game); game.paused = true; game.set_physics_process(false)
++		while game.car == null or not game.car.model_ready: await process_frame
++		var count: int = 0
++		for part: Dictionary in meshes(game.track_ground):
++			if part.mesh.has_meta("scenery_lod_bytes"): count += 1
++		check(count>=2,"actual Game "+theme+" installs both optimized material families")
++		var state: Array = game.sim.state.snapshot(); game.call("_process",0.0)
++		check(game.sim.state.snapshot()==state and game.track_session.target_laps==RaceRules.LAPS,"actual Game retains canonical state and lap contract")
++		game.free(); await process_frame
++
++func native() -> void:
++	root.size = Vector2i(1280,720); DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	var viewport := SubViewport.new(); viewport.size = root.size; viewport.own_world_3d = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	viewport.mesh_lod_threshold = 1.0; viewport.msaa_3d = Viewport.MSAA_4X; root.add_child(viewport)
++	var stage := Node3D.new(); viewport.add_child(stage)
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.keep_aspect = Camera3D.KEEP_HEIGHT; camera.current = true; stage.add_child(camera)
++	var light := DirectionalLight3D.new(); light.shadow_enabled = true; stage.add_child(light)
++	var world := WorldEnvironment.new(); world.environment = Environment.new(); world.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; stage.add_child(world)
++	var plane := PlaneMesh.new(); plane.size = Vector2(200,200)
++	var floor := MeshInstance3D.new(); floor.mesh = plane; floor.position.y = -0.035; stage.add_child(floor)
++	for kind: String in POLICY.KINDS:
++		for theme: String in ["pine","winter","night_city"]:
++			TrackTheme.apply_lighting(theme,world.environment,light)
++			if theme == "night_city": world.environment.ambient_light_energy = 0.5; light.light_energy = 0.7
++			floor.material_override = VisualGeometry.material(TrackTheme.palette(theme)[1])
++			var before: NativeTrackVisual = await make(theme,objects(kind),false); stage.add_child(before)
++			var after: NativeTrackVisual = await make(theme,objects(kind),true); stage.add_child(after); after.hide()
++			var bounds: AABB = ObjectThumbnail._mesh_bounds(before)
++			for view: String in ["overhead","follow","speed_zoom","close"]:
++				camera.size = maxf(bounds.size.length()*1.2,2.0) if view == "close" else 35.0/1.15*(1.3 if view == "speed_zoom" else 1.0)
++				var pitch: float = deg_to_rad(48.0 if view == "follow" else 56.0)
++				var center: Vector3 = bounds.get_center() if view == "close" else Vector3.ZERO
++				camera.look_at_from_position(center+Vector3(sin(0.314)*cos(pitch),sin(pitch),cos(0.314)*cos(pitch))*65.0,center)
++				before.hide(); after.show(); await frames()
++				after.hide(); before.show(); var a: Dictionary = await observe(viewport)
++				before.hide(); after.show(); var b: Dictionary = await observe(viewport)
++				after.hide(); before.show(); var restored: Dictionary = await observe(viewport)
++				check(a.image.get_data()==restored.image.get_data(),"original native restoration remains exact")
++				check(a.primitives>1000 and a.draws>0,"native comparison contains the actual visible prop")
++				check(a.draws==b.draws,"no per-object render passes added")
++				if view == "close": check(a.primitives==b.primitives,"full visible near-detail geometry retained")
++				else: check(b.primitives < a.primitives*0.53,"approved reduction selected at normal racing cameras")
++				var name: String = theme+"-"+kind+"-"+view
++				a.image.save_png(folder.path_join(name+"-before.png")); b.image.save_png(folder.path_join(name+"-after.png"))
++				var row: Dictionary = {"theme":theme,"kind":kind,"view":view,"before_primitives":a.primitives,"after_primitives":b.primitives,"before_draws":a.draws,"after_draws":b.draws,"image_metrics":a.image.compute_image_metrics(b.image,false)}
++				rows.append(row); print("SCENERY_LOD_NATIVE ",JSON.stringify(row))
++			if theme == "winter":
++				before.hide(); after.show()
++				var seen: Dictionary = {}
++				var expected: Array[int] = []
++				for row: Dictionary in rows:
++					if row.kind == kind and row.theme == theme and row.view in ["overhead","close"]: expected.append(int(row.after_primitives))
++				for index: int in range(32):
++					var amount: float = float(index)/15.0 if index < 16 else float(31-index)/15.0
++					camera.size = lerpf(35.0/1.15,maxf(bounds.size.length()*1.2,2.0),amount)
++					await RenderingServer.frame_post_draw
++					var count: int = RenderingServer.viewport_get_render_info(viewport.get_viewport_rid(),RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME)
++					check(count in expected,"camera motion uses only intact full/reduced geometry")
++					seen[count] = true
++				check(seen.size()==2,"camera zoom selects both detail levels and returns")
++			before.free(); after.free()
++	viewport.free()
++
++func run() -> void:
++	var mode: String = "headless" if DisplayServer.get_name()=="headless" else RenderingServer.get_current_rendering_method()
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/track-asset-optimization-2026-11-07/"+mode); DirAccess.make_dir_recursive_absolute(folder)
++	if mode == "headless": await structural()
++	else: await native()
++	FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows},"\t",true)+"\n")
++	print("SCENERY_MESH_LODS ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_scenery_lods_editor_retention.gd
+@@ -0,0 +1,307 @@
++extends SceneTree
++## Task copy of test_editor_incremental_objects.gd: await deferred entry; compare original full-detail reference.
++## All existing save, input, geometry, retention and rendering assertions are retained.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String
++var metrics: Array[Dictionary] = []
++
++class CountingStore extends TrackLibrary:
++	var wip_writes: int = 0
++	var original_writes: int = 0
++	var fail_wip: bool = false
++	var fail_original: bool = false
++	func save_wip(doc: Dictionary) -> Error:
++		wip_writes += 1
++		if fail_wip: last_error = "Injected WIP failure"; return ERR_FILE_CANT_WRITE
++		return super.save_wip(doc)
++	func save_document(doc: Dictionary) -> Error:
++		original_writes += 1
++		if fail_original: last_error = "Injected original failure"; return ERR_FILE_CANT_WRITE
++		return super.save_document(doc)
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func metric(label: String, began: int) -> void:
++	var entry: Dictionary = {"operation":label,"elapsed_ms":(Time.get_ticks_usec()-began)/1000.0}
++	metrics.append(entry)
++	print("EDITOR_INCREMENTAL_METRIC ",JSON.stringify(entry))
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.get("id",""))) or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"editor finishes latest preparation")
++	for node: Node in app.find_children("*","Window",true,false):
++		if node is Window: node.hide(); node.queue_free()
++	await process_frame
++
++func circuit() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "incremental_objects"
++	doc.name = "Incremental object review"
++	var position := Vector2(-47,-36)
++	var heading: float = 0.0
++	for side: int in range(2):
++		for index: int in range(47):
++			var piece: Dictionary = RoadPieces.create("straight",position,heading,6)
++			piece.length = 2.0
++			doc.pieces.append(piece)
++			position = RoadPieces.end_pose(piece).position
++		var turn: Dictionary = RoadPieces.create("hairpin",position,heading,6)
++		turn.radius = 36.0; doc.pieces.append(turn)
++		var pose: Dictionary = RoadPieces.end_pose(turn)
++		position = pose.position; heading = pose.heading
++	doc = RoadPieces.route_from_pieces(doc).document
++	for index: int in range(24): doc.objects.append({"kind":"container","position":[-42.0+(index%12)*7.0,-26.0+(index/12)*7.0],"rotation":float(index%4)*90.0})
++	return doc
++
++func props_fixture(theme_id: String) -> NativeTrack:
++	var objects: Array = []
++	for family: Array in CreatorCatalog.ASSETS:
++		for kind: String in family[3]:
++			var index: int = objects.size()
++			var object: Dictionary = {"kind":kind,"position":[-48.0+(index%10)*10.0,-25.0+(index/10)*13.0],"rotation":float((index*37)%360)}
++			if kind not in ["tyre_stack","tyre_wall"]: object.scale = 0.75 if index%2 else 1.25
++			if kind in ObjectRuns.CONTINUOUS: object.length = 3.25
++			if kind == "container": object.color = "c05a38"
++			if kind == "speed_bump": object.span = 8.25
++			objects.append(object)
++	# Shared endpoints, intersections and coincident paint variants exercise
++	# the original normal generation and opaque ordering between objects.
++	objects.append_array([
++		{"kind":"barrier","position":[-15.0,25.0],"rotation":0.0,"length":6.0},
++		{"kind":"barrier","position":[-9.0,25.0],"rotation":0.0,"length":6.0},
++		{"kind":"container","position":[15.0,25.0],"rotation":0.0,"color":"ad894f"},
++		{"kind":"container","position":[15.0,25.0],"rotation":0.0,"color":"c05a38"},
++		{"kind":"guardrail","position":[38.0,25.0],"rotation":0.0,"length":6.0},
++		{"kind":"guardrail","position":[38.0,25.0],"rotation":90.0,"length":6.0}
++	])
++	var track := NativeTrack.new()
++	track.metadata = {"theme":theme_id,"creator_document":{"objects":objects},"scenery_objects":[]}
++	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)
++	return track
++
++func triangles(node: Node3D, parent_pose: Transform3D = Transform3D.IDENTITY) -> Dictionary:
++	var result: Dictionary = {}
++	if node.is_in_group("contact_lighting"): return result
++	var pose: Transform3D = parent_pose*node.transform
++	var mesh: Mesh
++	var transforms: Array[Transform3D] = []
++	if node is MeshInstance3D and node.visible:
++		mesh = node.mesh; transforms.append(pose)
++	elif node is MultiMeshInstance3D and node.visible:
++		mesh = node.multimesh.mesh
++		for index: int in range(node.multimesh.instance_count): transforms.append(pose*node.multimesh.get_instance_transform(index))
++	if mesh != null:
++		for surface: int in range(mesh.get_surface_count()):
++			var arrays: Array = mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++			var pigments: PackedColorArray = arrays[Mesh.ARRAY_COLOR] if arrays[Mesh.ARRAY_COLOR] != null else PackedColorArray()
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			var count: int = indices.size() if not indices.is_empty() else vertices.size()
++			for transform: Transform3D in transforms:
++				for offset: int in range(0,count,3):
++					var corners: Array = []
++					for corner: int in range(3):
++						var index: int = indices[offset+corner] if not indices.is_empty() else offset+corner
++						var p: Vector3 = transform*vertices[index]
++						var n: Vector3 = (transform.basis*normals[index]).normalized()
++						var pigment: Color = pigments[index] if not pigments.is_empty() else Color.WHITE
++						corners.append({"p":p,"n":n,"color":pigment,"key":str(p.snapped(Vector3.ONE*0.001))+"/"+str(pigment)})
++					corners.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.key < b.key)
++					var keys: Array[String] = []
++					for corner: Dictionary in corners: keys.append(corner.key)
++					var key: String = "|".join(keys)
++					if not result.has(key): result[key] = []
++					result[key].append(corners)
++	for child: Node in node.get_children():
++		if not child is Node3D or not child.visible: continue
++		var sub: Dictionary = triangles(child,pose)
++		for key: String in sub:
++			if not result.has(key): result[key] = []
++			result[key].append_array(sub[key])
++	return result
++
++func same_triangles(before: Dictionary, after: Dictionary) -> bool:
++	if before.size() != after.size(): return false
++	var maximum_position: float = 0.0
++	var maximum_normal: float = 0.0
++	for key: String in before:
++		if not after.has(key) or before[key].size() != after[key].size(): return false
++		var candidates: Array = after[key].duplicate()
++		for triangle: Array in before[key]:
++			var match_index: int = -1
++			for index: int in range(candidates.size()):
++				var matches: bool = true
++				for corner: int in range(3):
++					var p: float = Vector3(triangle[corner].p).distance_to(candidates[index][corner].p)
++					var n: float = Vector3(triangle[corner].n).distance_to(candidates[index][corner].n)
++					matches = matches and p == 0.0 and n == 0.0 and triangle[corner].color == candidates[index][corner].color
++					maximum_position = maxf(maximum_position,p); maximum_normal = maxf(maximum_normal,n)
++				if matches: match_index = index; break
++			if match_index < 0: return false
++			candidates.remove_at(match_index)
++	print("EDITOR_TRIANGLE_TOLERANCE maximum_position_m=",maximum_position," maximum_normal_distance=",maximum_normal)
++	return true
++
++func lamp_state(lamp: OmniLight3D) -> Array:
++	return [lamp.global_transform,lamp.light_color,lamp.light_energy,lamp.omni_range,lamp.omni_attenuation,lamp.shadow_enabled,lamp.light_cull_mask]
++
++func compare_props(theme_id: String) -> void:
++	var track: NativeTrack = props_fixture(theme_id)
++	var old := NativeTrackVisual.new(); old.scenery_lods = false; old.theme_id = theme_id; old.colors = TrackTheme.palette(theme_id)
++	var fresh := NativeTrackVisual.new(); fresh.theme_id = theme_id; fresh.colors = old.colors
++	var viewport := SubViewport.new(); viewport.size = Vector2i(1280,720); viewport.own_world_3d = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var stage := Node3D.new(); viewport.add_child(stage)
++	stage.add_child(old); stage.add_child(fresh)
++	await old._build_placed_objects(track)
++	await fresh.refresh_editor_objects(track,false)
++	var original_triangles: Dictionary = triangles(old)
++	var updated_triangles: Dictionary = triangles(fresh)
++	check(same_triangles(original_triangles,updated_triangles),theme_id+" triangle multiplicity, pigments, positions and normals are exact")
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 75
++	stage.add_child(camera); camera.look_at_from_position(Vector3(0,88,-78),Vector3(0,0,-1)); camera.current = true
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-58,-35,0); light.shadow_enabled = true
++	stage.add_child(light)
++	var ambient := WorldEnvironment.new(); ambient.environment = Environment.new()
++	ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; ambient.environment.ambient_light_energy = 0.45
++	ambient.environment.background_mode = Environment.BG_COLOR; ambient.environment.background_color = Color("45535a")
++	stage.add_child(ambient)
++	# Compare the same cosmetic time. The racing root is externally ticked;
++	# editor effects normally advance themselves while the fixture waits.
++	for node: Node in stage.find_children("*","Node",true,false):
++		if node is NightPropEffects:
++			node.externally_ticked = true; node.elapsed = 0.0; node._publish()
++	# The Mobile renderer can sum otherwise identical separately-created light
++	# RIDs in a different order (the identical-originals control reproduces six
++	# one-channel differences). Verify the actual lights, then render both
++	# geometry trees under one fixed rig; retain the zero-difference assertion.
++	var original_lamps: Array = old.find_children("*","OmniLight3D",true,false)
++	var fresh_lamps: Array = fresh.find_children("*","OmniLight3D",true,false)
++	var original_states: Array = []; var fresh_states: Array = []
++	for lamp: OmniLight3D in original_lamps: original_states.append(lamp_state(lamp))
++	for lamp: OmniLight3D in fresh_lamps: fresh_states.append(lamp_state(lamp))
++	original_states.sort_custom(func(a: Array,b: Array) -> bool: return var_to_str(a) < var_to_str(b))
++	fresh_states.sort_custom(func(a: Array,b: Array) -> bool: return var_to_str(a) < var_to_str(b))
++	check(original_states == fresh_states,theme_id+" authored light poses and values remain exact")
++	for lamp: OmniLight3D in original_lamps:
++		var shared: OmniLight3D = lamp.duplicate()
++		stage.add_child(shared); shared.global_transform = lamp.global_transform
++		lamp.hide()
++	for lamp: OmniLight3D in fresh_lamps: lamp.hide()
++	if DisplayServer.get_name() != "headless":
++		fresh.hide(); old.show()
++		for frame: int in range(6): await RenderingServer.frame_post_draw
++		var before: Image = viewport.get_texture().get_image()
++		old.hide(); fresh.show()
++		for frame: int in range(6): await RenderingServer.frame_post_draw
++		var after: Image = viewport.get_texture().get_image()
++		before.save_png(evidence+"/"+theme_id+"-original.png"); after.save_png(evidence+"/"+theme_id+"-incremental.png")
++		var a: PackedByteArray = before.get_data(); var b: PackedByteArray = after.get_data()
++		var maximum: int = 0; var changed: int = 0
++		for index: int in range(a.size()):
++			var delta: int = absi(int(a[index])-int(b[index]))
++			maximum = maxi(maximum,delta)
++			if delta > 0: changed += 1
++		print("EDITOR_INCREMENTAL_PIXELS ",theme_id," changed_channels=",changed," maximum=",maximum)
++		check(maximum == 0,theme_id+" paired authored pixels preserve original shading exactly")
++	# Forced yield followed by a newer immediate edit must publish only the newest data.
++	var obsolete: NativeTrack = props_fixture(theme_id)
++	obsolete.metadata.creator_document.objects[0].position[0] += 4.0
++	var latest: NativeTrack = props_fixture(theme_id)
++	latest.metadata.creator_document.objects.append({"kind":"tyre_stack","position":[3.0,4.0],"rotation":0.0})
++	latest.tyre_origins = LooseTyres.positions(latest.metadata.creator_document)
++	fresh.refresh_editor_objects(obsolete,false,true)
++	fresh.refresh_editor_objects(latest,false,false)
++	for frame: int in range(3): await process_frame
++	check(fresh.editor_objects.tyre_instances.multimesh.instance_count == latest.tyre_origins.size(),theme_id+" late refresh retains latest tyre population")
++	check(fresh.editor_objects._editor_authored_batches.sources == latest.metadata.creator_document.objects,theme_id+" superseded refresh cannot replace current authored sources")
++	viewport.queue_free(); await process_frame
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://").path_join("../build/editor-incremental-2026-10-13").simplify_path().path_join(RenderingServer.get_current_rendering_method()+"-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for biome: String in ["pine","desert","winter","night_city"]: await compare_props(biome)
++	var storage := CountingStore.new(evidence+"/storage")
++	app = load("res://core/app.tscn").instantiate()
++	app.library = storage; app.records = LocalRecords.new(evidence+"/storage/records.json")
++	app.cloud_root_override = evidence+"/storage/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = circuit()
++	await app.call("_show_screen","create")
++	await settle()
++	check(app.call("_save_track_now"),"first explicit Save commits both durable versions")
++	await settle()
++	var original_count: int = storage.original_writes
++	var wip_count: int = storage.wip_writes
++	var preview: NativeTrack = app.canvas.native_preview
++	var objects: NativeTrackVisual = app.editor_world.visual.editor_objects
++	var before_nodes: Array[Node] = objects.get_children()
++	var before_meshes: Dictionary = {}
++	for node: Node in before_nodes:
++		if node is MeshInstance3D: before_meshes[node.get_instance_id()] = node.mesh
++	var began: int = Time.get_ticks_usec()
++	check(app.call("_save_track_now"),"unchanged Save succeeds")
++	metric("unchanged_save",began)
++	check(storage.original_writes == original_count and storage.wip_writes == wip_count,"unchanged Save writes neither original nor WIP")
++	check(app.editor_preview_thread == null and app.canvas.native_preview == preview,"unchanged Save retains prepared collision and starts no compiler")
++	check(objects.get_children() == before_nodes,"unchanged Save keeps every authored node")
++	await settle()
++	app.canvas.mode = "place"; app.canvas.stamp_kind = "tyre_stack"
++	began = Time.get_ticks_usec(); app.canvas._place(app.canvas.to_screen(Vector2(0,5))); metric("tyre_with_24_containers",began)
++	check(before_nodes.all(func(node: Node) -> bool: return node.get_parent() == objects),"adding a tyre keeps existing container and shadow groups")
++	check(before_nodes.all(func(node: Node) -> bool: return not node is MeshInstance3D or before_meshes[node.get_instance_id()] == node.mesh),"adding a tyre uploads no replacement container mesh")
++	check(objects.tyre_instances.multimesh.instance_count == 1,"new tyre is displayed immediately")
++	check(storage.wip_writes == wip_count+1,"placement durably writes changed WIP once")
++	check(app.call("_save_track_now"),"Save commits latest document while preview is pending")
++	await settle()
++	check(storage.load_document(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),"saved original contains exact latest authoring data")
++	var independent: NativeTrack = TrackCompiler.compile(app.document)
++	check(app.canvas.native_preview.cells == independent.cells and app.canvas.native_preview.content_hash == independent.content_hash,"incremental presentation preserves exact canonical compile")
++	app.call("_undo"); await settle()
++	check(app.document.objects.size() == 24 and app.editor_world.visual.editor_objects.tyre_instances == null,"Undo removes the immediate tyre")
++	app.call("_redo"); await settle()
++	check(app.document.objects.size() == 25 and app.editor_world.visual.editor_objects.tyre_instances.multimesh.instance_count == 1,"Redo restores exactly one tyre")
++	app.document.objects[0].position[0] += 1.0
++	began = Time.get_ticks_usec(); app.call("_save_draft",true); metric("move_container",began)
++	check(before_nodes.all(func(node: Node) -> bool: return node.get_parent() == objects),"moving a container keeps its shared mesh and untouched groups")
++	await settle()
++	storage.fail_wip = true; app.document.name = "WIP retry required"
++	check(app.call("_save_draft",true) == ERR_FILE_CANT_WRITE and app.editor_save_error != OK,"changed WIP failures remain actionable")
++	storage.fail_wip = false
++	check(app.call("_save_draft",true) == OK,"WIP retry executes a real successful write")
++	await settle()
++	storage.fail_original = true
++	check(not app.call("_save_track_now") and app.editor_retry_original,"changed original failures remain actionable")
++	await settle()
++	storage.fail_original = false
++	check(app.call("_save_track_now") and not app.editor_retry_original,"original retry executes its real write")
++	await settle()
++	DirAccess.remove_absolute(storage.directory+"/wip/"+str(app.document.id)+".json")
++	wip_count = storage.wip_writes
++	check(app.call("_save_draft",true) == OK and storage.wip_writes == wip_count+1,"missing WIP primary is recreated despite unchanged in-memory document")
++	DirAccess.remove_absolute(storage.directory+"/"+str(app.document.id)+".json")
++	original_count = storage.original_writes
++	check(app.call("_save_track_now") and storage.original_writes == original_count+1,"missing original primary is repaired through the atomic save path")
++	await settle()
++	var altered := FileAccess.open(storage.directory+"/"+str(app.document.id)+".json",FileAccess.WRITE)
++	altered.store_string("{invalid_track}"); altered.close()
++	original_count = storage.original_writes
++	check(app.call("_save_track_now") and storage.original_writes == original_count+1,"external primary corruption invalidates the durable receipt and is repaired")
++	await settle()
++	check(storage.load_document(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),"repair retains the exact current document and recoverable backup")
++	app.queue_free(); await process_frame
++	var output := FileAccess.open(evidence+"/results.json",FileAccess.WRITE)
++	output.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics,"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method()},"\t")); output.close()
++	print("EDITOR_INCREMENTAL_TESTS: %d checks, %d failures; evidence=%s" % [checks,failures,evidence])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/probe_scenery_prepared_sources.gd
+@@ -0,0 +1,21 @@
++extends SceneTree
++func _initialize() -> void:
++	var rows: Array = []
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new(); car.vehicle_id = id
++		var base = preload("res://vehicle/modular_car_base.gd")
++		var sources: Dictionary = base.source_hashes(id)
++		var packed: PackedScene = load(base.path_for(car))
++		var holder: Node = packed.instantiate()
++		var previous: Dictionary = holder.get_meta("modular_car_base").sources
++		var differences: Array = []
++		for key: String in sources:
++			if sources[key] != previous.get(key): differences.append(key)
++		for key: String in previous:
++			if not sources.has(key): differences.append("removed:"+key)
++		var row: Dictionary = {"vehicle":id,"source_count":sources.size(),"previous_count":previous.size(),"key_current":holder.get_meta("modular_car_base").key==base.key_for(car),"differences":differences}
++		rows.append(row); print("SCENERY_SOURCE_DIFF ",JSON.stringify(row))
++		holder.free(); car.free()
++	var folder: String = "res://../docs/evidence/track-asset-optimization-2026-11-07/"
++	FileAccess.open(folder+"prepared-source-probe.json",FileAccess.WRITE).store_string(JSON.stringify(rows,"\t",true)+"\n")
++	quit()
+--- /dev/null
++++ b/docs/TRACK_ASSET_OPTIMIZATION_2026_11_07.md
+@@ -0,0 +1,85 @@
++# Selective track asset optimization — 7 November 2026
++
++The accepted ice-car sculpture, snow castle and shipping container now use reduced geometry at ordinary racing distances and their original geometry at close range. This implements the three candidates from [the investigation](TRACK_ASSET_SIMPLIFICATION_REVIEW_2026_11_07.md). Trees, Egyptian masonry, igloos, crates, grandstands and warehouse braces retain their original models.
++
++| Model | Full-detail triangles | Racing-detail triangles | Reduction |
++|---|---:|---:|---:|
++| Ice-car sculpture | 7,908 | 3,954 | 50.00% |
++| Snow castle | 7,950 | 3,974 | 50.01% |
++| Container | 7,782 | 3,050 | 60.81% |
++
++These are individual model geometry counts, not full-track FPS or loading measurements. Original positions, normals, pigments, full-detail indices, materials, collision/document data and canonical rules remain unchanged. No new Graphics option is introduced.
++
++## Implementation and requirements
++
++**TSO01 — offline preparation.** [bake_scenery_mesh_lods.gd](../game/tests/bake_scenery_mesh_lods.gd) converts the already-reviewed first reduced levels into source-corner maps. Three compressed resources under `game/assets/scenery_lods_v1/` total **44,901 bytes**. Each map is fenced by its version, kind, source geometry/normal/hidden-face signature, expected corner count, triangle alignment and index bounds. Missing or mismatched maps retain full geometry. Container paint RGB is deliberately outside the geometry signature so saved colours retain the same topology. No runtime simplifier or new dependency is used.
++
++**TSO02 — merged and spatial geometry.** [scenery_mesh_lods.gd](../game/track/scenery_mesh_lods.gd) maps the reduced corners through the original final normal generation, indexing and enclosed-face pruning. It adds one reduced index buffer to an otherwise byte-exact ArrayMesh surface. Native racing builders opt in; editor/thumbnail builders retain their original full-detail path. Each batch uses the largest contributing scale when choosing its detail transition, conservatively retaining detail when larger and smaller objects share a batch.
++
++The `0.028 × object scale` metric is a calibrated presentation switching policy, not a claim that the simplifier's maximum geometry error is 28 mm. At the tested one-pixel viewport policy it selects the accepted level at the standard 56-degree Overhead, 48-degree Follow car and 30% speed-zoom views, and returns to full geometry in the enlarged views. Higher resolutions can select fuller detail earlier.
++
++The numeric spatial worker carries both index streams into the same existing chunks. Approved ordinary props use whole-object ranges, as Winter craft already does, so simplified faces cannot migrate into a different draw or leave fragments behind. Every original and reduced position/normal/colour triangle is retained exactly once across the tested chunks. Chunk normals keep their original encoded GPU bytes; there is no added draw per object. Cancellation and conservative direct-draw fallback remain.
++
++**TSO03 — budgets and cache fences.** [cache_bytes.gd](../game/editor/cache_bytes.gd) and the prepared-world estimator count the new retained maps and index payloads. The existing 32 MiB prop-cache, 64 MiB world-cache and spatial node limits remain. Upload buffers and retained CPU representations receive conservative byte allowances; this is not a RAM reduction claim. The prop and visual-kit versions invalidate older prepared worlds. Prepared-world restoration retains both detail levels. The existing retained editor batching path keeps full detail.
++
++**TSO04 — integration.** The focused suite covers all five biomes, half/default/double scales, rotation, custom container colour, cold and worker-warmed sources, rejected source signatures, protected asset kinds, mixed approved/unapproved families, spatial splitting and prepared-world restoration. Three actual Game loads install both optimized material families and retain the same canonical state and ordinary lap contract. Native checks also zoom into and back out of both detail levels without missing or intermediate geometry.
++
++Runtime files are `creator_prop_visual.gd`, `prop_geometry.gd`, `scenery_mesh_lods.gd`, `native_track_visual.gd`, `spatial_mesh_chunks.gd`, `spatial_mesh_preparation.gd`, `prepared_world_cache.gd` and `editor/cache_bytes.gd`. The prepared-world and spatial worker files already contained concurrent loading work at task start; the task-only patch is relative to the archived starting files and preserves that work.
++
++A later concurrent cleanup removes obsolete pending saved-road bake handling from `native_track_visual.gd`. It is preserved and excluded from the task-only patch by an archived baseline containing that cleanup with only this task's scenery additions removed. Both scenery-building functions match renderer qualification exactly after newline normalization, and all other audited input hashes remain unchanged. Focused Game/scenery/cache integration is rechecked against the combined source. [Rebase evidence](evidence/track-asset-optimization-2026-11-07/concurrent-rebase.json) and [the excluded diff](evidence/track-asset-optimization-2026-11-07/concurrent-road-bake-cleanup.diff) retain the distinction.
++
++## Actual native evidence
++
++Both desktop renderers report the same visible primitive reductions at 1280×720 with 4× MSAA and directional shadows:
++
++| Asset | Original stage | Optimized racing stage | Enlarged original / optimized |
++|---|---:|---:|---:|
++| Ice-car sculpture | 7,922 | 3,968 | 7,922 / 7,922 |
++| Snow castle | 7,964 | 3,988 | 7,964 / 7,964 |
++| Container | 7,796 | 3,064 | 7,796 / 7,796 |
++
++Each stage adds 14 primitives for its floor/contact presentation. Draw counts remain 5 → 5 on Compatibility and 3 → 3 on desktop Mobile. These are component observations on the local RTX 3090, not mobile hardware measurements.
++
++Night image checks lift ambient/directional light for inspection; the actual Game smoke also covers its normal Night configuration.
++
++- [Compatibility racing comparisons](evidence/track-asset-optimization-2026-11-07/gl_compatibility/comparison-overhead.png) and [close comparisons](evidence/track-asset-optimization-2026-11-07/gl_compatibility/comparison-close.png).
++- [Mobile racing comparisons](evidence/track-asset-optimization-2026-11-07/mobile/comparison-overhead.png) and [close comparisons](evidence/track-asset-optimization-2026-11-07/mobile/comparison-close.png).
++- [Compatibility measurements](evidence/track-asset-optimization-2026-11-07/gl_compatibility/report.json), [Mobile measurements](evidence/track-asset-optimization-2026-11-07/mobile/report.json) and [structural/integration results](evidence/track-asset-optimization-2026-11-07/headless/report.json).
++
++The captures include 72 static cases and 144 original/optimized images, plus 96 camera-motion frames per renderer. Every static case also restores its original source and requires the original frame to match exactly. Close visible geometry is original, but shadow-detail selection can produce small image differences: full-frame mean channel differences range from 0.0000073 to 0.108586 in Compatibility and 0.000304 to 0.095635 in Mobile, on the 0–255 channel scale. No claim of pixel-identical optimized pictures or identical shadows is made. The inspected racing silhouettes and materials retain the appearance of the approved prototypes; owner acceptance remains.
++
++## Commands, validation and checkpoint
++
++The [receipt](evidence/track-asset-optimization-2026-11-07/receipt.json) records actual results, source hashes, assets, logs and task-only checkpoint contents. Final focused results are **370/0 headless** and **261/0 per desktop renderer**. The accompanying runner also executes affected spatial, editor, prop, race-cache, budget, driving and prepared-asset regressions; their actual outcomes are retained in the receipt and logs.
++
++| Additional actual check | Result |
++|---|---|
++| Original spatial-worker/object-range regression | 71 checks, 0 failures |
++| Original spatial chunk attribute/triangle regression | 34 checks, 0 failures |
++| Prop refinement/catalogue regression | 909 checks, 0 failures |
++| Race loading/cache lifecycle | 20 checks, 0 failures |
++| Selective scenery budget | 12 checks, 0 failures |
++| Driving and 2,400-tick exact replay | 72 checks, 0 failures |
++| Editor full-detail paired renders, Compatibility | Four biomes, zero changed channels in each |
++| Broader editor save/input workflow | Native engine crash after tyre placement; reproduces with all eight task-start runtime files restored |
++| Complete prepared-car library | Initial 1,925 checks / 936 failures, then 144 failures; latest 1,925 checks / 2 stale Hover Garage failures |
++
++The completed focused and scoped regression suites total **2,010 passing checks**. That total excludes the incomplete editor UI suite and failed prepared-car preflights.
++
++The prepared-library probe subsequently finds current keys and identical source dictionaries for all five stock bases. An external update changes 451 watched generated car files; the next preflight narrows its failures to the Hover Garage rest's key and source receipt. The actual prepared-identity router confirms that all eleven production paths in this patch are outside its car identity inputs. No car asset or its source was rewritten by this task. These broader preflight failures remain visible; a package/export acceptance claim is not made.
++
++```powershell
++# Bake only when source geometry or reviewed corner maps change.
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/bake_scenery_mesh_lods.gd
++
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-optimization-2026-11-07/run_validation.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/track-asset-optimization-2026-11-07/make_comparisons.ps1
++```
++
++The validation runner uses pinned `4.7.2.stable.official.ed1daf0bf`, private workspace APPDATA/LOCALAPPDATA, a loopback-unavailable backend URL and the crash-dialog wrapper for every noninteractive engine launch. Resource export presets already include all resources and do not exclude `assets/scenery_lods_v1/`; no package export was performed.
++
++Initial fixture findings are retained: the first structural check counted only visible adaptive aggregate nodes rather than their hidden spatial child meshes; it was corrected to inspect the actual chunks and exact triangle sets. The first native fixture left its unattached SubViewport in its default visibility-dependent update mode and observed no draws; that failed run is archived, the fixture now explicitly updates, and a nonzero-visible-geometry assertion remains. No invariant was weakened. The task-start source archive preserves concurrent changes, and the main Git index is untouched. Standard developer entry points refresh generated build identity as usual.
++
++The older editor fixture also omitted `await` for the existing deferred `_show_screen("create")` entry and initially dereferenced a missing editor world. A task-owned copy awaits that entry and explicitly uses the original full-detail model for its legacy full-detail rendering comparisons; every assertion remains. It then hits stock-engine access violation `0xC0000005` in `run_build_editor_tools`, at the object-browser visibility update after placing a tyre, in both headless and Compatibility runs. An isolated source copy restores every archived task-start runtime file, keeps the awaited entry, and reproduces the same native crash at the same operation. The original regressions and production editor/App code remain untouched. The control's first launch preceded completion of its file copy and is explicitly rejected; both that setup log and the completed control crash are retained. A shell execution-policy diagnostic during the identity-router check is also retained; its successful explicit-Bypass helper is the qualifying run.
++
++No device query/test, APK/export/install, owner-save/process change, live/backend request or deployment was performed. Client reload/rebuild, owner appearance acceptance and actual device FPS/memory/thermal qualification remain. The change reduces the measured geometry; no proportional performance or loading improvement is asserted.
+--- /dev/null
++++ b/docs/evidence/track-asset-optimization-2026-11-07/run_validation.ps1
+@@ -0,0 +1,34 @@
++param([string]$Only = '')
++$ErrorActionPreference = 'Stop'
++$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
++$runs = @(
++    @('focused-headless','test_scenery_mesh_lods.gd',''),
++    @('focused-gl','test_scenery_mesh_lods.gd','gl_compatibility'),
++    @('focused-mobile','test_scenery_mesh_lods.gd','mobile'),
++    @('spatial-worker','test_spatial_worker_object_ranges.gd',''),
++    @('spatial-chunks','test_spatial_mesh_chunks.gd',''),
++    @('editor-objects','test_scenery_lods_editor_retention.gd','gl_compatibility'),
++    @('prop-refinement','test_prop_refinement.gd',''),
++    @('race-loading','test_race_loading_optimisation.gd',''),
++    @('scenery-budget','test_selective_scenery_budget.gd',''),
++    @('driving','test_driving.gd',''),
++    @('prepared-assets','check_prepared_assets.gd','')
++)
++Push-Location -LiteralPath $repoRoot
++try {
++    foreach ($run in $runs) {
++        $name = $run[0]
++        if ($Only -and $name -notin $Only.Split(',')) { continue }
++        $env:APPDATA = Join-Path $repoRoot "build/track-asset-optimization-20261107/$name-appdata"
++        $env:LOCALAPPDATA = Join-Path $repoRoot "build/track-asset-optimization-20261107/$name-localappdata"
++        $env:BMT_API_URL = 'http://127.0.0.1:1'
++        $arguments = @('scripts/run_no_crash_dialog.py','--','powershell','-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/dev.ps1','-Action','TestScript','-ScriptPath',"res://tests/$($run[1])",'-CommandTimeoutSeconds','600')
++        if ($run[2]) {
++            $driver = if ($run[2] -eq 'mobile') { 'vulkan' } else { 'opengl3' }
++            $arguments += @('-Graphical','-RenderingMethod',$run[2],'-RenderingDriver',$driver)
++        }
++        Write-Output "SCENERY_VALIDATION_RUN $name"
++        & python @arguments
++        if ($LASTEXITCODE -ne 0) { throw "Scenery validation failed in $name (exit $LASTEXITCODE)" }
++    }
++} finally { Pop-Location }
+--- /dev/null
++++ b/docs/evidence/track-asset-optimization-2026-11-07/make_comparisons.ps1
+@@ -0,0 +1,34 @@
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++foreach ($renderer in @('gl_compatibility','mobile')) {
++    $folder = Join-Path $PSScriptRoot $renderer
++    $report = Get-Content -LiteralPath (Join-Path $folder 'report.json') -Raw | ConvertFrom-Json
++    foreach ($view in @('overhead','close')) {
++        $canvas = New-Object System.Drawing.Bitmap(1000,1260)
++        $graphics = [System.Drawing.Graphics]::FromImage($canvas)
++        $graphics.Clear([System.Drawing.Color]::FromArgb(27,31,35))
++        $font = New-Object System.Drawing.Font('Arial',14)
++        $cases = @(@('winter','ice_compact'),@('winter','snow_castle'),@('pine','container'))
++        for ($index = 0; $index -lt $cases.Count; $index++) {
++            $theme = $cases[$index][0]; $kind = $cases[$index][1]
++            $row = $report.rows | Where-Object { $_.theme -eq $theme -and $_.kind -eq $kind -and $_.view -eq $view }
++            $graphics.DrawString("$kind | primitives $($row.before_primitives) to $($row.after_primitives)",$font,[System.Drawing.Brushes]::White,12,($index*420+5))
++            for ($column = 0; $column -lt 2; $column++) {
++                $version = if ($column -eq 0) { 'before' } else { 'after' }
++                $image = [System.Drawing.Image]::FromFile((Join-Path $folder "$theme-$kind-$view-$version.png"))
++                $graphics.DrawString($(if ($column -eq 0) { 'Original' } else { 'Optimized' }),$font,[System.Drawing.Brushes]::White,($column*500+12),($index*420+32))
++                if ($view -eq 'overhead') {
++                    $source = New-Object System.Drawing.Rectangle(420,180,500,360)
++                    $destination = New-Object System.Drawing.Rectangle(($column*500),($index*420+60),500,360)
++                } else {
++                    $source = New-Object System.Drawing.Rectangle(0,0,1280,720)
++                    $destination = New-Object System.Drawing.Rectangle(($column*500+10),($index*420+75),480,270)
++                }
++                $graphics.DrawImage($image,$destination,$source,[System.Drawing.GraphicsUnit]::Pixel)
++                $image.Dispose()
++            }
++        }
++        $canvas.Save((Join-Path $folder "comparison-$view.png"),[System.Drawing.Imaging.ImageFormat]::Png)
++        $graphics.Dispose(); $font.Dispose(); $canvas.Dispose()
++    }
++}
+--- /dev/null
++++ b/docs/evidence/track-asset-optimization-2026-11-07/check_vehicle_dependencies.ps1
+@@ -0,0 +1,10 @@
++$ErrorActionPreference = 'Stop'
++$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
++. (Join-Path $repoRoot 'scripts/prepared_asset_identity.ps1')
++$paths = @('game/track/creator_prop_visual.gd','game/track/prop_geometry.gd','game/track/native_track_visual.gd','game/track/spatial_mesh_chunks.gd','game/track/spatial_mesh_preparation.gd','game/track/prepared_world_cache.gd','game/editor/cache_bytes.gd','game/track/scenery_mesh_lods.gd','game/assets/scenery_lods_v1/ice_compact.res','game/assets/scenery_lods_v1/snow_castle.res','game/assets/scenery_lods_v1/container.res')
++foreach ($path in $paths) {
++    $vehicles = @(Get-PreparedAssetVehicles $path)
++    if ($vehicles.Count -gt 0) { throw "Unexpected prepared-car identity dependency: $path" }
++}
++$paths | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'vehicle-identity-independent-paths.json') -Encoding UTF8
++Write-Output 'All 11 production task paths are outside prepared-car identity inputs.'
+--- /dev/null
++++ b/docs/evidence/track-asset-optimization-2026-11-07/finalize.py
+@@ -0,0 +1,137 @@
++"""Create the task-only review checkpoint; never stage or change repository state."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import shutil
++import subprocess
++import zipfile
++
++BASE = Path(__file__).resolve().parent
++ROOT = BASE.parents[2]
++
++
++def digest(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def main() -> None:
++    audited = json.loads((BASE / "validation-final-hashes.json").read_text())
++    assert all(digest(ROOT / p) == value for p, value in audited.items()), "Audited scenery inputs changed"
++    reports = {}
++    for mode, checks in [("headless", 370), ("gl_compatibility", 261), ("mobile", 261)]:
++        value = json.loads((BASE / mode / "report.json").read_text())
++        assert value["checks"] == checks and value["failures"] == 0
++        if mode != "headless":
++            assert len(value["rows"]) == 36
++            for row in value["rows"]:
++                stem = f'{row["theme"]}-{row["kind"]}-{row["view"]}'
++                for phase in ["before", "after"]:
++                    assert (BASE / mode / f"{stem}-{phase}.png").is_file()
++                assert row["before_draws"] == row["after_draws"]
++        reports[mode] = value
++
++    markers = {
++        "SPATIAL_WORKER_OBJECT_RANGES": 71, "SPATIAL_MESH_CHUNKS": 34,
++        "PROP_REFINEMENT_TESTS": 909, "RACE_LOADING_OPTIMISATION": 20,
++        "SELECTIVE_BUDGET": 12, "DRIVING_TESTS": 72,
++    }
++    found = {}
++    preflight_attempts = []
++    log_index = []
++    log_folder = BASE / "logs"
++    log_folder.mkdir(exist_ok=True)
++    started = (BASE / "validation-start-hashes.json").stat().st_mtime
++    for path in sorted((ROOT / "build/logs").glob("TestScript-*/test-script.log"), key=lambda x: x.stat().st_mtime):
++        content = path.read_text(encoding="utf-8-sig", errors="replace")
++        relevant = any(x in content for x in ["SCENERY_MESH_LODS", "SCENERY_LOD_BAKE", "SCENERY_SOURCE_DIFF", "test_scenery_lods_editor_retention"])
++        relevant |= path.stat().st_mtime >= started and any(x in content for x in [*markers, "PREPARED_ASSETS", "test_editor_incremental_objects"])
++        if not relevant:
++            continue
++        target = log_folder / (path.parent.name + ".log")
++        shutil.copy2(path, target)
++        outcomes = [line for line in content.splitlines() if re.search(r"(?:checks,|checks /).*failures|PREPARED_ASSETS|CrashHandlerException|SCRIPT ERROR:", line)]
++        log_index.append({"path": target.relative_to(ROOT).as_posix(), "outcomes": outcomes})
++        for match in re.finditer(r"PREPARED_ASSETS (\d+) resources; (\d+) checks, (\d+) failures", content):
++            preflight_attempts.append({"path": target.relative_to(ROOT).as_posix(),"resources":int(match[1]),"checks":int(match[2]),"failures":int(match[3])})
++        for marker, expected in markers.items():
++            if path.stat().st_mtime >= started and re.search(re.escape(marker) + rf"\D+{expected} checks, 0 failures", content):
++                found[marker] = target.relative_to(ROOT).as_posix()
++    assert set(found) == set(markers), f"Missing passing regression logs: {set(markers) - set(found)}"
++    before_crash = (BASE / "editor-before-control.log").read_text(errors="replace")
++    assert "CrashHandlerException" in before_crash and "run_build_editor_tools" in before_crash
++    assert "_place" in before_crash and "APP_READY" in before_crash
++    assert len(json.loads((BASE / "vehicle-identity-independent-paths.json").read_text(encoding="utf-8-sig"))) == 11
++
++    starting = json.loads((BASE / "start-hashes.json").read_text())
++    modified = [name for name, value in starting.items() if digest(ROOT / name) != value]
++    new_text = [
++        "game/track/scenery_mesh_lods.gd", "game/tests/bake_scenery_mesh_lods.gd",
++        "game/tests/test_scenery_mesh_lods.gd", "game/tests/test_scenery_lods_editor_retention.gd",
++        "game/tests/probe_scenery_prepared_sources.gd", "docs/TRACK_ASSET_OPTIMIZATION_2026_11_07.md",
++    ] + [p.relative_to(ROOT).as_posix() for p in [BASE / "run_validation.ps1", BASE / "make_comparisons.ps1", BASE / "check_vehicle_dependencies.ps1", Path(__file__).resolve()]]
++    for name in list(new_text):
++        uid = ROOT / (name + ".uid")
++        if name.endswith(".gd") and uid.exists():
++            new_text.append(uid.relative_to(ROOT).as_posix())
++    assets = sorted((ROOT / "game/assets/scenery_lods_v1").glob("*.res"))
++    assert len(assets) == 3 and sum(x.stat().st_size for x in assets) == 44901
++    patch = []
++    for name in modified + new_text:
++        rebased = BASE / "before-current-concurrent" / name
++        before = (rebased if rebased.exists() else BASE / "before" / name).read_text(encoding="utf-8") if name in modified else ""
++        after = (ROOT / name).read_text(encoding="utf-8")
++        lines = list(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile="a/" + name if before else "/dev/null", tofile="b/" + name))
++        assert all(line.rstrip("\r\n").rstrip() == line.rstrip("\r\n") for line in lines if line.startswith("+") and not line.startswith("+++")), name
++        patch.extend(lines)
++    output = "".join(patch).encode("utf-8")
++    for asset in assets:
++        relative = asset.relative_to(ROOT).as_posix()
++        difference = subprocess.run(["git", "diff", "--no-index", "--binary", "--", "/dev/null", relative], cwd=ROOT, capture_output=True)
++        assert difference.returncode == 1 and b"GIT binary patch" in difference.stdout, difference.stderr.decode(errors="replace")
++        output += difference.stdout
++    (BASE / "task-only.patch").write_bytes(output)
++    own_files = [ROOT / name for name in modified + new_text] + assets
++    with zipfile.ZipFile(BASE / "task-only-checkpoint.zip", "w", zipfile.ZIP_DEFLATED) as archive:
++        for path in own_files:
++            archive.write(path, "after/" + path.relative_to(ROOT).as_posix())
++        for name in starting:
++            archive.write(BASE / "before" / name, "before-task-start/" + name)
++            rebased = BASE / "before-current-concurrent" / name
++            archive.write(rebased if rebased.exists() else BASE / "before" / name, "before-owned-patch/" + name)
++        archive.write(BASE / "task-only.patch", "task-only.patch")
++    with zipfile.ZipFile(BASE / "task-only-checkpoint.zip") as archive:
++        assert archive.testzip() is None
++    total = sum(x["checks"] for x in reports.values()) + sum(markers.values())
++    assert total == 2010
++    receipt = {
++        "requirements": ["TSO01", "TSO02", "TSO03", "TSO04"],
++        "engine": "4.7.2.stable.official.ed1daf0bf",
++        "focused_checks": {k: {"checks": v["checks"], "failures": v["failures"]} for k, v in reports.items()},
++        "completed_passing_scoped_checks": total,
++        "regressions": found,
++        "native_static_cases": 72, "native_images": 144, "native_motion_frames": 192,
++        "final_audited_input_hashes": audited,
++        "concurrent_rebase": "concurrent-rebase.json",
++        "task_files": {p.relative_to(ROOT).as_posix(): digest(p) for p in own_files},
++        "prepared_assets_bytes": 44901,
++        "logs": log_index,
++        "prepared_car_preflight_attempts": preflight_attempts,
++        "retained_limits": [
++            "Legacy editor fixture lacked an await for deferred entry; task copy retains all assertions with the current API and original full-detail reference.",
++            "Broader editor workflow crashes at native UI visibility after tyre placement in headless and Compatibility; exact task-start source control reproduces the same crash.",
++            "Prepared-car preflight records 936, then 144, then 2 failures out of 1925; latest failures are the Hover Garage rest key/source receipt. All 11 production task paths are outside the actual car identity routing rules.",
++            "Close visible master geometry is exact; shadow-detail selection produces small frame differences documented in the report.",
++            "No device query/test, APK/export/install, owner-save/process change, live/backend request, deployment or main-index mutation.",
++            "No proportional FPS, loading, memory or package-size improvement is claimed.",
++        ],
++        "checkpoint": "task-only-checkpoint.zip",
++        "patch": "task-only.patch",
++    }
++    (BASE / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    print(f"{total} completed passing checks; {len(own_files)} task files; {len(log_index)} retained logs; checkpoint CRC valid")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/game/assets/scenery_lods_v1/container.res b/game/assets/scenery_lods_v1/container.res
+new file mode 100644
+index 0000000000000000000000000000000000000000..e568a93856d4b13b984574934664874564586c6a
+GIT binary patch
+literal 13676
+zcmY+L2{hDS{P#(y#E{BPsHC!I8M`DESyCagB%!en#uy9{%36_iOhPIlOSUog>;_rJ
+zI+kHZmKh8)mNB0B{r<oIbDrlr=bo8!&-cu^-#hob@9Xov?|EQlXn2f;dGWHa%%`xh
+z_;IkXkl9&SmXEWrbTZ#dm~DyK<eB|!%r?UO{FZt9m0t>nPAmW&6_$H88obvmlz$1`
+z<nD3)+N^%Ht6b%LUiFqT$g50W*UmdANg?Eo$k_WyYmdUww*`f#S^u(}V7(bZuT7?n
+zzr$;Ij%Xwf#BDCf<DR{KTcmM{|Dx`Klzu?)bj<0_4X$&S?OUa_HQ3lsgtK_p6#ps@
+z<9=13^{F>y(a;=YXg?!*vK}CPFW?hJQRcH@Tx}f?5Qwg;<GFY{j@R<Dy0KLIbWWUR
+zeXT=WeeIb*$(5Dm+k<I$&RDk^mPN-_)~-${z3Z)vSEg0*2yZNZ)*gyjDs{v1`zkB(
+zm2BVAzv~~(#>ua+p{T8O)sm1jy|YI8+{ZVL%6~88Rup{_XQ!!k*=+5zVhd{Z(foyU
+z8Dp7rY}6Jjr9iPRyKU9rT_x8~H*9vB)|pG>F8;c@E9OblGtC1W2jjSDv9v3}Xfb2h
+zL_g1*o3Ad6G9j#voZ0Q`a8v2RNFiR2xT{>vUh=xk?xVt;?K=MB)%VAchohO`%;eq>
+z`!7+QuAb>7wpX?CtBiWnx^J3tJgd;C0I+4Kve<^(pX*jR-o?_$+RXilyLrkbM||oc
+z$8bh^`B@j4jyu;sf|TszN9%vt<o!OebL@>Auc6cn{p&5xpLw_f1;3ib76MQAJ3nuA
+zie}}qo4+O?=TOFYIr<GLy!1EshHZV}-6YI%eCgN03;JOgBCM2iKvcsELjaBB)CnoO
+z$P=7vL%aR2H$7N_Hhu6%>3LKv-g7WcU-UQjm%1%Jd+YH0N{!j4a1)A1)@)Zp3k$XS
+zReITs;Ci*Yx>0OURK*m(`blpSvv-sItg=>s2ug%Hzy?oXRTp={v#NASslEyjNt@d8
+z{_qNt9W$j|^|IL4_z?ogwNV}+&NY|k!s^LoW7jNn$;9r;(;@!|UQQOj2mtHCi)_{G
+z9~1UVn;(k0crR3jRkrkxbx^6oMOd{rEma?%_4f+D`Ndzn^n@GxvgT#UV|Ue?X#JOW
+z&VRkM`}pAar;->o4o|EH>W^pP?*}S_D^-ub-9ubnsj?^v?0I<i%-7p*P8@a{5)-qA
+z|K!9FZYX;wMr>+&u`4*{D+zlIxyPPO<Z!K$aX&No@e@$P_3a3&o)P>FgZJdsZS@lt
+zNIhLRjIlkphoZO<%P={5K)4@cu4>PPQbRbMrR>6Jr@!7~!!MQfN~AYkhubhp>9%{t
+zTgFR1Z)YS@n`Gc-AL+7t#UD)kqq}BP^d#X1;q<-T)pt>y$RrU}hC97~_rvDGz;DO+
+zvscYhc11R278Igmn|R=U@biqTbj#hSxw*0yiKr&_6AT`@P;it8?_Bb_&${{g+Q3@b
+zTJjqI0oMT+6{O+Vwj*qY^{tC(Q?-|~`C;*Hzv}OqLc8SiLc*nkzR@9(bLX2SBTZP`
+zoFZGkvRdAbzEyDR`Kdx@?#<(UJD2Zsp3%R3y{_t8)e(}_1);Z^q{WbTa0||i%wI<(
+zLcfk0;>j(!i3f8CZxw(*kQ(Wbe`biCCt>Z=3`r$<Y~^Sp=vBIqm{*fsSLNjV87<|n
+zJEHp%G8?zV_KNll%!4OJHocBFkvdb&!CRntfM(h17Ii88NqCV1%}Mo69gG@K%q8Ev
+zxUsnrH@l=$)7GdrtNRVD;*TIy)pO|-rB`RsamE8JU#Z^n$l{jZ0mP|XNU2_fCzKAM
+zXg={Dym8><q{>>x8TJMLEC*#UH5m$=N3M3*Z450ibjqd6Hu}*QT$D9*87SFPxY_RC
+zkMYOlGXonr=R5Zo)VG_Hma#J~-G5QDuSab#tM%0a&RmrX@et}o8_gFX+SGm8`i0dR
+zZMS>*AGN$oT6r9nAiB2s(@SH@G`{ovw5dvB^B+mdL0iepb+mX+l;tF<QWxI-Br5?6
+z-ngD*va!*ZE)E5v%Q)cwJ3MHyAuYoXz855MN2DHQ5-Zz$G_zYQL0M~2pwp>#;Zzn)
+zr`VZ+eP@L+Z9$zh3OKCQsR=(#^=q|ecx=sTZ|Lha?-yw+QNLZgzHvu^1GltoD$x<-
+zR>hx>Pz=7OxRs#Ww|440ZhhF9?N9>&It31}VX)7YZ(r3r-dJbFqle($-7S337=mM4
+zJ9`}QeNHCPeb+xkRj2c@Z5C!o<<b&uvLO3XcThlFY04??9`h$&H2$7yK*LSE$&HQC
+zowt*Y^GXbfTil5X9p#IbnS%dqIC2UsJ<m??Nn2D`2_0=`JxX(1{^Pj!ICd!f=sD<o
+zhP#6S$iknDR<Kz*d&qK%^)&118H*1=@{>UK_E!itLOizaDKP-i>l**~hc)pD!X?oA
+z+*Pamn@~;cUr`yOSD15}kY)P<laHABAuxsq0VFQw#N!DB`zfHBQ)AAQe<@e03^6AM
+zRB@}j?jkWIN7^6LRVV4Gj+xM~He`PbmN8A$FkYCB1506EYj7@z#-1iB=Ae8rt<m7w
+zIvmh}BudIT&Iu5_s1Z9i9SP>($l>>uZw9iAbvzO=_7bh~8|VOvU_C`E{dzkjRn$ty
+zHJ;&PSVd@{oH9RjKw_^dk3fkX{$=+oRnll}jbEuvqMfQ)+Bd6$TZvq%JR`N{IUQcY
+zMIJeYerX++!Vn*_JsR|TW#&8Ny9FY|ZRP1V%g?yiA)Gz@MUZTqN9*&yPYWTbIHUL5
+zq<7M{$>-5l(e5dqAd$FpTW!RdTu8{qIMkXbh5-8ETA)P2i+)t~4L4jS)H)_11LBN}
+z+<Ub&lLoQ-dIu`7B$g^;ij%YSUqrl<(tXviy2;a}C7~4r#LWkHR?BBr1a>Cy*{ORX
+z6rIpxn}1$|W=aC9U-mzd0X@BL<FjgC0{VS#wEp3$1>)+jq>*~dRnp)){Md`9Q}s7i
+z2UCUEI(k0_J{fa0IQD!dCD3S0=i5zJF}tKd^_P7%GA>UO1mwp`Y_QL6#RZCug)Og-
+z{T*Anc*};<c_u3G)R^iC+L;+}z}G>Yn>3D-```fpQk%9h?w1WF_oFpv)8kb$R$zsG
+zG_N!%Z29MWZVXIF-lA4LuLf0wO8>w+FCGm82w$%)nsa!?hCW6+F)cF4HK;|N)CN&5
+z8u;HR8`8c_IWMVv<4Ot=8b;V00=wmkX@UvenF5{t{S9iA@v6ei*cZ4=<>!RNOc{>8
+zbf^O%Ff-k?SNr<ouYK9d=BH9G-6LGe#J1mg2fan$K6&gpE*YvDyp~bq;=rROLV4L2
+zrv&I|5RiY;=c45E`{cPxgm)S0Qth!&aYEpDgfs5-so4fxX=L;X00EeRbz)U$(LPS$
+zX^8rAI<p+|8+RYZ`6Im)QiJP%yYsTCM$h&q!{HG9>&Z^hsnKtGR`9~xZ}z!%{#h1H
+z_u*NJw)@4~#&;hS=-q)QGX#PAR?*9Y$h@YTQS^<yDGKL_WJHrDJb=)?7eyfwV)|#Z
+znyPQSVDzN$Q3MEpzI1uGJ)_#DTWU$6M<P|`J|lzv&$1Y}!^hm6B7SZ%sSnU8F_kC`
+zzrlDxM+mZhZj*>@Itv%Lvdsv9^NB0&+HDlgDYQiDvBB9nLRlFs^k28vaaFKCpMWUr
+znz)K<H%Sr&Srb=sp+&P&0?V*E4)rhl>t$AR<!pRt_A~#iB=kcXb0q~PkDx6->&{Tx
+z?+&9)X^OU=1APAI+<kYJJ@VaGR$D1$XRE7)H#o|pb@ljI*xLbZO4x}ojM9OS_6yw)
+za2xJ^K5~xshEM|`yb|e0tC7a$fixI>`!C>aB%jzit%0rXU7hWBP@L5Y_a0Iq=0&NG
+zGzrt^LsB36i`LGqO&I)QoxeH_p#n)kdj9`>X(jTVI=PKZ9g@WR?hf3<Y1D~AP!e?s
+z;ws3@kfxN|E%s?s#BS{}uKnwrV-$O2ClouazMQ$w9T=>aEF&*n^>=hxlZFUOLd_)G
+zbCk6V!5HcXVnHYg0s(kn&NlFKq-d+k?JHy}xbbv)-E5+KW%A$7ji^I=FhNtw+@2%3
+zZg$OW`f$A~a5-lO6J|U!1E|yLG@Ol!yyD0O1utkWlfvheL;Aul>qR+!n9_?RevCg5
+zm06w<PoR~<W1`ez3bl3XgdASz4I}4u`p|?!1Tpl&z(E2|&b&HDM}E0d)MfyDblT1H
+zv<WoSU!|ch{EJ>2ECbempfym(Lm-~QuKMMwS8MPve1a8=iD<5^+4*OSeofFy?Ez_g
+zeCMK%`ds1`=YMj)bD8D5LcWIL;yut$P|4H5JC`ad#0H669&8$9e7)q#;ML;-^$^pX
+z57z|M+&AhTOL-VYugP7q>b}j&VsM>3ktLBOo5fMc=zDzQ&8!eR*Gk+2wAc6N2>B)|
+zlwQxNY$2ov8ZS_y{OZGYlmR`@3XM1~7Qb&Vv&aoCxw&-B<)fl*tsrKDbsP^m-7FM-
+z%~bo~=JI;r_{KSMaZH)}3%@`&e-Foj#-y+kw9-UZme~t2{kc=U-_63(_Jwy$dkrFT
+z_lTKk0|luGIh4Lmw*}x!cyBx7vfu$IhML|Ix%wK{G}b(O3|@Eqp@%K|t{wZiz;yZH
+zrGlFGxZ5vpxNq@(?gIKOnc|>a#FFe9PfRdyP5E}8oqWRM^Z9q2|19$Qo#1P0t<lFZ
+z##<JEanb|pUQ@#)xhcC}HGtzrYv>3i8LFBmfFw6=S5^}s+SE};88wqKfz@0eZdE#K
+zD=s2|-f~YfK9@Kxc=p*Hyrq!51HB}8glu{4a&DO9#vE>YS$kxt<ejXb;l`Emd`D}W
+z2UZqWB8;=eT|Y<5OG<5Hm4{|;!euWVQTKX@mWBCx(5pMQ2zge-L>CcN_%Pjw;yToO
+zPA=Z+EaIZ_-7SG`$My@+uYt!-x}4x(uzs=d``qq$25uZti|<W=xJjC|Mpyr8;$v_?
+z!tRG#W3?_xCO3Q-(28#u#`yNg3XG2IVv2m;^GV~g9UFyq?^hBW?|lVcK9RC0?J8!h
+zn&?#RWa+u(u~1~f!xziT`k*$7ljmlOu;MY>stv=<zi-TuQny3rdhrqS-lSu%PkDLs
+zj{Fe~otzu4tYCM3_SAvu?dR%Y`KZwBuhnEKV|gh*O+2h%+46RZ_|rvBe{Os}>nnk;
+zXDF5d_X-C&luz>dSDJC2X+CGsbxkMdlIW=H1T@RWLHP6^omCKgqN@0A(GW^LW?q39
+zi#a%snM*LkCqR5|H)4v81YAPpiuPkW53Gl0YFu*EtVDISl<7K~V5JTZ&4DICN|@59
+zp6EbR7HLv&HlyYDLMI(SESQbYa~R%Z?94NMi;~;&8ja{bT>iuyMv_D8JMdQ3=DGy%
+zj%H?e*qqyog57l~GYZnf_6DtOe5mz@^so#zykA4m4Yvnam<@Djx2$Oanu<DBMT_81
+zcb-;Q_a6w<F>`ZY+t_V^lx|b<V`CCa>7(zBQER>u+f$}u(lkAyiqQ1@hp4~gZ)meI
+z$Tl46?Gjsj;8;n!VO7)(<=E!|tKJCGz_?uvkD&=F(m=qN`5il((rbsyKGz(ROL9=a
+ziq00*wx)WDPGS1Vlp7-lLc#U10@&n%L(|$u+OPeM^+zCBfdA>{Ha|24@TQl#M31<l
+zqj69pI)Kh5WoO`T2>!0!87(AFplWO`A#shal7P;nLi^fM2$fz=?Xgm?mamFZa*`4#
+z?KQC{soJZdk3Pg2ho;ID9e%;9le0b;`gmC1CnMhz1OZ1r$-95wy-0SgRX?cbmz<5+
+z+@9`1jbI2$Qf#YkZCy<Pr-A0WL3Y}+I_QADu-#7QT!!7mEdKn!OlSl47G||?rJHAz
+zP8?n)1q$NY>|?OV(@yZeH+&t3tY`vDH9qzL^J{)j8uOf5hkd6(TAix_Df1}9j*MZ1
+zKNJV{J9FMWn(aTGTbE<$vAxJEsb5t9%m~`p7JF3uPRw#Lc6z(4v>H`^EYb5C+j7jU
+zZ?YFy4_L4)eoxSTR`|0ZGbL%G)1F1aN~b`7uG>N%vfqofG!<g!JS!5Ec&tq(V6?T(
+zFo{Q0=2&QJhm1d^>WydiT-8bWbeyTZ(7eI;<(u}$G8FXF=K@darSrb$G)QJ+zt^r-
+z63yb)6}{7XDgM#7S+m32D^_3b#)X3}F00>qwLi@_N>B%S4JPc}@AGjEci9{>ny@?R
+z+La)d)&BGDS>fpCXCf~<KR@w?Q`+X;oljTOvWzoAZV4;Pi~AAy{G^}U0#_xx`z#Z$
+zUln)xuKe{^-BMRYUwu4r!tcp%Xyum<$!XDN9bBHVaY`pZQ9m#C_efuR^d(|h@x+y=
+zxd><M1vR<>R$^mhLDHBr3Bby5!UO7{lZMqgzLRX}CO+1<5W#Xz0GmP&poiQ&@aD|L
+zCTTrsqd0mDJ(?at-({cA!>8k8@wXEt5@!=6n9#UTKYP$pZn0^yX}AfKR$>wrGS-ok
+zM<iT0TqyiZIA1ug;FaA=yOJ6fbH;P(b2U>65o(@oPem|KetERr6_FRd;nt=qlEfst
+zHZc**xNmC=mzt=eLwOA994JlJF;7iLxb(s2dGSk9$K7l7+V+IZ?uZ}P;b}g1MKveF
+zE@l4);rwTBzAq+R=dY*!x)Rwpo@aYH+bB=}&I={?^S57YM*QY|eErPN2Wj{EubHBy
+z`ZLeTI~Wko`Ca?pi7eKyddr;1AFsNvUi})Oe+_a!<4T>0e{4HvGD-}hY2QAxMAFna
+z54lEqIGt8&=tuiF-->vRIt4jPx;%Z?w|UOH1##>+C+YO`Il)2pS~g!=k=#^r_OF+E
+zFPl7uJ{{&B<|tWFO{j)cX{rd7pUOpLt2V(ZU;*iJPnv9*AZdU2<k05uL7wKLw<A6y
+z=4Y>%H<{^~>6xZqw|u`Hza6z0H{>&9K13cI7%Ur19`qSBA50#|MM`J~g$IWJ!;md|
+zXumc>4Wa0Ae<m{1G1E~{(XqjI&uh=4`_&R;$!$q}NoENjBWfMp<!6}0e`c}MPd9i`
+zgQt^QP$dcGXP<y~YX2SBiN?=icD4e&)8*}n-iS)0Yhys0QX7O_pxLAERzy?8HKThY
+zbrwW@=t6+^Fz|lHbwqJM(jVXr*Y?oA{${;(*NHzY{8|^M--GW(>}p`~q5v@^@0@Hu
+zvyM8!s}?z0ewg-{|0(9YZ@vcei7$%gfP9k-<ZDn~kjWe+lwD8}leJOLAnl~^nUg5W
+zC9biVVl8V($-}&>sw+Grh$5}~=~BRYP(bI26eLO)61v@94pt|cVV>qFyO7$aUza~v
+zO6r+OMaftmi_H5vA8_{m#cvM_m-yIk6FK?j;{K$wVQb?Nw}Z42#OcKG{it70l!LVQ
+zF3}`sp|tt3IwH`TR3g6-;wMrQ98OdV5i27Nlc7lsviZ{Bvi<GAZJmK+w}u%oj%+f1
+zZo2jN7;G_2+tICw0t_)s>I}uqB<sDHp(Hc_f-ySgNQKAYy==1-5`O4IpDq%fcz6r5
+zIUUxQuf<(i`i@j7r#IMrR7<0Gj#w|6cWM!Vv<;%Rfca*O%n`m}+F3DBXq#Zx_5)O)
+zH=r?~>l_Ku-q0cIGBN{`Wp0J1N(|~jqFhdh%HNIT>l-}E4qSpAb?fjXQ}XTfCe%P=
+z&z!-0PQ{-e1gJvk@7@h6SUU)jp*ek(dtn-2kmkT<L%eGMndH-8yAmXw5Q(okQeeoq
+zs2KAD6jpZUovu69SW09RC^*o~(-Z7W6gX9mSu<MGDZ=W(T4jFai3P@$C!+<GSOjBw
+zcia(~uS|82crXpGO-76=5EsQ}1TMn;e>lYUE_LaV4~ave9Xjz8grEC#6~}yQ*yL-T
+zvFw9=;8Ez>`i=SZz?nr?^5_4>RWYWFKj`B5*PUqcT-qXL5myfa9*^GIocg9cktINq
+zTjH>}JNtOU)M}n(iunRc-F%h9=1(#Pi2h?C6uHDCfR!*UzC#Psq#R5e!o|<q=q*3d
+zG=<ksz8%Obp_zmC^=@P5K96~%VeEV}8qAB)asM=Df9!bOG2)5S5g$$NPu9BQKLK6T
+zyeBkV@xk*Is-T=7eoY-MFMlyhy$AR^i6ZBEhHK668i`Y>9-?3T(y!hZmhrGJFiz}H
+z60TX68`8Li=Q$^Q!)&ltAHPo*s*xE$_yu*0X5zo}YpCJpYV(93FLH#Gz3}Y`Tx|qb
+z`*c5$-OmKn1J@o6S^Q^xKjqSHjmstraS0;Iq^?{A2NX46eW^7NG%)5+g0`uoI{bR}
+ztLCNox$h71skhcM_eVUEhjCv_)2Y|jA7!2O0Q|w_-+oKQoe`T<sj_yr_@tu`gYS<_
+z<X5H}^W>n_VcwHpC%}eQFOp5Cgr~&QbrfJA+tM}LiQ)?N$X17FPHw8;n%o^<rvVmL
+zpXS^MGz-pySYQASDxCnn=t)6n1z~K;or%#1t{@)EJn$>b4A9NZOjO--8dC_2?dZz@
+zdpVC|!hl3quU?=WvBLhFe^O7KtmUU1m_O#^hfBoN922JL^NvlEr5^sL(S302&0yr9
+zj&H}B&jhkU?`bW=^RRs1?)Az;SxY2C`!H}a`Y-uG;a&K9hLq0B?apPNA-m6dx8Sj-
+zxcB+D1(wbK#{niS?iH&TV;pnzG`yz=>4-f$!!PUReU5@^3h<|lvFhi0ZCjASx2a86
+zEOO|odoC3hyCvQ?N#9JM?@~6gQL#x)qHqoG!QE_0{BLCZd0Fl0w|eK`vKAS;*EWq8
+z$j8`E0vMun*Ik#CITlvdS@cWTNP*52xEkx3oLPZ>4(m!dHzi%IeqHb<+L4p#8;vz^
+zhtP;K;yO^=XdZ>clcP>v{9%cwVoaGoJ=6Jtc2d39@1$K*xzixRSMXa4K-O<q-H^YR
+ze95%oB>CdB{$^4Oij#c4!O+)9-N|_FX@ptUnClZ_v303s-dJSMuanr4C#&w3*_XT!
+zl`qQdOX6RzjVnI-@~Xtd_4`QSz11seZ@1kM`GJXJbsm-8y_#}X(_@xU!%A;U$(yS@
+zhnvH0PsOz%WA8ldI9+G>rH#hKn63$eS6nOL2g*6WqaNr#Rt~+ZY}ipRxa#x+lxK%^
+z7UP_L8z?CM!_fH|;&tG;^H*%J&H9mnCypJDZ2M~P^bF$G_Y2sT;~ig$l=u|i%mao)
+zL-91};Uar!x@Zf%7d<Q+?y1=w<^@-~fjsgXIomQ01ZenF^G`QZ-3%#v62|xW5)hOK
+z$_vi(S1`f5#aLb89b{)GjT<jEju2gpS2++#S_6EUuzqao9BT&3gW)?%7c&f=73!_y
+zQx#$YbECp{?af27o2P7{5VgH7z6qb<^fJ_*`XW|jBV3uXtR(DM<fAt>5vs2Ib6ECT
+z*uvC=wwSvyg{G~io`tp2ZDb|Os3eQK@bB$9-`nuY6>BbDZ3oG2^+9Uzp~aj5SxMD3
+z<>>-3xnRI>QYGiG_{?Oh1$oVLSAADIOmRIYh~U2xxa)LV=R;$qUZun|C%sPe9Jcnz
+z-f@~g8O5^@BffT0(?MUGM_p{koM|8QQQdZ2Wo$1yeo4+FR}FX`O%F_S(jxW1*t&Em
+z%~oB2Q^z;ec2O0VKGUAHrwpC<*WdSp@6Vyn<}=DU!GM{@Bb4}{hvp=%!@)r?1fyfB
+zg%LM}1%S8=(Uq0+vvZW~mMZXMX74xbe3a0R={|<h7w#*u0SQtXTO#4<&@e@S_KIel
+zNXSo_<zT3Yx8^c(8F`SgKCsejR$<y`Dq%S5ft+B}A?pAnHaMYF<%iF>$A8Q{BhT{o
+zSt{?pVtwfTVHQd?h#h#W{Rc4X^;?q;Bco}!%N$?bk4EI#d09`gZm@)xn&wq-_gAZX
+zRD1ocSby{3vdMc-!;1Ad9#J*#jd8Vt&gz-B$sBLJE>@R}e{!~q<*Gh4b;UD#L;e1w
+zqpDkfhO8kKvNkY|{OQ!p@SfQ3y>#vT^+#VBW`~*k_`=oX(eHW>@^2l6ZEbU2<^R%j
+zKkf42-TnCOnma?Y7Yrg9^zA*iXd(ugs|jW-(tqz6x)26T(wk%-e5R{9S1gj_-Zfn`
+zd_`y7JJ{?r>~!RT9Khy3|3<z&3%_RiKL<bLs8}AjkfQx=_65mSM>Y=lNuIM8Hq__L
+zn`d8^8D&$2tFRezR@AKWXYJ9fuyrh`(P5Y!^jOXc;eanVH3ItR(7XMl5G!@*!N~G2
+z4YvG_H^Krd!y3kT;Y61zcYCB?Xvcbs3aL*+1>ch(B;#tI>SvLaFr{SHSu3i>#3<}D
+zQLb}%#RQZh(+~G!>o_SWz(TVt_i1nBW}~i;s$0)KDcSG%JN3mUOFqnGn|r9nF#7ai
+zH>Dp_qdB|Kyr<@tm~~^eFIAFq-!#L=rQUasu=F<V>g;EI=$6-;_dfTN&hFh_oJ#T0
+z3*FxRBF&lPqk~fyQJ<>GNf1<Q{N+@>Ao7-f_F>$K&BXRto>`61sg3nlOy^Wee^)KC
+z<&_UNkKmP!`^|DJ5niKT!?@Nbs@;3uORC)Vocih2TD`aO8)PSMUsL_<`@^_FHN(O?
+zI;S4KoI-lBk}(Y`l+wNo$OD`al(VoKB}NWt=yk>;;vsT4W^uvOhT<Y$Hw{*wLqtGW
+z14e?7C9sd4Ps;<_$5=(a6rcYQST<Jo1p9JS(`;3(WH`X%>F2<>F)`&T45nUlb-CSE
+z;DuO5pkw_Hs|xvU&5K53n`2Ca+k4gQhe~;AbX*|sn2rrmzjIFX7kC(RH!7$U3v?g`
+zEor8&h<*nb-9zLDc>e+3O~LSKsxRkU&?ipkfWS%jv%pU<uE5yB9-t(V2_b**)0049
+z;)`bHvBh*OSX?c~%2&Px$OH>~Rw5H8gev^1J4S_#O~z_Li>2@I!a)BU4)$%oRiD^L
+zy?zUFs_l3UvdQpGWX1COCbFpFt_3BJqn(>c=z8LcL-8Y;#>`ZJ`EViZ4N0;d(lw}~
+zMO&H9=O;R3z??{7fBnt7(HChcXX`pq|CsJGT7CoV=rd9zgId~LZj^WwbcAp}TZVhG
+z!GRLoKa~b@_zwL_KwMQ#{?l-m>A`0iyW>7VU$OLqRm%Fc)jS9uOm|)U<5fy@AD1%V
+zPBIikaqr7!brFw)N)Vvqismg1$0@uUry4-iqzRO37j7cNdR0u$mV6t{zau|V1WCfF
+zhIG0Qp>)Z+4O3Avk)>Z-fN$R4I#aEr#C~Unhwl?RN0TtU|9;~LC!Br#kJ)Z!>1s*%
+zwn_S5o1>?wDuK|?W%Xq$hhwfG-yIJP)=5blDAH<T<Mx}<Rr{k)=#!H_=PtBv9~3O<
+zg-^BZmQID{D};Ss)x_$JkVq#RSIS6#A0q$O<5rBDUIlr`&`q&BkM;HodjozP)yGa|
+zqvy0%Xu8=kf^=xLncK5KQ|&<1-mdTJqz4kbO&AI|8WF0Ib3BmtQJ0YLeyX(&PQqzt
+zX^|>+Yt$LS4X|G{Qibk#Mi0!N+Ps7_PTvV^gJml33G9?P{_*aLWru0M+|;PvK?iKf
+zsJZJGnf92hfQh^498pIAtee-T`e+Zz@TniOuBe(PbnTr#x}P8{?n2IFXl||vFkR*D
+z&ZRVw+m8I`J@jkqFV*V6f;t!$m;7yS)?b|mkc3T9p_RdOF1v;H&Qi4_48MHA0}J*L
+zw6O5u{IYq69B#*2EsAIT(P9FKPL$PkguJiT4t}XUnV!WU2TdK|76#|y@=F7NzKo`F
+zV?Xvqtkw@Zg&lWha$=|1tSB58)3lB%|6d}%q{MQ{=f@cd{n{WlJ`6C{bwEtN|2*v?
+zJ{R=hp6qYA7dR7#^sHl&tQT3OSp#!5EL*F1{%D%4UMVrGA`NO9t{&%m!r28t213Wy
+zZ8?h)vs705eq5_eVhYOBDtlWu*QcV>seup1&?WH|JUz@Kh@2mwilpxPORK3rOe!#(
+zDS<kn4S}e@`asRGO`G)m-*JIg#|nRb0{={Etv|{36M?Vxu5=|PAxx^TVS&ubb>efN
+z_ZW~_RwF=xNon675-ku~k6w-dEr~ZHw*pFsfo55X2vh*(%%!_TDa1e3b)6CMtfX>4
+z=^*gtD;C577z04+5Vv!B!JU{oP2zIb8!!*1PTgxP#|kXppQ%jj$`O&i+y_)7HU>=m
+zTliWpU>*TE)tA=oQ^6KFiolx1oHG}VF+xD==W!`u0}Sit5Pq7RL(cJj`m?WBS;5;O
+z4eD!!BN%0Jx{C8(G9##F7G36kFHK44yQZwrnFQ7F9?39v!6gXF6MosednW!CDswL(
+zL*|)796*fVmr>)4i-w*d7zNKcIYdEEpTClk?j-&S%FZF0;pUVZ0c9nyE>n}T)jY|i
+z=t`>Dq{@qKoFojghA4M#4nU)JFdwfyCO<}7rLBx;S&{E0{yDxP_WvGdvg|>zL@^|j
+zT<4(>qL`Q#d9fWz!StilK<y2N6q2dvwANMfmxd2pr1ht%5DT0Rlo<WyJ>)J<68K<I
+z>>b1~ngxo*Ba$JSzT+9J_^0uZYq)P322#<n5D}b5#?SZ-o>mkmYHG~GgbG5G2mXFu
+z_=NTnQ5^VbEKK;|ae+qpKzrkvgF9;?<>u{;ya)Pg2ZJrv&Jr<U!tcdUZfg$Z&MhQX
+z6m2!P1on$G^qzecR}3rF@TgD!D}LD|m2|&e=5Ma_9h#u*%>eSCj$t%)nkxV>n5{+|
+zpSA;=_oHvn2AQTsaxYrW7DsBCiI4Il8^xcaJ)AaS+UYuHXt$%A2c4ssr<f$?pBD4t
+zuVMUB(^0<U799>6^VuWj93olKEHsws-uqJxo|K>c#V@?Xe|ZcM46<oIGAp3nN$0YS
+zJ#jysnh1MYSdeuow3aYaVFbecfL0KGXK{jX#n4j1udL2{kN%V4m$_e|dHS{sH++V*
+z?^CY#!`iRB%QJ`|9A*;T9FRJ}g!W8MH=Kx)Ga)jQb_t%qklQa>c9b$aI&~<$?Zf*C
+z4rlD`VciDwbdI*@Z7xJd1U!Jz|Aqp<G^rm=|JW-cIA+1!d+5>>pFTYWyPxfc#ajT9
+zL|To^U5416b-Qsgya}$GOL8PhB#Wu|(u+5fJDP-)9O&T9vez7^kL2l<7S64DCy%7)
+z;Eg$nDE3o~OS`diEH&`s4DL9pC$ciEpQ<!f<B6;Y>!wOhL4J(?3~QybAB=(|%ED0o
+zEtAF|WJy@T&9H?kpJCnm2g<ftBksu0VR0;b6IeG1=3=AHPe3}&M1TjlHE?BFf7XqI
+z!8I*@&YI+&Mp+*Vs?G%QIr7ZqgA`HOisY_F$(z9k;cFC2mkwQ_gJ)||<>cSG0tZjl
+zT=*hEUx%Jc3Fm!ye(F?OM@zIWl8tZhcss!NH8gfw-$7qK#X5y+_j75G!j_TaljM2w
+zoYsOl|G+qKWvFn*-(U2IQ;|Hb#Sq`{aNI#Hb2Q%RJn&mdf^#l9Q^nzcVDvK%U|sAH
+zUtgdgRP6PpP?Pb3(AMd&*v6-IkIhK)@Z*lsWkXmZnAWT{4koFFY_kRB8@S!G@5uf4
+zhCH~2*dCD_1u0k*4eLCTj+3C6hfG}CR1TXc+m_PyNsc0BB<qMAo<5>%y8SSY{{UXr
+z6D3Y>(pcbzI1N&B=U?rm^2Yn=GuOi2C6Bf3YHcO$b|$C?iG{4RR%-xbkJ$Pk+v0HJ
+z-Eqjil>Jy4)u=IUcuMQr93OqI911mNY=p<?YlhWSA}A+kzxGbYH~tZruW%rD=EXr)
+z3!3k0Cxo^Ekeie_F$SO^pVp#9mk2gy4tG~?BMHYz-hj`Ep#ix0qh_rTiH5eLNXWKs
+zTzt92e<eY`0?W(iHhjX0%-zC_g@r2b3zZMLfA5XLua?U!f?N%HvH(^dR&G|y+y?Mg
+zX*V<1_rAe!tCR+-x%L^RzKBS<0L1MDW2HOdA@Vq;^eu?Jg~;4X307Y~oZuD51qOE-
+zuth`8;%xPu=AK4Ej&rOXYhc^(uJsq;qm@kEuJwAJt?DIGcf0>iRige>SLK_BDH{<6
+z$JqE~75R?c;z-Fp5#hVq^_nu~B~}y2lpj<zX0ra}>Q^H>POq8DK+MMyt7`cP&F8<z
+z{!Lo^bX*NBS^bq{T^d+BHuJ;{G^T00`m7{s^rcvFVDSUQ6StSlKnSxMe?q(ap(rq0
+z@zE1wkC_7F_hSYx3#_W-hcs^uOk}Yar+v2?$P6hR`D!*0`Dfc+=6?EB9pk@scL(l<
+z@caQMalnp~xOq9faWzm}y;pXTmqRtE|4TniZD69|MeqB5LpAdF4;zY8KWy~nsP-eu
+zgZ^uQFL7TjkOXKJ*2Ag*nn8G~eCvMzZZ8w-CN9AgjG0Wg*rXh&AE5<m^}-<w3L?1H
+z-MrMJeT9<S2d=ny(#PQ)v|e1Bu%1!G1bwJFVdB%~vyKKqic=qK=-F@WbCd@*pA>ys
+zwNLVj_JI_WnR$p)1fdJfB8ukC4J-{axI~x?$+i;Ghm$i2Vs0&v-!bek&b65`2Ndpa
+zNc!sIVn{izKZNu9hc71N>*(U`qz47YZ*XEEZcG}0z;J(CT!>E*kbuPkD8;*9OO^a5
+zN0yS*hf-oa7)<4(6vlrHv!y!Qetz!wKI~3-Ll`RTHuc=lx=4ljofL_K(6!ZabI#;2
+zAk{MSRa-}+@PYf9wB<7-bCpm7$2$$$UWc8(a%Wt?S>ib7X{y|K5liGibK|jt_8Be+
+zAg9KgRy#BGaeYz;MEgDyPxYMC@u20*fP$D-4vZ<@DC0HUPgraCW{)dqOvje?Y$j^-
+z-l*(@JW^ym?Vlh-`qi2I0H604^l6M~3fLTggawnJ3(sRQXdrEI8pcL+$X4|r<<&vH
+zyiJ8!=H965T*RHZbcZBXM_XMd3DsHOl3Bz}qc6~&_tgsE+2di?9^}-zEjYY^NoYL(
+z>08#SbBcCZ-+fR^F*#y4E-pEG_rwW+sBXo)wD4(Bp$$G(iIWy2383E`16sLLHul5j
+z$mtOFOLkb#^ho~EzVYAL0(c6;Xg~JOP?KTIi9?ZX^Fa}{qp<=YWuUJ~*`<}vMj^)w
+z$RAbHhhHuA=v_Pdz7}v4LFeBh8^^!}uUqV@&m)hY;9;olcFxU4z>hK5cQ4iWOzZj`
+zGz7BMkf)k>nz*Mb*4wJdlZ_suR3q4!r$l8~?|ZQ+H&4g%u$Gv0rto8RpC0(neE#Lb
+zjEWuDuY-PF9o2n!V3sEQ%Y3BK0;#!<|8FZ;Z(~weqtOAA!m7#!b#F#eS-0BUW^=<r
+zs7vK4oJrZL2P11H{Qo3Qo}RgLGV{IcY0k}PHE$pvFM9_df7KvJ-#2;2bk8w-h2)o{
+zghU3!Q<Ixy=wLJdguTlLRyrTP_3t3+R#O~{c_1QT%Cq9oEj7-8>C^Ovu1FPiHbzd7
+z{q68!++7AD<i0j9V>!Iz=>|5v{uYGjA-{z}jts2;m$J8mkHlf90VsUJG`#*zOq(`8
+zz0M5SM~|7&!=3LeH4N7R9`pu~DI)@VB(tHy0H31TE>Z`URCFZGn5Wn)U~f36J)msB
+z-y?f7qq=9uAzfwcIPHV?;4?KFBk_F)i0%21Hl<Ca&8*NSrK5)fXPeY5g1g)nRM!#P
+znZfsAGEjA6^j!y>tz&62e`7ZznkKqu9%34deiLJuAaU=5-anlW2U30N$yzJ%(`dw>
+ze}_#n51xH@R4@=do9(XAr!t?tX1-&(_k}qtR*iqX2W}<z3XrcOdj-ZNkXui2(?e8U
+zu<n9$TiygL)(!u#HnmpW?6t`oRNLyJ$C~cq!gjk(H-3wq+F2But`4a}W8O7-`(|+&
+zH(dR13wR{YQvcMG_q<}rIQKQ=EdJoY!OWjWyK(xRQ{DSxG!{-)Hde~?kIbTfM9ICU
+zPg=#NPg}`}5SB@Fbx4<^R51w|5bxvQlbZ(Bk}*l?(^4MjYLL1azR~6E;*bcv;m`+e
+z`Tz8ZB7P%I5zyKor1XDD_;jE2g$MyB@d#+8EzCMGs|qrNGXQt2%~U{oQiNdEYhp^y
+z&A7u5V*I)9kRn{B@Q&HTujXWJ^y+q!)n$_p7nsHC^2}$*TOPhsi~r>Kpvw)}{KS4O
+zb@HTV_ZCkt>Kgfn#U^?c-R5F^iabLSOJ#;=8mwNmccG-nan0_VNx$EoC0jITSw3sm
+z;v?T|z;BS+V8SHVTBmu3*RZn}xBmr71D~1zJIR_f@O-1!@2SW2UcJ@lJniZpCr&>8
+z;$<|c^xRIVI_+6&^%>7=%~?h+)oG58gS}j_j|bEEX^D2#MNY7uUoQu9l}je9KB-#8
+ztjTufK3kLh9j$X|+$ut6NuaD~E#z%!(PG6;>J#(4omAWM++(Y<Ww{G)N39;~7>!yz
+z$PBsnttcg==c|P|>rSe<`DWE$*{t06e;*VUS%mZy+)2(|Se8vZ&K+{^QxVGw<*csx
+zL{!{RUeR)<KT$R)SNUpc(fy38{rNY19uyc+L?yFoPFUs{P>%O=-2hl1p`nEJ%pxL2
+zTZ^*Nm(TAeo&)tccJNU)p2KUl*yi9#`Ga2y|A@k!%t@K6BSm4k)WCbs-5v7`m=Z8a
+zD;oG$0_v>XBoJZXg@y^@3&(6Zi_*2?iUFC|H9j?fo<<qdgww1Q<W60QgOKG~1L>If
+zFga>@@Su}KR2bL2gmD?E<8S#7c(07RePW3WW22rN#|q5l)&~$sX&<O-xhgMuNS9Et
+zeS+n%HquEp!m2|VtRY~&9>R>mJxIGbgAX8EeKDb3pD7MVW<FrtsTt`2pFtf1`0ir4
+z3Nbea=J&&*PJJmi^@bZMQ?~6zzs{8gm>Kf~Iek(5J?vJ(H2<;oPP8~JxIodbtUZpG
+zrayf!=-dV$Vcb11UZ1UkGb4Ei*fj|i*Di+Gf!i8V&fzHNaQNI0!JqKTXNOTc<WW8A
+zAEt??b^s$y=11CItq<@1$%iK~RQHF85=dt9eWsgIhSAeJBG5lj6fk-kN4P3mig|z2
+zjn^E9{AW)L<-uJ$a`xOVpU!|gGN5}kuX~%WTZbNn95EB<TM9jT;%8-!vgj_Kk9Rjo
+zA0_af+ycY_#E*jL!;x(rO~Oa+T@jn)-+BVqAJR=W0l%C0FEQTj{u7*pi!%bpQ|2XN
+z-~!h#q-+edG@al&OE=j7v^24?hqI35O+mbob$)a8OvoCTY<yYmzMlQd{G-YX*2t2t
+z29M4Ny?OZekEkU3@lI|RK7D3%kdn-I<VK9tGegtBj(8CL=;&xi{pfJL&&}@qO%(?M
+zfKbV};__nb^pSO)4(T~VY4Ih&dH-O3NS+ca3ulYwFXIOcBMox9B#8%5^zXVwO-3c^
+zyEuNlvsR3b(KGeifNe%4`}MC<yydE%cg&=S2=M1#){9Xf<h<}T1&42VH6F<|ZLc2f
+zXCLkVU2NH&wI7psei{^ngn;r&<|tFdOu<Hq8a;U7H{A*2qu;AaxHU^SnB6jIVw5%Q
+zl_AZ<O^^Cr4-GngzMw&C&OcGcdv_(qpEUm<(I!CQGM^s6ixU`}a1O^Wh%aken1P)B
+zP%-ttQ5rO$w~Sd)Z1a~SAa>*aLHH5*=&<RC)`UX9GyJo*ghE$<j5bpOqV}#td)<Ja
+zmY=51akap{x)`5H+5!B(yP30<4&SH25BuTpsl(?2l-QP73eY&HB}}n*qG6Uzy7aO+
+zK`(0hvc`F2S%U9j(_t1F-m7<b&=f9EGkv)!SDRZmX8>5iMRMV+oJ~$fWyI1x3IC(%
+z7v{N-v%HTvdm*KGQ1Fi2^mgXI*U6Xn^DU8`ZeN=frmIe^i_FWWbt_xuZeKRvDmbyI
+zlZzKStFXzN(6JzNDtUwB6}$MHkx0Ehme}ek-=Fq3_&l-xG(U?0E^{xW+p&E9(rjO-
+gLS`iW9LRC2zmMknDU%KMfBU<~K59H*{?F?F0Ky0-xc~qF
+
+literal 0
+HcmV?d00001
+
+diff --git a/game/assets/scenery_lods_v1/ice_compact.res b/game/assets/scenery_lods_v1/ice_compact.res
+new file mode 100644
+index 0000000000000000000000000000000000000000..503e8c5f843bdbcc28bcaff3036491d10134c819
+GIT binary patch
+literal 15831
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/game/assets/scenery_lods_v1/snow_castle.res b/game/assets/scenery_lods_v1/snow_castle.res
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ec6c1687d0946ea499b2268fa933bd525b0dbea
+GIT binary patch
+literal 15394
+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
+W-9|Z`6#hMO)B{#^*9!P{@c##&#<Gq8
+
+literal 0
+HcmV?d00001
+

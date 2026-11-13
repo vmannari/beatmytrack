@@ -3,10 +3,15 @@ extends SceneTree
 func _initialize() -> void: run.call_deferred()
 
 func run() -> void:
+	preload("res://ui/garage_car_cache.gd").enabled = false
+	preload("res://vehicle/prepared_car_cache.gd").enabled = false
 	var car := CarVisual.new()
 	car.vehicle_id = "electric"
 	car.simple_model = true
+	car.batch_parts = false
+	car.cache_rest_pose = false
 	root.add_child(car)
+	while not car.model_ready: await process_frame
 	var frames: Array[Node3D] = [car.body]
 	frames.append_array(car.rolling_wheels)
 	var details: Array[Dictionary] = []

@@ -95,7 +95,9 @@ static func _own(node: Node, holder: Node) -> void:
 	for child: Node in node.get_children(): _own(child,holder)
 
 
-static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
+# Car resource accounting also loads this cache. Keep the same generic Node3D
+# boundary as restore() so that accounting does not import world builders.
+static func restore_cooperative(key: Array, visual: Node3D) -> bool:
 	var entry: Dictionary = {}
 	for index: int in range(entries.size()):
 		if entries[index].key != key: continue
@@ -128,7 +130,7 @@ static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
 	return true
 
 
-static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: NativeTrack) -> void:
+static func remember_cooperative(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	var started_generation: int = generation
 	var resources: Dictionary = {}
 	var retained_resources: Dictionary = {}
@@ -261,10 +263,13 @@ static func _resource_bytes(node: Node, seen: Dictionary) -> int:
 				# Counts are enough for this conservative budget. Avoid decoding
 				# complete vertex/index arrays again after spatial preparation.
 				mesh_bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
+				# Morph targets carry position/normal/tangent streams per vertex.
+				mesh_bytes += mesh.surface_get_array_len(surface)*40*mesh.get_blend_shape_count()
 				continue
 			var arrays: Array = mesh.surface_get_arrays(surface)
 			mesh_bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
 			if arrays[Mesh.ARRAY_INDEX] != null: mesh_bytes += arrays[Mesh.ARRAY_INDEX].size()*4
+		mesh_bytes += int(mesh.get_meta("scenery_lod_bytes",0))+int(mesh.get_meta("scenery_lod_plan_bytes",0))
 		seen[mesh.get_instance_id()] = mesh_bytes
 		bytes += mesh_bytes
 	for child: Node in node.get_children(): bytes += _resource_bytes(child,seen)

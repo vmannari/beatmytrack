@@ -1,0 +1,185 @@
+--- a/game/backend/menu_snapshot_writer.gd
++++ b/game/backend/menu_snapshot_writer.gd
+@@ -10,7 +10,8 @@
+ var background_allowed: Callable
+ 
+ func _ready() -> void:
+-	set_process(false)
++	# shared() may queue values before the deferred root attachment completes.
++	set_process(active != null or not pending.is_empty())
+ 
+ static func resume() -> void:
+ 	if is_instance_valid(instance): instance.set_process(instance.active != null or not instance.pending.is_empty())
+@@ -22,7 +23,9 @@
+ 		instance = load("res://backend/menu_snapshot_writer.gd").new()
+ 		instance.name = "MenuSnapshotWriter"
+ 		instance.process_mode = Node.PROCESS_MODE_ALWAYS
+-		tree.root.add_child(instance)
++		# App requests the writer from _ready while the root is entering children.
++		# Publish the singleton now, attach once the root is no longer busy.
++		tree.root.add_child.call_deferred(instance)
+ 	return instance
+ 
+ static func queue(destination: String, payload: Dictionary) -> void:
+--- a/game/vehicle/prepared_car_cache.gd
++++ b/game/vehicle/prepared_car_cache.gd
+@@ -22,10 +22,11 @@
+ 	return key
+ 
+ static func restore(car: CarVisual) -> bool:
+-	# Only the stock detailed Compact currently passes exact renderer comparisons.
+-	# Other models/kits retain their original material/shadow construction sequence.
+-	# All models can still reuse their immutable rest-pose ghost geometry.
+-	if not enabled or car.simple_model or car.editable_kits or car.vehicle_id != "compact" or car.customisation != VehicleCustomisation.defaults(): return false
++	# Simple fitted cars retain their exact completed procedural geometry, including
++	# original shadow casters. They must not use the stock modular shadow proxies.
++	var fitted_simple: bool = car.simple_model and car.customisation != VehicleCustomisation.defaults()
++	var stock_compact: bool = not car.simple_model and car.vehicle_id == "compact" and car.customisation == VehicleCustomisation.defaults()
++	if not enabled or car.editable_kits or not (fitted_simple or stock_compact): return false
+ 	var key: Array = key_for(car)
+ 	for index: int in range(entries.size()):
+ 		if entries[index].key != key: continue
+--- a/game/track/spatial_mesh_chunks.gd
++++ b/game/track/spatial_mesh_chunks.gd
+@@ -28,8 +28,6 @@
+ 	if count/3 < MIN_TRIANGLES or maxf(extent.x,extent.z) <= TILE_SIZE*1.5:
+ 		_attach(parent,source)
+ 		return [source]
+-	var size: float = TILE_SIZE
+-	var groups: Dictionary = {}
+ 	var object_ends: PackedInt32Array = source.get_meta("spatial_object_ends",PackedInt32Array())
+ 	var object_centres: PackedVector3Array = source.get_meta("spatial_object_centres",PackedVector3Array())
+ 	if not object_ends.is_empty() and not _valid_object_ranges(object_ends,object_centres,count):
+@@ -38,24 +36,21 @@
+ 		# whole family when a detached staged source cannot be partitioned safely.
+ 		_attach(parent,source)
+ 		return [source]
+-	while true:
+-		groups.clear()
+-		for start: int in range(0,count,3):
+-			if start % 768 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
+-			var a: int = indices[start] if not indices.is_empty() else start
+-			var b: int = indices[start+1] if not indices.is_empty() else start+1
+-			var c: int = indices[start+2] if not indices.is_empty() else start+2
+-			var center: Vector3 = (vertices[a]+vertices[b]+vertices[c])/3.0
+-			if not object_ends.is_empty():
+-				var object: int = object_ends.bsearch(start+1)
+-				assert(object<object_centres.size(),"Static prop assembly ranges must cover every triangle.")
+-				center = object_centres[object]
+-			var key := Vector2i(floori(center.x/size),floori(center.z/size))
+-			if not groups.has(key): groups[key] = PackedInt32Array()
+-			groups[key].append_array(PackedInt32Array([a,b,c]))
+-		if groups.size() <= MAX_CHUNKS: break
+-		size *= 2.0
+-	if groups.size() <= 1:
++	# Numerical grouping/remapping does not need the scene tree or renderer.
++	# Running it on the existing worker removes repeated main-frame waits.
++	var prepare: Callable = preload("res://track/spatial_mesh_preparation.gd").run.bind(arrays,indices,vertices,count,object_ends,object_centres,TILE_SIZE,MAX_CHUNKS)
++	var prepared: Array = []
++	if cooperate.is_valid() and parent.is_inside_tree():
++		var job = preload("res://editor/work_job.gd").start(prepare,parent.get_tree())
++		while not job.done:
++			var frame: int = Engine.get_process_frames()
++			if not await cooperate.call(): job.cancel(); return []
++			if frame == Engine.get_process_frames(): await parent.get_tree().process_frame
++		if not await cooperate.call(): return []
++		prepared = job.result if job.result is Array else []
++	else:
++		prepared = prepare.call(func() -> bool: return false)
++	if prepared.is_empty():
+ 		_attach(parent,source)
+ 		return [source]
+ 	var result: Array[MeshInstance3D] = []
+@@ -67,31 +62,12 @@
+ 	var normal_offset: int = RenderingServer.mesh_surface_get_format_offset(format,vertices.size(),Mesh.ARRAY_NORMAL) if preserve_normals else 0
+ 	var normal_stride: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,vertices.size()) if preserve_normals else 0
+ 	var source_name: String = str(source.name) if not source.name.is_empty() else "MeshInstance3D"
+-	for key: Vector2i in groups:
++	for data: Dictionary in prepared:
+ 		if cooperate.is_valid() and not await cooperate.call(): return []
+-		var chosen: PackedInt32Array = groups[key]
+-		var map: Dictionary = {}
+-		var used := PackedInt32Array()
+-		for corner: int in range(chosen.size()):
+-			if corner % 512 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
+-			var original: int = chosen[corner]
+-			if not map.has(original):
+-				map[original] = used.size()
+-				used.append(original)
+-			chosen[corner] = map[original]
+-		var part: Array = []
+-		part.resize(Mesh.ARRAY_MAX)
+-		for attribute: int in range(Mesh.ARRAY_INDEX):
+-			if arrays[attribute] == null: continue
+-			var data: Variant = arrays[attribute].slice(0,0)
+-			var stride: int = 4 if attribute in [Mesh.ARRAY_TANGENT,Mesh.ARRAY_BONES,Mesh.ARRAY_WEIGHTS] else 1
+-			data.resize(used.size()*stride)
+-			for index: int in range(used.size()):
+-				if index % 256 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
+-				for component: int in range(stride):
+-					data[index*stride+component] = arrays[attribute][used[index]*stride+component]
+-			part[attribute] = data
+-		part[Mesh.ARRAY_INDEX] = chosen
++		var key: Vector2i = data.key
++		var size: float = data.size
++		var part: Array = data.arrays
++		var used: PackedInt32Array = data.used
+ 		var mesh := ArrayMesh.new()
+ 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,part)
+ 		if preserve_normals:
+@@ -130,6 +106,9 @@
+ 			source.add_child(node)
+ 		else: parent.add_child(node)
+ 		result.append(node)
++		# Release this CPU packet as its immutable renderer resource takes over.
++		# The completed WorkJob shares these dictionaries; it retains no copies.
++		data.clear()
+ 	if adaptive:
+ 		source.set_meta("spatial_mesh_family",true)
+ 		source.set_script(preload("res://track/static_mesh_draw_view.gd"))
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -509,14 +509,13 @@
+ 	# belongs to an explicit Garage visit, never first-menu readiness.
+ 	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
+ 	startup_complete = true
+-	if DisplayServer.get_name() == "headless": _initial_menu_presented = true
++	if DisplayServer.get_name() == "headless": _initial_menu_drawn.call_deferred()
+ 	else: RenderingServer.frame_post_draw.connect(_initial_menu_drawn,CONNECT_ONE_SHOT)
+ 	tutorial = preload("res://tutorial/tutorial_controller.gd").new()
+ 	tutorial.app = self
+ 	add_child(tutorial)
+ 	if capture_path.is_empty() and online.profile_ready(): tutorial.offer()
+ 	_telemetry_observe("menu_ready",{},"ready")
+-	_prefetch_discovery()
+ 	_prefetch_rivalry()
+ 	print("APP_READY")
+ 	if OS.is_debug_build() and FileAccess.file_exists("user://mobile_probe.json"):
+@@ -1442,6 +1441,7 @@
+ 	_prefetch_rivalry()
+ 
+ func _prefetch_discovery() -> void:
++	if not _initial_menu_presented: return
+ 	if cloud == null or is_instance_valid(game) or not cloud.paged_discovery_available(): return
+ 	# Prime the visible page during sign-in/startup, before Free Race is opened.
+ 	# The adapter coalesces this with menu activation and retains its scoped cache.
+@@ -3127,4 +3127,19 @@
+ 
+ var _initial_menu_presented: bool = false
+ func _initial_menu_drawn() -> void:
++	# Restored navigation can still be waiting for its first scoped Rivalry data
++	# when the shell draws. Do not start unrelated catalogue/studio work there.
++	while is_inside_tree() and not _initial_menu_content_ready():
++		await get_tree().process_frame
++	if not is_inside_tree(): return
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	if not is_inside_tree(): return
+ 	_initial_menu_presented = true
++	_prefetch_discovery()
++
++func _initial_menu_content_ready() -> bool:
++	if screen == "restoring" or is_instance_valid(_feature_loading): return false
++	if not is_instance_valid(content): return false
++	for preview: Node in content.find_children("RivalryPodiumCar_*","Control",true,false):
++		if not bool(preview.get("presentation_ready")): return false
++	return true

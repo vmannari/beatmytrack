@@ -37,7 +37,13 @@ var session_vault: RefCounted = preload("res://backend/session_vault.gd").new()
 var _idle_requests: Array[HTTPRequest] = []
 var _ipv4_fallback: RefCounted = preload("res://backend/ipv4_fallback.gd").new()
 var network_health: RefCounted = preload("res://backend/network_health.gd").new()
-var analytics_opt_in: bool = true
+var _analytics_generation: int = 0
+var analytics_opt_in: bool = true:
+	set(value):
+		if analytics_opt_in == value: return
+		analytics_opt_in = value
+		_analytics_generation += 1
+		if not value: network_health.clear()
 var _delete_request_id: String = ""
 var _delete_access_token: String = ""
 var _pending_network_context: Dictionary = {}
@@ -177,6 +183,9 @@ func base_url() -> String:
 func auth_busy() -> bool:
 	return _busy
 
+func appearance_contract() -> String:
+	return str(_capabilities.get("appearance_contract",""))
+
 func telemetry_supported() -> bool:
 	var capability: Variant = _capabilities.get("product_telemetry",{})
 	return _delete_request_id.is_empty() and analytics_opt_in and bool(player.get("analytics_enabled",true)) and signed_in() and capability is Dictionary and bool(capability.get("enabled",false)) and int(capability.get("schema_version",0)) == 1
@@ -209,6 +218,9 @@ func cancel_telemetry() -> void:
 
 func quality_supported() -> bool:
 	return quality_schema_version() > 0
+
+func loss_counters_supported() -> bool:
+	return telemetry_supported() and int(_capabilities.get("product_telemetry",{}).get("loss_counter_version",0)) == 2
 
 func network_supported() -> bool:
 	return telemetry_supported() and int(_capabilities.get("product_telemetry",{}).get("network_schema_version",0)) == 1
@@ -247,7 +259,7 @@ func request_telemetry(payload: Dictionary) -> Dictionary:
 	if int(response.get("status",0)) == 403 and response.get("error") == "ANALYTICS_DISABLED":
 		player.analytics_enabled = false
 		analytics_opt_in = false
-		network_health._scopes.clear()
+		network_health.clear()
 		identity_changed.emit()
 	return response
 
@@ -441,7 +453,7 @@ func delete_account() -> Dictionary:
 		if has_saved_session():
 			var saved := ConfigFile.new()
 			preserve_saved = _load_saved_config(saved) != OK or _stored_login_id(saved) != _login_id
-		network_health._scopes.erase((origin+"/"+owner).sha256_text())
+		network_health.erase_scope((origin+"/"+owner).sha256_text())
 		response.removed_player_id = owner
 		response.removed_origin = origin
 		response.account_removed = true
@@ -597,8 +609,10 @@ static func _decode_response(bytes: PackedByteArray, cacheable: bool = false) ->
 	var parsed: Variant = parser.data if parser.parse(body) == OK else null
 	return {"parsed":parsed,"body":body,"cache_data":parsed.duplicate(true) if cacheable and parsed is Dictionary else {}}
 
-func remember_run(value: Dictionary) -> void:
+func remember_run(value: Dictionary, allow_restart: bool = false) -> void:
 	if not value.has_all(["ticket_id","status"]): return
+	var previous: Dictionary = _race_status_cache.get(str(value.ticket_id),{}).get("data",{})
+	if not allow_restart and value.status in ["queued","verifying"] and previous.get("status") in ["verified","skipped","rejected","failed"] and not str(value.get("run_id","")).is_empty() and value.get("run_id") == previous.get("run_id"): return
 	_race_status_cache[str(value.ticket_id)] = {"data":value,"at":Time.get_ticks_msec()}
 	while _race_status_cache.size() > 32: _race_status_cache.erase(_race_status_cache.keys()[0])
 
@@ -656,7 +670,28 @@ func wait_for_run(run_id: String, ticket_id: String) -> Dictionary:
 	if not _run_waits.is_empty(): return _failure("WAIT_BUSY")
 	var pending: Dictionary = {"ticket":ticket_id,"done":false,"response":{}}
 	_run_waits[identity] = pending
-	var response: Dictionary = await request_api(run_read_path("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms)),HTTPClient.METHOD_GET,{},"",true)
+	var deadline: int = Time.get_ticks_msec()+8000
+	var response: Dictionary = _failure("WAIT_EXPIRED")
+	# Keep one foreground waiter across a few server-sized windows. A cold
+	# verification just beyond the first window must not wait for the outbox's
+	# slower retry timer. Requests stay serial, shared and bounded.
+	for attempt: int in range(4):
+		var cached: Dictionary = recent_run(ticket_id)
+		if valid_run(cached) and str(cached.run_id) == run_id and cached.status in ["verified","skipped","rejected","failed"]:
+			response = {"ok":true,"status":200,"error":"","data":cached}
+			break
+		var remaining: int = deadline-Time.get_ticks_msec()
+		if remaining <= 0: break
+		var window: int = mini(wait_ms,remaining)
+		var started: int = Time.get_ticks_msec()
+		response = await request_api(run_read_path("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(window)),HTTPClient.METHOD_GET,{},"",true)
+		if generation != _session_generation or origin != _base_url or owner != str(player.get("id","")): break
+		if not response.ok or not valid_run(response.data): break
+		if str(response.data.get("run_id","")) != run_id or str(response.data.get("ticket_id","")) != ticket_id: break
+		if response.data.status not in ["queued","verifying"]: break
+		# Capacity limits or an unavailable listener can return pending at once.
+		# Let ordinary polling back off instead of repeatedly hitting that path.
+		if Time.get_ticks_msec()-started < maxi(1,window/2): break
 	if generation != _session_generation or origin != _base_url or owner != str(player.get("id","")):
 		response = _failure("ACCOUNT_CHANGED")
 	elif response.ok:
@@ -711,6 +746,7 @@ func _send(path: String, method: HTTPClient.Method, payload: Dictionary, authori
 	var scope: String = _network_scope()
 	var generation: int = _session_generation
 	var context: Dictionary = network_context if not network_context.is_empty() else {"attempt":0,"queue_us":0}
+	var analytics_generation: int = _analytics_generation
 	var attempt: int = int(context.get("attempt",0)); context.attempt = attempt+1
 	var metrics: Dictionary = {"collect":collect,"request_id":"","http_status":0}
 	if collect:
@@ -720,7 +756,7 @@ func _send(path: String, method: HTTPClient.Method, payload: Dictionary, authori
 	var started: int = Time.get_ticks_usec()
 	var response: Dictionary = await _send_transport(path,method,payload,authorized,idempotency_key,extra_headers,owner_id,metrics)
 	if not str(metrics.request_id).is_empty(): response.request_id = metrics.request_id
-	if collect and generation == _session_generation and scope == _network_scope():
+	if collect and analytics_generation == _analytics_generation and network_supported() and generation == _session_generation and scope == _network_scope():
 		metrics.encode_ms = clampi((int(metrics.get("encode_us",0))+int(metrics.extra_encode_us))/1000,0,monitor.MAX_MS)
 		metrics.total_ms = clampi((Time.get_ticks_usec()-started+int(metrics.extra_encode_us))/1000+int(metrics.queue_ms),0,monitor.MAX_MS)
 		network_health.record(scope,category,monitor.method_name(method),response,metrics)
@@ -844,7 +880,9 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	if path == "/bootstrap" and _whole(parsed.get("server_now",0)): _sample_time(int(parsed.get("server_now",0)))
 	if path == "/bootstrap" and status == 200: _capabilities = parsed.duplicate(true)
 	if authorized and generation == _session_generation and status >= 200 and status < 300:
-		if parsed.has("ticket_id") and parsed.has("status") and not run_wait: remember_run(parsed)
+		if parsed.has("ticket_id") and parsed.has("status") and not run_wait:
+			var restart: bool = method == HTTPClient.METHOD_POST and path.get_slice("?",0) == "/runs/"+str(parsed.get("run_id",""))+"/retry"
+			remember_run(parsed,restart)
 		if path.begins_with("/runs/status"):
 			for item: Dictionary in parsed.get("items",[]):
 				if item.get("completion") is Dictionary and parsed.get("completion_wallet") is Dictionary:

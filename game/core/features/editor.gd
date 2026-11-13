@@ -307,7 +307,6 @@ func run_editor(app: Node) -> void:
 	app.object_browser.container_color_chosen.connect(app._container_colour)
 	app.object_browser.rotation_requested.connect(app._object_rotation_dialog)
 	app.object_browser.rotation_chosen.connect(app._set_object_rotation)
-	app.object_browser.controls_requested.connect(func() -> void: app._object_property_editing(""))
 	app.object_controls_panel = PanelContainer.new()
 	app.object_controls_panel.name = "ObjectControlStrip"
 	app.object_controls_panel.add_theme_stylebox_override("panel",EditorStyle.panel())
@@ -917,9 +916,6 @@ func run_delete_selection(app: Node) -> void:
 
 func run_rotate_object(app: Node) -> void:
 	app._set_object_rotation(preload("res://editor/object_rotation.gd").next_angle(app._object_rotation()))
-
-func run_selected_object_properties(app: Node) -> void:
-	app._object_property_editing("")
 
 func run_object_property_editing(app: Node, property: String) -> void:
 	app.editor_object_property = property

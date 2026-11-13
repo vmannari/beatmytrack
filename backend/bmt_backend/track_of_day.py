@@ -74,6 +74,7 @@ def candidates(db, *, unseen=True):
 
 def step(factory, *, clock=None, include_artificial=False):
     from .daily_fixed_limits import LimitsPending, prepare
+    from .daily_snapshot_preparation import schedule
 
     stamp = now() if clock is None else clock
     day = stamp // DAY
@@ -98,8 +99,10 @@ def step(factory, *, clock=None, include_artificial=False):
                     db.rollback()
                     return False
                 state.last_day = day
+                schedule(db, existing, stamp, include_artificial=include_artificial)
                 db.commit()
                 return True
+            schedule(db, existing, stamp, include_artificial=include_artificial)
             db.commit()
             return False
         if state.last_day >= day:
@@ -140,11 +143,13 @@ def step(factory, *, clock=None, include_artificial=False):
                 db.add(TrackOfDayHistory(track_id=item["track_id"], first_day=day, last_day=day))
             else:
                 history.last_day = day
-        db.add(TrackOfDay(day=day, policy=POLICY, track_id=item["track_id"] if item else None,
+        chosen = TrackOfDay(day=day, policy=POLICY, track_id=item["track_id"] if item else None,
             version_id=item["version_id"] if item else None,
             reason=item["reason"] if item else "exhausted" if supply else "empty", selected_at=stamp,
-            lap_limits=limits))
+            lap_limits=limits)
+        db.add(chosen)
         state.last_day = day
+        schedule(db, chosen, stamp, include_artificial=include_artificial)
         db.commit()
         return True
 

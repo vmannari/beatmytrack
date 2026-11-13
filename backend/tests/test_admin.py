@@ -55,6 +55,21 @@ def payload(entity, action="player_restriction", **extra):
     )
 
 
+@pytest.fixture
+def postgres_console(postgres_auth):  # noqa: F811 - imported pytest fixture
+    from fastapi.testclient import TestClient
+
+    from bmt_backend.app import create_app
+
+    source, _client = postgres_auth
+    # Route mounting, reporting and legacy-key admission are chosen at startup.
+    app = create_app(replace(source.state.settings, admin_owner_key="o" * 40,
+                            studio_legacy_keys_enabled=True), engine=source.state.engine,
+                     identity_verifier=source.state.identity_verifier)
+    with TestClient(app) as client:
+        yield app, client
+
+
 def test_admin_denies_missing_and_game_credentials(console):
     client, _app, ids = console
     for endpoint in ("overview", "competition-health", "entities/players", "entities/players/" + ids[0]):
@@ -172,12 +187,11 @@ def test_reason_acknowledgement_and_revocation(console):
 
 
 @pytest.mark.postgres
-def test_postgres_admin_daily_query_and_concurrent_command(postgres_auth):  # noqa: F811
+def test_postgres_admin_daily_query_and_concurrent_command(postgres_console):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
-    app, client = postgres_auth
-    app.state.settings = replace(app.state.settings, admin_owner_key="o" * 40)
+    app, client = postgres_console
     with app.state.session_factory() as db:
         player = Player(display_name="Admin test racer")
         db.add(player)

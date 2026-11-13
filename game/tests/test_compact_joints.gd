@@ -63,7 +63,8 @@ func _run() -> void:
 			same(middle,(bottom+top)*0.5,"glass has straight vertical generator")
 		var center: Vector3=GLAZING.windshield_point(front,0,0.5)
 		var chord: Vector3=(GLAZING.windshield_point(front,-1,0.5)+GLAZING.windshield_point(front,1,0.5))*0.5
-		check(center.distance_to(chord)>0.016 and center.distance_to(chord)<0.020,"glass has shallow cross-car curvature")
+		var crown: float = 0.008 if front else 0.018
+		check(absf(center.distance_to(chord)-crown)<0.0002,"glass has the authored cross-car curvature")
 	var directory: String="user://compact_joints_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
 	var app: Node=load("res://core/app.tscn").instantiate()

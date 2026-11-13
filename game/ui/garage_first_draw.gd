@@ -16,19 +16,6 @@ func _context() -> String:
 	var view: Viewport = owner.showroom_viewport if "showroom_viewport" in owner else get_viewport()
 	return Key.context(view,camera.get_parent() if camera != null else owner,camera)
 
-func queue_geometry(node: GeometryInstance3D) -> bool:
-	if not node is MeshInstance3D and not node is MultiMeshInstance3D: return false
-	var key: String = Key.geometry_key(node)
-	for index: int in range(pending.size()-1,-1,-1):
-		if pending[index].node.get_ref() == node: pending.remove_at(index)
-	if Key.ready(_context(),Key.receipt_key(node,_context())):
-		node.show()
-		return false
-	pending.append({"node":weakref(node),"key":key})
-	if not held.any(func(reference: WeakRef) -> bool: return reference.get_ref() == node): held.append(weakref(node))
-	node.hide()
-	return true
-
 func hold(world: Node) -> void:
 	var materials: Dictionary = {}
 	var context: String = _context()

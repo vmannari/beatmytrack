@@ -121,7 +121,12 @@ func partition_body(body: Node3D) -> Array:
 		# The driver's steering spokes also use WeldedBeam under a nested node;
 		# select the first direct body child for the four overhead-guard uprights.
 		var part: Node = body.get_node_or_null(label) if label == "WeldedBeam" else body.find_child(label,true,false)
-		if not part is MeshInstance3D or part.mesh == null: return []
+		if label=="WeldedBeam" and part==null:
+			var rail: Node = body.find_child("GuardSideRail",true,false)
+			if rail!=null: part = rail.get_parent().get_node_or_null(label)
+		if not part is MeshInstance3D or part.mesh == null:
+			printerr("FORKLIFT_SHADOW_MISSING ",label)
+			return []
 		protected_meshes[part.mesh.get_instance_id()] = true
 	var parts: Array = [SurfaceTool.new(),SurfaceTool.new()]
 	for tool: SurfaceTool in parts: tool.begin(Mesh.PRIMITIVE_TRIANGLES)

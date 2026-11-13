@@ -27,6 +27,7 @@ func inspect(path: String,metadata: String,key: Array,sources: Dictionary) -> vo
 func run() -> void:
 	check(not preload("res://vehicle/prepared_asset_sources.gd").manifest().is_empty(),"dependency manifest available")
 	for id: String in VehicleCatalog.IDS:
+		if ("--exclude-vehicle="+id) in OS.get_cmdline_user_args(): continue
 		var sources: Dictionary=Base.source_hashes(id)
 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
 		check(validation.runtime_projection(sources)==validation.runtime_hashes(id),"runtime code/configuration guard covers every preserved leaf "+id)
@@ -43,8 +44,8 @@ func run() -> void:
 							inspect(Kits.path_for(car,category,option[0]),"modular_kit",Kits.key_for(car,category,option[0]),Kits.geometry_sources(id))
 				car.free()
 		var car:=CarVisual.new()
-		car.vehicle_id=id;car.editable_kits=VehicleCustomisation.supported(id)
-		inspect(Garage.DIRECTORY+id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
+		car.vehicle_id=id;car.simple_model=false;car.editable_kits=VehicleCustomisation.supported(id)
+		inspect(Garage.DIRECTORY+car.model_id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
 		car.free()
 	var car:=CarVisual.new()
 	car.simple_model=true

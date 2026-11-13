@@ -5,7 +5,7 @@ static func build(world: Node3D, car: CarVisual) -> WorldEnvironment:
 	environment.name = "PodiumReflectionEnvironment"
 	# Other chassis still use the original nonreflective toon paint. Give their
 	# podium-only paint copies the Compact's existing Garage automotive finish.
-	if car.vehicle_id != "compact": _garage_paint(car)
+	if car.chassis_id != "compact": _garage_paint(car)
 	ShowroomStudio._studio_glass(car,{})
 	ShowroomStudio._contact(world,Vector3(0,0.004,0),Vector2(2.4,4.7)*HandlingConfig.BODY_SCALE,0.40)
 	for wheel: Vector3 in car.wheel_rest_positions:

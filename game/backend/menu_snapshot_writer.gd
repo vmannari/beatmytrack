@@ -10,7 +10,8 @@ var completed_writes: int = 0
 var background_allowed: Callable
 
 func _ready() -> void:
-	set_process(false)
+	# shared() may queue values before the deferred root attachment completes.
+	set_process(active != null or not pending.is_empty())
 
 static func resume() -> void:
 	if is_instance_valid(instance): instance.set_process(instance.active != null or not instance.pending.is_empty())
@@ -22,7 +23,9 @@ static func shared() -> Node:
 		instance = load("res://backend/menu_snapshot_writer.gd").new()
 		instance.name = "MenuSnapshotWriter"
 		instance.process_mode = Node.PROCESS_MODE_ALWAYS
-		tree.root.add_child(instance)
+		# App requests the writer from _ready while the root is entering children.
+		# Publish the singleton now, attach once the root is no longer busy.
+		tree.root.add_child.call_deferred(instance)
 	return instance
 
 static func queue(destination: String, payload: Dictionary) -> void:

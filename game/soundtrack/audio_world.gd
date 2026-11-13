@@ -65,7 +65,6 @@ func _ready() -> void:
 	output_enabled = DisplayServer.get_name() != "headless"
 	if output_enabled: windows_output.configure()
 	menu_player = _player("MenuScore", "Music")
-	menu_player.stream = RecordLibrary.stream(RecordLibrary.selected({}))
 	menu_player.finished.connect(_menu_finished)
 	menu_player.volume_db = -80.0
 	race_player = _player("RaceScore", "Music")
@@ -117,23 +116,33 @@ func apply_settings(settings: Dictionary) -> void:
 	music_enabled = settings.get("music_enabled",true) == true
 	var entry: Dictionary = RecordLibrary.selected(settings)
 	if entry.id != menu_record:
-		var next: AudioStream = RecordLibrary.stream(entry)
-		if next == null:
-			entry = RecordLibrary.selected({})
-			next = RecordLibrary.stream(entry)
-		if entry.id != menu_record:
+		# During account restoration only remember the selected record. The
+		# final owner starts one decoder in show_menu(), without loading Guest's
+		# unused default or a silent intermediate account selection.
+		if mode == "silent" and not menu_player.has_stream_playback():
 			menu_record = entry.id
-			if not menu_player.has_stream_playback():
-				# Cold startup has nothing to fade out. Install the saved selection
-				# before show_menu() can start the default record's decoder.
-				menu_player.stream = next
-				_pending_record = null
-				_record_fade = 1.0
-			else:
-				_pending_record = next
+			menu_player.stream = null
+			_pending_record = null
+			_record_fade = 1.0
+		else:
+			var next: AudioStream = RecordLibrary.stream(entry)
+			if next == null:
+				entry = RecordLibrary.selected({})
+				next = RecordLibrary.stream(entry)
+			if entry.id != menu_record:
+				menu_record = entry.id
+				if not menu_player.has_stream_playback():
+					# Cold startup has nothing to fade out. Install the saved selection
+					# before show_menu() can start the default record's decoder.
+					menu_player.stream = next
+					_pending_record = null
+					_record_fade = 1.0
+				else:
+					_pending_record = next
 	if mode == "menu":
 		menu_target = 1.0 if music_enabled else 0.0
 		if music_enabled and output_enabled and _pending_record == null:
+			_ensure_menu_stream()
 			# A paused player reports playing=false while retaining its decoder.
 			# Only a cold start needs play(); calling it on resume resets the cursor.
 			if not menu_player.has_stream_playback(): menu_player.play()
@@ -152,6 +161,14 @@ static func preference(settings: Dictionary, key: String) -> float:
 	return clampf(float(value), 0.0, 1.0)
 
 
+func _ensure_menu_stream() -> void:
+	if menu_player.stream != null: return
+	menu_player.stream = RecordLibrary.stream(RecordLibrary.entry(menu_record))
+	if menu_player.stream == null:
+		menu_record = RecordLibrary.DEFAULT_ID
+		menu_player.stream = RecordLibrary.stream(RecordLibrary.entry(menu_record))
+
+
 func show_menu() -> void:
 	if _exiting: return
 	mode = "menu"
@@ -160,6 +177,7 @@ func show_menu() -> void:
 	menu_target = 1.0 if music_enabled else 0.0
 	race_target = 0.0
 	race_player.stream_paused = app_suspended
+	if music_enabled: _ensure_menu_stream()
 	if output_enabled and music_enabled and _pending_record == null and not menu_player.has_stream_playback(): menu_player.play()
 	menu_player.stream_paused = app_suspended
 

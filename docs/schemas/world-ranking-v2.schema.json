@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Beat my track multi-car World Ranking",
+  "type": "object",
+  "required": ["policy", "car", "state", "best_results", "rolling_weeks", "circuit_cars", "circuit_weights"],
+  "properties": {
+    "policy": {"const": "multi-car-circuit-v2"},
+    "car": {"enum": ["overall", "compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]},
+    "state": {"enum": ["published", "not_started", "unranked", "country_required"]},
+    "best_results": {"const": 12},
+    "rolling_weeks": {"const": 26},
+    "overall_weights": {"const": [100, 40, 15]},
+    "population_weeks": {"const": 8},
+    "maximum_participation_bps": {"const": 12500},
+    "circuit_cars": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/car"}},
+    "circuit_weights": {"type": "object", "maxProperties": 8, "additionalProperties": {"type": "integer", "minimum": 10000, "maximum": 12500}},
+    "points": {"type": "integer", "minimum": 0, "maximum": 27900},
+    "season_points": {"type": "integer", "minimum": 0, "maximum": 13950},
+    "earned": {"type": "integer", "minimum": 0, "maximum": 2325},
+    "points_at_risk": {"type": "integer", "minimum": 0, "maximum": 2325},
+    "net_change": {"type": "integer", "minimum": -27900, "maximum": 27900},
+    "world_rank": {"type": ["integer", "null"], "minimum": 1},
+    "country_rank": {"type": ["integer", "null"], "minimum": 1},
+    "season_rank": {"type": ["integer", "null"], "minimum": 1},
+    "results": {"type": "array", "maxItems": 26, "items": {"$ref": "#/$defs/result"}},
+    "cars": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/summary"}},
+    "items": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/standing"}},
+    "next_cursor": {"type": "string", "maxLength": 400},
+    "career": {"type": "object", "maxProperties": 7}
+  },
+  "oneOf": [
+    {"required": ["items", "next_cursor"]},
+    {"required": ["points", "results", "cars", "career", "points_at_risk", "earned", "net_change"]}
+  ],
+  "$defs": {
+    "car": {"enum": ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]},
+    "result": {
+      "type": "object",
+      "required": ["week_start", "points", "weekly_place", "counting"],
+      "properties": {
+        "week_start": {"type": "integer", "minimum": 0},
+        "points": {"type": "integer", "minimum": 0, "maximum": 1500},
+        "weekly_place": {"type": "integer", "minimum": 1},
+        "counting": {"type": "boolean"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["vehicle_id", "points", "world_rank", "counting_weight", "contribution_hundredths"],
+      "properties": {
+        "vehicle_id": {"$ref": "#/$defs/car"},
+        "points": {"type": "integer", "minimum": 0, "maximum": 18000},
+        "world_rank": {"type": ["integer", "null"], "minimum": 1},
+        "counting_weight": {"enum": [0, 15, 40, 100]},
+        "contribution_hundredths": {"type": "integer", "minimum": 0, "maximum": 1800000}
+      }
+    },
+    "standing": {
+      "type": "object",
+      "required": ["player_id", "name", "rank", "points", "season_points"],
+      "properties": {
+        "player_id": {"type": "string", "maxLength": 36},
+        "name": {"type": "string", "maxLength": 80},
+        "rank": {"type": "integer", "minimum": 1},
+        "points": {"type": "integer", "minimum": 0, "maximum": 27900},
+        "season_points": {"type": "integer", "minimum": 0, "maximum": 13950}
+      }
+    }
+  }
+}

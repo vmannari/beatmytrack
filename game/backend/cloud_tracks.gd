@@ -12,6 +12,7 @@ var entries: Array[Dictionary] = []
 var status: String = "Cloud tracks have not been refreshed."
 var refreshing: bool = false
 var flushing: bool = false
+var _flush_again: bool = false
 var run_connection_failed: bool = false
 var last_error: String = ""
 var root_override: String = ""
@@ -579,7 +580,7 @@ static func compile_document(entry: Dictionary, doc: Dictionary, cancelled: Call
 		track.metadata["cloud_creator_id"] = str(entry.get("creator_id",""))
 	return track
 
-func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null, issued: Dictionary = {}) -> Dictionary:
+func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String = "", attempt_handling: HandlingConfig = null, issued: Dictionary = {}, purpose: String = "race") -> Dictionary:
 	_ensure_result_saves()
 	if not result_saves.can_start_attempt():
 		last_error = "Previous results are waiting for storage. Free space or race offline."
@@ -588,7 +589,7 @@ func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String =
 	var version: String = str(track.metadata.get("cloud_version",""))
 	if version.is_empty(): return {}
 	var selected_vehicle: String = VehicleCatalog.selected if vehicle_id.is_empty() else vehicle_id
-	var response: Dictionary = {"ok":true,"data":issued} if not issued.is_empty() else await client.race_ticket(version,selected_vehicle,client.new_operation_key(),"creator_test" if creator_test else "race")
+	var response: Dictionary = {"ok":true,"data":issued} if not issued.is_empty() else await client.race_ticket(version,selected_vehicle,client.new_operation_key(),"creator_test" if creator_test else purpose)
 	if not response.ok:
 		last_error = str(response.error)
 		return {}
@@ -717,21 +718,10 @@ static func _queue_run_io(ticket_data: Dictionary, frames: Variant, _publish_ver
 func _submission_ticket(ticket_data: Dictionary) -> Dictionary:
 	var pinned: Dictionary = ticket_data.duplicate()
 	if not pinned.has("_wire_options") and client.has_method("race_submission_options"): pinned._wire_options = client.race_submission_options()
+	if pinned.get("manifest",{}).get("purpose") == "daily_laps":
+		pinned._wire_options = pinned.get("_wire_options",{}).duplicate()
+		pinned._wire_options.result = 0
 	return pinned
-
-func queue_run(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
-	# Synchronous compatibility for small local diagnostics. The runtime uses
-	# queue_run_async so replay hashing, encoding and atomic writes yield frames.
-	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
-	var origin: String = str(ticket_data.get("_origin",client.base_url()))
-	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
-	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
-	var saved: bool = _queue_run_io(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
-	if saved:
-		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
-		changed.emit()
-	else: last_error = "The race could not be saved. Free storage and retry."
-	return saved
 
 func queue_run_async(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
 	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
@@ -879,18 +869,6 @@ func _migrate_outbox() -> bool:
 	_migrated_outboxes[path] = true
 	return true
 
-func upload_jobs() -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	var directory: String = outbox_path().get_base_dir().path_join("runs")
-	var files: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
-	files.sort()
-	for filename: String in files:
-		if not filename.ends_with(".job.json"): continue
-		var job: Dictionary = _read_upload_job(directory.path_join(filename))
-		if job.is_empty(): continue
-		result.append(job)
-	return result
-
 func dismiss_upload(ticket_id: String) -> bool:
 	var job: Dictionary = upload_job(ticket_id)
 	if job.is_empty() or not (job.has("done") or job.has("failure")): return false
@@ -907,6 +885,9 @@ func _retire_replay(job: Dictionary) -> void:
 
 func _job_ready(job: Dictionary) -> bool:
 	var id: String = str(job.ticket)
+	if not job.has("failure") and job.has("run_id") and client.has_method("recent_run"):
+		var recent: Dictionary = client.recent_run(id)
+		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","skipped","rejected","failed"]: return true
 	if client.has_method("run_wait_pending") and client.run_wait_pending(id): return false
 	if not _retry_deadlines.has(id):
 		# Ignore legacy phone-wall-clock deadlines. New saved waits are bounded;
@@ -1048,7 +1029,10 @@ func _deferred_background() -> Dictionary:
 	return {"ok":false,"status":0,"error":"BACKGROUND_DEFERRED","data":{}}
 
 func flush_outbox() -> void:
-	if flushing or not client.signed_in(): return
+	if flushing:
+		_flush_again = true
+		return
+	if not client.signed_in(): return
 	if not _background_allowed(): return
 	if _empty_outboxes.has(outbox_path().get_base_dir().path_join("runs")): return
 	flushing = true
@@ -1056,6 +1040,9 @@ func flush_outbox() -> void:
 	await _flush_jobs()
 	flushing = false
 	changed.emit()
+	if _flush_again:
+		_flush_again = false
+		flush_outbox.call_deferred()
 
 func _wait_for_upload(run_id: String, ticket_id: String, owner: String, origin: String) -> void:
 	if str(client.player.get("id","")) != owner or client.base_url() != origin: return

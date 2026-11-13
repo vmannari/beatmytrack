@@ -55,6 +55,12 @@ func run() -> void:
 		for mode: String in CameraProfile.MODES:
 			var choice: Button = page.find_child("Camera_" + mode, true, false)
 			check(choice != null and choice.is_visible_in_tree() and choice.size.y >= 52, "reachable camera choice " + mode)
+		var saved_camera: String = str(page.records.settings.get("camera_mode", "overhead"))
+		for mode: String in ["top_down", "high_angle", "low_angle"]:
+			await _press("Camera_" + mode)
+			check(page.draft_camera == mode and str(page.records.settings.get("camera_mode", "overhead")) == saved_camera, "touch stages new camera angle " + mode)
+		await _capture("camera-angles", dimensions)
+		await _press("Camera_" + saved_camera)
 		var zoom_choice: CheckButton = page.find_child("CameraSpeedZoom", true, false)
 		check(zoom_choice != null and zoom_choice.is_visible_in_tree() and zoom_choice.size.y >= 52, "reachable speed zoom toggle")
 		var zoom_strength: HSlider = page.find_child("CameraSpeedZoomStrength", true, false)

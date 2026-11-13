@@ -1,0 +1,1032 @@
+diff --git a/game/tests/bake_kart_tank_geometry.gd b/game/tests/bake_kart_tank_geometry.gd
+new file mode 100644
+index 0000000..b8b6029
+--- /dev/null
++++ b/game/tests/bake_kart_tank_geometry.gd
+@@ -0,0 +1,6 @@
++extends "res://tests/bake_kart_model.gd"
++func _initialize() -> void:
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	super._initialize()
+diff --git a/game/tests/review_kart_tank_clearance.gd b/game/tests/review_kart_tank_clearance.gd
+new file mode 100644
+index 0000000..651718a
+--- /dev/null
++++ b/game/tests/review_kart_tank_clearance.gd
+@@ -0,0 +1,41 @@
++extends SceneTree
++const OUT = "res://../docs/evidence/kart-tank-clearance-2026-11-12"
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var before: bool = "--before" in OS.get_cmdline_user_args()
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(1100,850)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var world := Node3D.new()
++	viewport.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "kart"
++	car.simple_model = true
++	car.batch_parts = prepared
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	if before:
++		for node: MeshInstance3D in car.body.find_children("*","MeshInstance3D",true,false):
++			if str(node.name) not in ["FuelTank","FuelCap","FuelLine"]:
++				if str(node.name).begins_with("Fuel"): node.hide()
++				continue
++			if str(node.get_parent().name)=="FuelAssembly": node.get_parent().position = Vector3.ZERO
++			node.mesh = load(OUT+"/before-simple-"+str(node.name)+".res")
++			if str(node.name)=="FuelCap": node.position = Vector3(0,0.332,-0.26)
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	world.add_child(camera)
++	camera.current = true
++	camera.fov = 32
++	for shot: Array in [["rear-tank",Vector3(-1.4,1.0,1.5),Vector3(-0.25,0.35,0.50)],["tank-top",Vector3(0,1.5,-0.15),Vector3(0,0.26,-0.3)],["lap",Vector3(0.65,1.15,0.2),Vector3(0,0.29,-0.25)],["cockpit",Vector3(1.1,0.87,-0.9),Vector3(0,0.55,-0.12)],["side",Vector3(2.3,0.82,0.15),Vector3(0,0.53,-0.12)],["tank",Vector3(0.85,0.70,-0.65),Vector3(0,0.29,-0.27)]]:
++		camera.position = shot[1]
++		camera.look_at(shot[2])
++		for frame: int in range(6): await process_frame; await RenderingServer.frame_post_draw
++		assert(viewport.get_texture().get_image().save_png(OUT+("/before-" if before else "/prepared-" if prepared else "/after-")+shot[0]+".png")==OK)
++	viewport.free()
++	quit()
+diff --git a/game/tests/test_kart_tank_clearance.gd b/game/tests/test_kart_tank_clearance.gd
+new file mode 100644
+index 0000000..3bc882e
+--- /dev/null
++++ b/game/tests/test_kart_tank_clearance.gd
+@@ -0,0 +1,75 @@
++extends SceneTree
++## KTC01: inspect actual tank, cap and driver triangles in both quality tiers.
++const OUT = "res://../docs/evidence/kart-tank-clearance-2026-11-12"
++const Crossing = preload("res://tests/test_kart_driver_cockpit.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	var probe: SceneTree = Crossing.new()
++	var rows: Array = []
++	var checks: int = 0
++	var failures: int = 0
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "kart"
++		car.simple_model = simple
++		car.batch_parts = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		var driver: MeshInstance3D = car.body.find_child("TomkartDriver",true,false)
++		var body: ArrayMesh = driver.mesh
++		for node: MeshInstance3D in car.body.find_children("*","MeshInstance3D",true,false):
++			if str(node.name) not in ["FuelTank","FuelCap","FuelLine"]: continue
++			var transform: Transform3D = car.body.global_transform.affine_inverse()*node.global_transform
++			if "--before" in OS.get_cmdline_user_args():
++				if str(node.get_parent().name)=="FuelAssembly": node.get_parent().position = Vector3.ZERO
++				node.mesh = load(OUT+"/before-"+("simple-" if simple else "full-")+str(node.name)+".res")
++				if str(node.name)=="FuelCap": node.position = Vector3(0,0.332,-0.26)
++				transform = car.body.global_transform.affine_inverse()*node.global_transform
++			var tree: TriangleMesh = node.mesh.generate_triangle_mesh()
++			var bounds: AABB = transform*node.mesh.get_aabb()
++			if str(node.name)=="FuelTank":
++				checks += 1
++				if bounds.end.x> -0.29 or bounds.position.z<0.50 or bounds.position.y<0.210: failures += 1
++			if str(node.name)=="FuelCap":
++				checks += 1
++				if bounds.end.x> -0.30 or bounds.position.z<0.60: failures += 1
++			var part_faces: PackedVector3Array = node.mesh.get_faces()
++			for index: int in range(part_faces.size()): part_faces[index] = transform*part_faces[index]
++			for pose: int in range(7):
++				var posed := ArrayMesh.new()
++				for surface: int in range(body.get_surface_count()):
++					var arrays: Array = body.surface_get_arrays(surface)
++					if pose>0:
++						var shape: Array = body.surface_get_blend_shape_arrays(surface)[pose-1]
++						arrays[Mesh.ARRAY_VERTEX] = shape[Mesh.ARRAY_VERTEX]
++						arrays[Mesh.ARRAY_NORMAL] = shape[Mesh.ARRAY_NORMAL]
++					posed.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++				var hit: Vector3 = probe.crossing(posed.get_faces(),tree,transform,bounds)
++				var reverse: Vector3 = probe.crossing(part_faces,posed.generate_triangle_mesh(),Transform3D.IDENTITY,posed.get_aabb())
++				var clear: bool = not hit.is_finite() and not reverse.is_finite()
++				checks += 1
++				if not clear: failures += 1
++				rows.append({"simple":simple,"pose":pose,"part":str(node.name),"bounds":str(bounds),"clear":clear,"driver_crossing":str(hit),"part_crossing":str(reverse)})
++				print("TANK_INSPECT ",rows[-1])
++			if str(node.name) in ["FuelTank","FuelCap"]:
++				for obstacle: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++					var label: String = str(obstacle.name)
++					if label.begins_with("Fuel") or label in ["TomkartDriver","HelmetStatic"] or obstacle.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++					checks += 1
++					var placement: Transform3D = car.body.global_transform.affine_inverse()*obstacle.global_transform
++					var box: AABB = placement*obstacle.mesh.get_aabb()
++					if not bounds.intersects(box): continue
++					var obstacle_faces: PackedVector3Array = obstacle.mesh.get_faces()
++					for index: int in range(obstacle_faces.size()): obstacle_faces[index] = placement*obstacle_faces[index]
++					var hit: Vector3 = probe.crossing(part_faces,obstacle.mesh.generate_triangle_mesh(),placement,box)
++					var reverse: Vector3 = probe.crossing(obstacle_faces,tree,transform,bounds)
++					if hit.is_finite() or reverse.is_finite(): failures += 1; printerr("TANK_OBSTACLE ",node.name," / ",label," ",hit," ",reverse)
++			if "--snapshot" in OS.get_cmdline_user_args(): ResourceSaver.save(node.mesh,OUT+"/before-"+("simple-" if simple else "full-")+str(node.name).split("@")[0]+".res")
++		car.free()
++	probe.free()
++	FileAccess.open(OUT+("/inspection-before.json" if "--snapshot" in OS.get_cmdline_user_args() else "/inspection-rejected.json" if "--before" in OS.get_cmdline_user_args() else "/inspection-after.json"),FileAccess.WRITE).store_string(JSON.stringify(rows,"\t"))
++	print("KART_TANK_CLEARANCE ",checks," checks; ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/vehicle/kart_model.gd b/game/vehicle/kart_model.gd
+index 15e1042..51bfbda 100644
+--- a/game/vehicle/kart_model.gd
++++ b/game/vehicle/kart_model.gd
+@@ -1,324 +1,334 @@
+-extends RefCounted
+-## Original unbranded racing kart. Presentation only; canonical axle geometry.
+-const G = preload("res://vehicle/kart_geometry.gd")
+-const Detail = preload("res://vehicle/kart_detail.gd")
+-const Panels = preload("res://vehicle/kart_bodywork.gd")
+-const Kits = preload("res://vehicle/kart_kits.gd")
+-
+-static func build(car: CarVisual) -> void:
+-	car.body.name = "KartChassis"
+-	var paint := CompactFinish.paint(Color("b96d43"))
+-	paint.roughness = 0.44
+-	paint.clearcoat = 0.16
+-	var accent := CompactFinish.paint(Color("d9d0b7"))
+-	accent.roughness = 0.48
+-	var trim := CompactFinish.rubber(Color("171e22"))
+-	var metal := CompactFinish.alloy(Color("6e7778"))
+-	var bright := CompactFinish.alloy(Color("a8aea9"))
+-	var chassis := CompactFinish.paint(Color("3b3431"))
+-	chassis.roughness = 0.50
+-	car.paint_materials = {"body":paint,"accent":accent}
+-	_body(car,trim,chassis,metal,bright)
+-	_driver(car,trim,metal)
+-	_engine(car,trim,metal,bright)
+-	build_nose(car)
+-	build_pods(car)
+-	build_bumper(car)
+-	Detail.brackets(car,metal)
+-	Detail.mechanical(car,trim,metal,bright)
+-	var config: HandlingConfig = VehicleCatalog.config("kart")
+-	for side: float in [-1.0,1.0]:
+-		for axle: float in [-1.0,1.0]:
+-			_wheel(car,Vector3(side*config.track_width/(2*HandlingConfig.BODY_SCALE),0.22,axle*config.wheelbase/(2*HandlingConfig.BODY_SCALE)),trim,metal,bright)
+-
+-static func _body(car: CarVisual, trim: Material, chassis: Material, metal: Material, bright: Material) -> void:
+-	var p: Node3D = car.body
+-	var s: bool = car.simple_model
+-	G.rounded(p,"FloorTray",Vector3(0,0.147,-0.20),Vector3(0.83,0.028,1.69),0.012,metal,s)
+-	for side: float in [-1.0,1.0]:
+-		G.tube(p,"BentMainRail",[Vector3(side*0.20,0.17,-1.10),Vector3(side*0.42,0.17,-0.95),Vector3(side*0.44,0.17,-0.30),Vector3(side*0.42,0.17,0.57),Vector3(side*0.30,0.17,1.08)],0.032,chassis,s,40)
+-		G.tube(p,"SideProtection",[Vector3(side*0.43,0.19,-0.59),Vector3(side*0.68,0.19,-0.46),Vector3(side*0.69,0.19,0.38),Vector3(side*0.43,0.19,0.54)],0.024,metal,s)
+-		# Pedal spindle, forged pedal plate and anti-slip ribs are visible in the footwell.
+-		G.tube(p,"PedalLever",[Vector3(side*0.25,0.18,-0.84),Vector3(side*0.19,0.25,-0.92),Vector3(side*0.17,0.30,-0.93)],0.012,bright,s,8)
+-		var pedal: MeshInstance3D = G.rounded(p,"PedalPlate",Vector3(side*0.17,0.28,-0.94),Vector3(0.11,0.13,0.023),0.010,metal,s)
+-		pedal.rotation.x = -0.30
+-		for rib: int in range(4): G.rounded(p,"PedalRib",Vector3(side*0.17,0.24+rib*0.025,-0.958),Vector3(0.075,0.004,0.005),0.001,trim,s)
+-		for z: float in [-0.93,-0.60,-0.25,0.10,0.48]:
+-			Detail.fastener(p,"TrayRivet",Vector3(side*0.39,0.162,z),Vector3.UP,0.008,bright)
+-	preload("res://vehicle/kart_driver.gd").seat_stays(p,metal,s)
+-	G.tube(p,"FrontCrossmember",[Vector3(-0.49,0.19,-0.88),Vector3(0,0.19,-0.88),Vector3(0.49,0.19,-0.88)],0.026,chassis,s,12)
+-	G.tube(p,"LiveRearAxle",[Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88)],0.026,metal,s,8)
+-
+-static func _clip_inlay(polygon: Array[Dictionary], normal: Vector3, offset: float) -> Array[Dictionary]:
+-	var result: Array[Dictionary] = []
+-	if polygon.is_empty(): return result
+-	var previous: Dictionary = polygon[-1]
+-	var previous_distance: float = normal.dot(previous.point)-offset
+-	for current: Dictionary in polygon:
+-		var distance: float = normal.dot(current.point)-offset
+-		if (distance >= 0) != (previous_distance >= 0):
+-			var t: float = previous_distance/(previous_distance-distance)
+-			result.append({"point":previous.point.lerp(current.point,t),"normal":previous.normal.lerp(current.normal,t).normalized()})
+-		if distance >= 0: result.append(current)
+-		previous = current
+-		previous_distance = distance
+-	return result
+-
+-static func _fitted_inlay(parent: Node3D, label: String, shell: MeshInstance3D, profile: Array[Vector4], half_width: float, start: float, end: float, material: Material, simple: bool, lift: float = 0.0015) -> void:
+-	# Clip the actual shell triangles, so the racing LOD cannot swallow the stripe
+-	# between independently sampled analytic surfaces. Runs only during mesh bake.
+-	G.attach(parent,label+"|formed-fitted-v2"+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
+-		var front: float = G.loft_station(profile,start).x
+-		var rear: float = G.loft_station(profile,end).x
+-		var arrays: Array = shell.mesh.surface_get_arrays(0)
+-		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+-		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+-		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+-		var tool := SurfaceTool.new()
+-		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-		for face: int in range(indices.size()/3):
+-			var polygon: Array[Dictionary] = []
+-			var upward: float = 0
+-			for corner: int in range(3):
+-				var index: int = indices[face*3+corner]
+-				polygon.append({"point":vertices[index],"normal":normals[index]})
+-				upward += normals[index].y
+-			if upward <= 0.1: continue
+-			for plane: Vector4 in [Vector4(1,0,0,-half_width),Vector4(-1,0,0,-half_width),Vector4(0,0,1,front),Vector4(0,0,-1,-rear)]:
+-				polygon = _clip_inlay(polygon,Vector3(plane.x,plane.y,plane.z),plane.w)
+-			for triangle: int in range(1,polygon.size()-1):
+-				for corner: int in [0,triangle,triangle+1]:
+-					var point: Vector3 = polygon[corner].point
+-					tool.set_normal(polygon[corner].normal)
+-					tool.set_uv(Vector2(inverse_lerp(-half_width,half_width,point.x),inverse_lerp(front,rear,point.z)))
+-					tool.add_vertex(point+Vector3.UP*lift)
+-		tool.index()
+-		return tool.commit())
+-
+-static func _driver(car: CarVisual, trim: Material, metal: Material) -> void:
+-	var p: Node3D = car.body
+-	var s: bool = car.simple_model
+-	var dark := CompactFinish.rubber(Color("10191d"))
+-	var visor := CompactFinish.alloy(Color("253d49"))
+-	visor.metallic = 0.35
+-	visor.roughness = 0.22
+-	preload("res://vehicle/kart_driver.gd").build(p,trim,s)
+-	# Anatomically aligned hands reach the thick D-shaped steering rim.
+-	var wheel := Node3D.new()
+-	wheel.name = "SteeringAssembly"
+-	wheel.position = preload("res://vehicle/kart_steering.gd").CENTER
+-	wheel.rotation.x = 1.15
+-	p.add_child(wheel)
+-	var rim: Array[Vector3] = []
+-	for step: int in range(33):
+-		var a: float = TAU*step/32.0
+-		rim.append(Vector3(sin(a)*0.168,0,maxf(-0.12,cos(a)*0.168)))
+-	G.tube(wheel,"SteeringRim",rim,0.015,dark,s,64)
+-	for a: float in [0.0,2.15,-2.15]:
+-		G.tube(wheel,"SteeringSpoke",[Vector3.ZERO,Vector3(sin(a)*0.15,0,cos(a)*0.14)],0.010,metal,s,8)
+-	G.rounded(wheel,"WheelHub",Vector3.ZERO,Vector3(0.075,0.025,0.065),0.010,dark,s)
+-	G.rounded(wheel,"DashDisplay",Vector3(0,0.021,-0.095),Vector3(0.10,0.025,0.048),0.009,metal,s)
+-	G.rounded(wheel,"DashGlass",Vector3(0,0.035,-0.095),Vector3(0.075,0.004,0.031),0.001,visor,s)
+-	G.tube(p,"SteeringColumn",[Vector3(0,0.32,-0.85),wheel.position],0.017,metal,s,8)
+-	G.tube(p,"ColumnSupport",[Vector3(-0.20,0.17,-0.85),Vector3(0,0.32,-0.85),Vector3(0.20,0.17,-0.85)],0.014,metal,s,12)
+-
+-static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Material) -> void:
+-	var p: Node3D = car.body
+-	var s: bool = car.simple_model
+-	var cast := CompactFinish.alloy(Color("535b5b"))
+-	cast.roughness = 0.62
+-	cast.metallic = 0.28
+-	var bronze := CompactFinish.alloy(Color("716253"))
+-	bronze.roughness = 0.68
+-	bronze.metallic = 0.54
+-	G.rounded(p,"EngineMount",Vector3(0.395,0.205,0.70),Vector3(0.30,0.055,0.38),0.020,metal,s)
+-	G.rounded(p,"CastCrankcase",Vector3(0.395,0.30,0.75),Vector3(0.31,0.22,0.33),0.073,cast,s)
+-	G.rounded(p,"CylinderBlock",Vector3(0.405,0.435,0.70),Vector3(0.21,0.20,0.23),0.033,cast,s)
+-	for fin: int in range(8):
+-		Detail.plate(p,"CoolingFin",Vector3(0.405,0.36+fin*0.023,0.70),Vector3(0.29,0.010,0.30),0.004,metal)
+-	G.rounded(p,"CylinderHead",Vector3(0.405,0.55,0.70),Vector3(0.26,0.035,0.27),0.014,cast,s)
+-	for x: float in [0.315,0.495]:
+-		for z: float in [0.61,0.79]: G.ellipsoid(p,"HeadFastener",Vector3(x,0.574,z),Vector3(0.014,0.008,0.014),bright,s)
+-	G.tube(p,"SparkPlugBoot",[Vector3(0.405,0.59,0.69),Vector3(0.435,0.62,0.76),Vector3(0.545,0.55,0.84)],0.011,trim,s,20)
+-	var airbox: MeshInstance3D = Panels.formed(p,"Airbox",[Vector4(-0.14,0.075,0,0.070),Vector4(-0.12,0.105,0,0.100),Vector4(0.09,0.110,0,0.110),Vector4(0.14,0.080,0,0.085)],trim,s)
+-	airbox.position = Vector3(0.56,0.45,0.39)
+-	G.tube(p,"IntakeManifold",[Vector3(0.405,0.43,0.66),Vector3(0.48,0.41,0.50),Vector3(0.56,0.43,0.45)],0.035,trim,s,16)
+-	G.tube(p,"ExhaustHeader",[Vector3(0.40,0.43,0.82),Vector3(0.38,0.40,0.90),Vector3(0.25,0.38,0.98),Vector3(0.20,0.38,1.02)],0.027,bronze,s,24)
+-	var exhaust := Node3D.new()
+-	exhaust.name = "ExhaustAssembly"
+-	exhaust.position = Vector3(0.20,0.38,1.02)
+-	exhaust.rotation.y = -PI*0.5
+-	p.add_child(exhaust)
+-	var chamber_profile: Array[Vector4] = [Vector4(0,0.027,0,0.027),Vector4(0.12,0.060,0,0.060),Vector4(0.30,0.075,0,0.075),Vector4(0.49,0.034,0,0.034),Vector4(0.55,0.024,0,0.024)]
+-	G.loft(exhaust,"ExpansionChamber",chamber_profile,bronze,s,1)
+-	G.tube(p,"ExhaustStinger",[Vector3(-0.35,0.38,1.02),Vector3(-0.42,0.35,1.03),Vector3(-0.44,0.35,1.07)],0.013,bronze,s,12)
+-	var silencer := Node3D.new()
+-	silencer.name = "ExhaustSilencer"
+-	silencer.position = Vector3(-0.44,0.35,1.06)
+-	p.add_child(silencer)
+-	G.loft(silencer,"SilencerCan",[Vector4(0,0.016,0,0.016),Vector4(0.015,0.034,0,0.034),Vector4(0.105,0.034,0,0.034),Vector4(0.12,0.016,0,0.016)],metal,s,1)
+-	var outlet: MeshInstance3D = G.lathe(silencer,"HollowExhaustOutlet",[Vector2(0,0.010),Vector2(0,0.015),Vector2(0.06,0.015),Vector2(0.06,0.010),Vector2(0,0.010)],bronze,s)
+-	outlet.position.z = 0.11
+-	outlet.rotation.y = -PI*0.5
+-	for x: float in [0.08,-0.15]:
+-		var radius: float = _chamber_radius(chamber_profile,0.20-x)+0.004
+-		G.tube(p,"ExhaustChassisStay",[Vector3(signf(x)*0.30,0.17,1.06),Vector3(x,0.38-radius,1.02)],0.010,metal,s,8)
+-		var strap: Array[Vector3] = []
+-		for step: int in range(17):
+-			var a: float = TAU*step/16
+-			strap.append(Vector3(x,0.38+sin(a)*radius,1.02+cos(a)*radius))
+-		G.tube(p,"ExhaustStrap",strap,0.005,metal,s,48)
+-	G.tube(p,"RearBrakeLine",[Vector3(-0.26,0.19,-0.75),Vector3(-0.35,0.20,0.1),Vector3(-0.33,0.30,0.87)],0.006,trim,s,32)
+-	# Turned live-axle disc and guarded chain run sit inboard of the rear tyres.
+-	var brake := Node3D.new()
+-	brake.position = Vector3(-0.34,0.22,0.88)
+-	p.add_child(brake)
+-	G.lathe(brake,"RearBrakeRotor",[Vector2(-0.008,0.045),Vector2(-0.008,0.125),Vector2(0.008,0.125),Vector2(0.008,0.045),Vector2(-0.008,0.045)],metal,s)
+-	G.rounded(p,"RearCaliper",Vector3(-0.34,0.315,0.87),Vector3(0.07,0.07,0.13),0.023,cast,s)
+-	G.rounded(p,"ChainGuard",Vector3(0.22,0.33,0.80),Vector3(0.026,0.055,0.46),0.012,trim,s)
+-	G.tube(p,"ChainUpperRun",[Vector3(0.225,0.30,0.61),Vector3(0.225,0.295,0.96)],0.010,cast,s,10)
+-	G.tube(p,"ChainLowerRun",[Vector3(0.225,0.19,0.61),Vector3(0.225,0.13,0.96)],0.010,cast,s,10)
+-	var tank := CompactFinish.rubber(Color("b8afa0"))
+-	Panels.formed(p,"FuelTank",[Vector4(0.155,0.062,-0.28,0.110),Vector4(0.170,0.086,-0.28,0.150),Vector4(0.265,0.086,-0.28,0.150),Vector4(0.296,0.066,-0.265,0.120),Vector4(0.312,0.039,-0.26,0.080),Vector4(0.321,0.033,-0.26,0.048)],tank,s,true)
+-	var cap: MeshInstance3D = G.lathe(p,"FuelCap",[Vector2(-0.009,0),Vector2(-0.009,0.028),Vector2(-0.005,0.036),Vector2(0.006,0.036),Vector2(0.011,0.028),Vector2(0.011,0)],trim,s)
+-	cap.position = Vector3(0,0.332,-0.26)
+-	cap.rotation.z = PI*0.5
+-	G.tube(p,"FuelLine",[Vector3(0.05,0.29,-0.17),Vector3(0.30,0.22,0.12),Vector3(0.38,0.35,0.53)],0.005,trim,s,24)
+-
+-static func _chamber_radius(profile: Array[Vector4], longitudinal: float) -> float:
+-	for station: int in range(profile.size()-1):
+-		if longitudinal <= profile[station+1].x:
+-			var fraction: float = inverse_lerp(profile[station].x,profile[station+1].x,longitudinal)
+-			return G.loft_station(profile,(station+fraction)/(profile.size()-1)).y
+-	return profile[-1].y
+-
+-static func _wheel(car: CarVisual, center: Vector3, trim: Material, metal: Material, bright: Material) -> void:
+-	var s: bool = car.simple_model
+-	var side: float = signf(center.x)
+-	var pivot := Node3D.new()
+-	pivot.name = "KartWheelUpright"
+-	pivot.position = center
+-	car.add_child(pivot)
+-	var rubber := ShaderMaterial.new()
+-	rubber.shader = preload("res://vehicle/kart_slick.gdshader")
+-	G.lathe(pivot,"SlickTyre",[Vector2(-0.135,0.12),Vector2(-0.137,0.175),Vector2(-0.129,0.202),Vector2(-0.105,0.217),Vector2(-0.076,0.22),Vector2(0.076,0.22),Vector2(0.105,0.217),Vector2(0.129,0.202),Vector2(0.137,0.175),Vector2(0.135,0.12)],rubber,s)
+-	build_rims(car,pivot,side)
+-	var bearing := VisualGeometry.cylinder(pivot,0.029,0.30,Vector3.ZERO,metal,true)
+-	bearing.rotation.z = PI*0.5
+-	if center.z < 0: car.front_wheels.append(pivot)
+-	car.register_rolling_wheel(pivot,0.22)
+-
+-static func build_nose(car: CarVisual) -> void:
+-	var p: Node3D = car.new_kit_frame("hood",car.body) if car.editable_kits else car.body
+-	var s: bool = car.simple_model
+-	var paint: Material = car.paint_materials.body
+-	var accent: Material = car.paint_materials.accent
+-	var trim: Material = CompactFinish.rubber(Color("171e22"))
+-	var kind: String = str(car.customisation.hood)
+-	var suffix: String = Kits.suffix(kind)
+-	# Keep the entire broad nose ahead of the front tyres' full steering sweep.
+-	Panels.formed(p,"NoseLowerReturn"+suffix,[Vector4(-1.40,0.50,0.185,0.018),Vector4(-1.375,0.68,0.185,0.025),Vector4(-1.25,0.735,0.19,0.028),Vector4(-1.195,0.60,0.19,0.020)],trim,s)
+-	var nose_profile: Array[Vector4] = [Vector4(-1.40,0.49,0.255,0.045),Vector4(-1.385,0.63,0.265,0.070),Vector4(-1.345,0.70,0.280,0.085),Vector4(-1.245,0.72,0.285,0.095),Vector4(-1.212,0.65,0.275,0.080),Vector4(-1.20,0.59,0.260,0.055)]
+-	nose_profile = Kits.nose_profile(kind,nose_profile)
+-	Kits.panel(p,"SculptedFrontFairing"+suffix,nose_profile,paint,s,kind)
+-	var nose: MeshInstance3D = p.get_child(-1)
+-	_fitted_inlay(p,"NoseInlayKeyline"+suffix,nose,nose_profile,0.075,0.18,0.96,trim,s,0.0007)
+-	_fitted_inlay(p,"NoseCenterInlay"+suffix,nose,nose_profile,0.065,0.18,0.96,accent,s)
+-	var fairing := Node3D.new()
+-	p.add_child(fairing)
+-	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
+-	fairing_profile = Kits.fairing_profile(kind,fairing_profile)
+-	# Seat the leading end in the actual front panel.  The old independent
+-	# profiles left several fairings visibly suspended above the nose.
+-	var join_z: float = -1.285
+-	var join_hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(0,1,join_z),Vector3.DOWN)
+-	assert(not join_hit.is_empty(), "Kart fairing requires front panel backing")
+-	var tip: Vector4 = fairing_profile[0]
+-	tip.x = join_z
+-	# Bury the end cap instead of leaving an exposed lip on taller noses.
+-	tip.z = join_hit.position.y - tip.w * 1.15
+-	fairing_profile.push_front(tip)
+-	Kits.panel(fairing,"NassauFairing"+suffix,fairing_profile,paint,s,kind)
+-	_fitted_inlay(p,"FairingInlayKeylineJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
+-	_fitted_inlay(p,"FairingCenterInlayJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+-	if kind=="mohawk":
+-		# The low roots disappear into the fairing; the tips sweep rearwards.
+-		for fin: Vector3 in [Vector3(-1.16,0.37,0.085),Vector3(-0.97,0.40,0.115),Vector3(-0.78,0.44,0.135),Vector3(-0.59,0.48,0.11)]:
+-			var crest: Array[Vector4] = [Vector4(fin.x,0.020,fin.y,0.014),Vector4(fin.x+0.065,0.027,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.018,fin.y+0.035,0.030),Vector4(fin.x+0.19,0.010,fin.y+0.02,0.012)]
+-			Kits.panel(p,"MohawkCrestRefined"+str(fin.x),crest,accent,s,kind)
+-	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
+-	for side: float in [-1.0,1.0]:
+-		if kind=="stock":
+-			G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
+-			G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+-		else:
+-			# The original fixed lamps were hidden inside several sealed kit noses.
+-			var hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(side*0.33,nose_profile[0].z,-2),Vector3.BACK)
+-			assert(not hit.is_empty(),"Kart lamp requires actual nose backing")
+-			var mount := Node3D.new()
+-			mount.name = "KitFrontLampMount_"+("left" if side<0 else "right")
+-			mount.position = hit.position+hit.normal*0.004
+-			mount.quaternion = Quaternion(Vector3.FORWARD,hit.normal)
+-			p.add_child(mount)
+-			G.rounded(mount,"FrontLampRecess",Vector3.ZERO,Vector3(0.12,0.048,0.025),0.012,trim,s)
+-			G.rounded(mount,"FrontLampGlass",Vector3(0,0,-0.014),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+-
+-static func build_pods(car: CarVisual) -> void:
+-	var p: Node3D = car.new_kit_frame("body",car.body) if car.editable_kits else car.body
+-	var s: bool = car.simple_model
+-	var paint: Material = car.paint_materials.body
+-	var accent: Material = car.paint_materials.accent
+-	var kind: String = str(car.customisation.body)
+-	var suffix: String = Kits.suffix(kind)
+-	for side: float in [-1.0,1.0]:
+-		var pod := Node3D.new()
+-		pod.position.x = side*0.535
+-		p.add_child(pod)
+-		var pod_profile: Array[Vector4] = [Vector4(-0.60,0.075,0.28,0.045),Vector4(-0.48,0.155,0.28,0.095),Vector4(-0.12,0.160,0.29,0.105),Vector4(0.34,0.147,0.275,0.09),Vector4(0.49,0.10,0.25,0.05)]
+-		pod_profile = Kits.pod_profile(kind,pod_profile)
+-		Kits.panel(pod,"FormedSidePod"+suffix,pod_profile,paint,s,kind,true)
+-		_fitted_inlay(pod,"PodInsetStripe"+suffix,pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
+-		if kind=="mohawk":
+-			# Matching low fins follow the pod crown without reaching the tyres.
+-			for fin: Vector3 in [Vector3(-0.43,0.35,0.065),Vector3(-0.22,0.36,0.085),Vector3(-0.01,0.36,0.075)]:
+-				var crest: Array[Vector4] = [Vector4(fin.x,0.018,fin.y,0.012),Vector4(fin.x+0.06,0.024,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.016,fin.y+0.025,0.025),Vector4(fin.x+0.19,0.009,fin.y+0.014,0.010)]
+-				Kits.panel(pod,"MohawkPodCrest"+str(fin.x),crest,accent,s,kind,true)
+-	Detail.pods(car,CompactFinish.rubber(Color("171e22")),CompactFinish.alloy(Color("6e7778")))
+-
+-static func build_bumper(car: CarVisual) -> void:
+-	var p: Node3D = car.new_kit_frame("aero",car.body) if car.editable_kits else car.body
+-	var s: bool = car.simple_model
+-	var trim: Material = CompactFinish.rubber(Color("171e22"))
+-	var metal: Material = CompactFinish.alloy(Color("6e7778"))
+-	if car.customisation.aero=="stock":
+-		G.tube(p,"RearProtection",[Vector3(-0.75,0.18,1.22),Vector3(-0.69,0.18,1.30),Vector3(-0.32,0.18,1.32),Vector3(0.32,0.18,1.32),Vector3(0.69,0.18,1.30),Vector3(0.75,0.18,1.22)],0.037,trim,s,40)
+-		for side: float in [-1.0,1.0]:
+-			G.tube(p,"RearBumperChassisMount",[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.18,1.32)],0.022,metal,s,16)
+-			G.ellipsoid(p,"RearBumperEndCap",Vector3(side*0.75,0.18,1.22),Vector3.ONE*0.037,trim,s)
+-	else: Kits.bumper(car,p,trim,metal)
+-	for side: float in [-1.0,1.0]:
+-		G.rounded(p,"RearLampBezel",Vector3(side*0.55,0.225,1.31),Vector3(0.16,0.09,0.045),0.018,trim,s)
+-		G.rounded(p,"RearLampLens",Vector3(side*0.55,0.225,1.335),Vector3(0.125,0.055,0.015),0.007,car.brake_material,s)
+-
+-static func build_rims(car: CarVisual, wheel: Node3D, side: float) -> void:
+-	var pivot: Node3D = car.new_kit_frame("rims",wheel) if car.editable_kits else wheel
+-	var s: bool = car.simple_model
+-	var metal: Material = CompactFinish.alloy(Color("6e7778"))
+-	var bright: Material = CompactFinish.alloy(Color("a8aea9"))
+-	var trim: Material = CompactFinish.rubber(Color("171e22"))
+-	if car.customisation.rims!="stock":
+-		Kits.rim(car,pivot,side,metal,bright,trim)
+-		return
+-	var magnesium := CompactFinish.alloy(Color("807b68"))
+-	magnesium.roughness = 0.43
+-	G.lathe(pivot,"DishedMagnesiumRim",[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
+-	# Open recesses between six formed spokes, independent of the steering pivot.
+-	for spoke: int in range(6):
+-		var a: float = TAU*spoke/6
+-		G.tube(pivot,"MagnesiumSpoke",[Vector3(side*0.09,sin(a)*0.035,cos(a)*0.035),Vector3(side*0.115,sin(a+0.08)*0.082,cos(a+0.08)*0.082),Vector3(side*0.125,sin(a+0.12)*0.128,cos(a+0.12)*0.128)],0.012,magnesium,s,10)
+-	var cap := VisualGeometry.cylinder(pivot,0.042,0.20,Vector3.ZERO,metal,true)
+-	cap.rotation.z = PI*0.5
+-	for bolt: int in range(3):
+-		var a: float = TAU*bolt/3
+-		G.ellipsoid(pivot,"WheelNut",Vector3(side*0.111,sin(a)*0.052,cos(a)*0.052),Vector3(0.009,0.008,0.008),bright,s)
+-	G.tube(pivot,"ValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)
++extends RefCounted
++## Original unbranded racing kart. Presentation only; canonical axle geometry.
++const G = preload("res://vehicle/kart_geometry.gd")
++const Detail = preload("res://vehicle/kart_detail.gd")
++const Panels = preload("res://vehicle/kart_bodywork.gd")
++const Kits = preload("res://vehicle/kart_kits.gd")
++
++static func build(car: CarVisual) -> void:
++	car.body.name = "KartChassis"
++	var paint := CompactFinish.paint(Color("b96d43"))
++	paint.roughness = 0.44
++	paint.clearcoat = 0.16
++	var accent := CompactFinish.paint(Color("d9d0b7"))
++	accent.roughness = 0.48
++	var trim := CompactFinish.rubber(Color("171e22"))
++	var metal := CompactFinish.alloy(Color("6e7778"))
++	var bright := CompactFinish.alloy(Color("a8aea9"))
++	var chassis := CompactFinish.paint(Color("3b3431"))
++	chassis.roughness = 0.50
++	car.paint_materials = {"body":paint,"accent":accent}
++	_body(car,trim,chassis,metal,bright)
++	_driver(car,trim,metal)
++	_engine(car,trim,metal,bright)
++	build_nose(car)
++	build_pods(car)
++	build_bumper(car)
++	Detail.brackets(car,metal)
++	Detail.mechanical(car,trim,metal,bright)
++	var config: HandlingConfig = VehicleCatalog.config("kart")
++	for side: float in [-1.0,1.0]:
++		for axle: float in [-1.0,1.0]:
++			_wheel(car,Vector3(side*config.track_width/(2*HandlingConfig.BODY_SCALE),0.22,axle*config.wheelbase/(2*HandlingConfig.BODY_SCALE)),trim,metal,bright)
++
++static func _body(car: CarVisual, trim: Material, chassis: Material, metal: Material, bright: Material) -> void:
++	var p: Node3D = car.body
++	var s: bool = car.simple_model
++	G.rounded(p,"FloorTray",Vector3(0,0.147,-0.20),Vector3(0.83,0.028,1.69),0.012,metal,s)
++	for side: float in [-1.0,1.0]:
++		G.tube(p,"BentMainRail",[Vector3(side*0.20,0.17,-1.10),Vector3(side*0.42,0.17,-0.95),Vector3(side*0.44,0.17,-0.30),Vector3(side*0.42,0.17,0.57),Vector3(side*0.30,0.17,1.08)],0.032,chassis,s,40)
++		G.tube(p,"SideProtection",[Vector3(side*0.43,0.19,-0.59),Vector3(side*0.68,0.19,-0.46),Vector3(side*0.69,0.19,0.38),Vector3(side*0.43,0.19,0.54)],0.024,metal,s)
++		# Pedal spindle, forged pedal plate and anti-slip ribs are visible in the footwell.
++		G.tube(p,"PedalLever",[Vector3(side*0.25,0.18,-0.84),Vector3(side*0.19,0.25,-0.92),Vector3(side*0.17,0.30,-0.93)],0.012,bright,s,8)
++		var pedal: MeshInstance3D = G.rounded(p,"PedalPlate",Vector3(side*0.17,0.28,-0.94),Vector3(0.11,0.13,0.023),0.010,metal,s)
++		pedal.rotation.x = -0.30
++		for rib: int in range(4): G.rounded(p,"PedalRib",Vector3(side*0.17,0.24+rib*0.025,-0.958),Vector3(0.075,0.004,0.005),0.001,trim,s)
++		for z: float in [-0.93,-0.60,-0.25,0.10,0.48]:
++			Detail.fastener(p,"TrayRivet",Vector3(side*0.39,0.162,z),Vector3.UP,0.008,bright)
++	preload("res://vehicle/kart_driver.gd").seat_stays(p,metal,s)
++	G.tube(p,"FrontCrossmember",[Vector3(-0.49,0.19,-0.88),Vector3(0,0.19,-0.88),Vector3(0.49,0.19,-0.88)],0.026,chassis,s,12)
++	G.tube(p,"LiveRearAxle",[Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88)],0.026,metal,s,8)
++
++static func _clip_inlay(polygon: Array[Dictionary], normal: Vector3, offset: float) -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	if polygon.is_empty(): return result
++	var previous: Dictionary = polygon[-1]
++	var previous_distance: float = normal.dot(previous.point)-offset
++	for current: Dictionary in polygon:
++		var distance: float = normal.dot(current.point)-offset
++		if (distance >= 0) != (previous_distance >= 0):
++			var t: float = previous_distance/(previous_distance-distance)
++			result.append({"point":previous.point.lerp(current.point,t),"normal":previous.normal.lerp(current.normal,t).normalized()})
++		if distance >= 0: result.append(current)
++		previous = current
++		previous_distance = distance
++	return result
++
++static func _fitted_inlay(parent: Node3D, label: String, shell: MeshInstance3D, profile: Array[Vector4], half_width: float, start: float, end: float, material: Material, simple: bool, lift: float = 0.0015) -> void:
++	# Clip the actual shell triangles, so the racing LOD cannot swallow the stripe
++	# between independently sampled analytic surfaces. Runs only during mesh bake.
++	G.attach(parent,label+"|formed-fitted-v2"+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
++		var front: float = G.loft_station(profile,start).x
++		var rear: float = G.loft_station(profile,end).x
++		var arrays: Array = shell.mesh.surface_get_arrays(0)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for face: int in range(indices.size()/3):
++			var polygon: Array[Dictionary] = []
++			var upward: float = 0
++			for corner: int in range(3):
++				var index: int = indices[face*3+corner]
++				polygon.append({"point":vertices[index],"normal":normals[index]})
++				upward += normals[index].y
++			if upward <= 0.1: continue
++			for plane: Vector4 in [Vector4(1,0,0,-half_width),Vector4(-1,0,0,-half_width),Vector4(0,0,1,front),Vector4(0,0,-1,-rear)]:
++				polygon = _clip_inlay(polygon,Vector3(plane.x,plane.y,plane.z),plane.w)
++			for triangle: int in range(1,polygon.size()-1):
++				for corner: int in [0,triangle,triangle+1]:
++					var point: Vector3 = polygon[corner].point
++					tool.set_normal(polygon[corner].normal)
++					tool.set_uv(Vector2(inverse_lerp(-half_width,half_width,point.x),inverse_lerp(front,rear,point.z)))
++					tool.add_vertex(point+Vector3.UP*lift)
++		tool.index()
++		return tool.commit())
++
++static func _driver(car: CarVisual, trim: Material, metal: Material) -> void:
++	var p: Node3D = car.body
++	var s: bool = car.simple_model
++	var dark := CompactFinish.rubber(Color("10191d"))
++	var visor := CompactFinish.alloy(Color("253d49"))
++	visor.metallic = 0.35
++	visor.roughness = 0.22
++	preload("res://vehicle/kart_driver.gd").build(p,trim,s)
++	# Anatomically aligned hands reach the thick D-shaped steering rim.
++	var wheel := Node3D.new()
++	wheel.name = "SteeringAssembly"
++	wheel.position = preload("res://vehicle/kart_steering.gd").CENTER
++	wheel.rotation.x = 1.15
++	p.add_child(wheel)
++	var rim: Array[Vector3] = []
++	for step: int in range(33):
++		var a: float = TAU*step/32.0
++		rim.append(Vector3(sin(a)*0.168,0,maxf(-0.12,cos(a)*0.168)))
++	G.tube(wheel,"SteeringRim",rim,0.015,dark,s,64)
++	for a: float in [0.0,2.15,-2.15]:
++		G.tube(wheel,"SteeringSpoke",[Vector3.ZERO,Vector3(sin(a)*0.15,0,cos(a)*0.14)],0.010,metal,s,8)
++	G.rounded(wheel,"WheelHub",Vector3.ZERO,Vector3(0.075,0.025,0.065),0.010,dark,s)
++	G.rounded(wheel,"DashDisplay",Vector3(0,0.021,-0.095),Vector3(0.10,0.025,0.048),0.009,metal,s)
++	G.rounded(wheel,"DashGlass",Vector3(0,0.035,-0.095),Vector3(0.075,0.004,0.031),0.001,visor,s)
++	G.tube(p,"SteeringColumn",[Vector3(0,0.32,-0.85),wheel.position],0.017,metal,s,8)
++	G.tube(p,"ColumnSupport",[Vector3(-0.20,0.17,-0.85),Vector3(0,0.32,-0.85),Vector3(0.20,0.17,-0.85)],0.014,metal,s,12)
++
++static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Material) -> void:
++	var p: Node3D = car.body
++	var s: bool = car.simple_model
++	var cast := CompactFinish.alloy(Color("535b5b"))
++	cast.roughness = 0.62
++	cast.metallic = 0.28
++	var bronze := CompactFinish.alloy(Color("716253"))
++	bronze.roughness = 0.68
++	bronze.metallic = 0.54
++	G.rounded(p,"EngineMount",Vector3(0.395,0.205,0.70),Vector3(0.30,0.055,0.38),0.020,metal,s)
++	G.rounded(p,"CastCrankcase",Vector3(0.395,0.30,0.75),Vector3(0.31,0.22,0.33),0.073,cast,s)
++	G.rounded(p,"CylinderBlock",Vector3(0.405,0.435,0.70),Vector3(0.21,0.20,0.23),0.033,cast,s)
++	for fin: int in range(8):
++		Detail.plate(p,"CoolingFin",Vector3(0.405,0.36+fin*0.023,0.70),Vector3(0.29,0.010,0.30),0.004,metal)
++	G.rounded(p,"CylinderHead",Vector3(0.405,0.55,0.70),Vector3(0.26,0.035,0.27),0.014,cast,s)
++	for x: float in [0.315,0.495]:
++		for z: float in [0.61,0.79]: G.ellipsoid(p,"HeadFastener",Vector3(x,0.574,z),Vector3(0.014,0.008,0.014),bright,s)
++	G.tube(p,"SparkPlugBoot",[Vector3(0.405,0.59,0.69),Vector3(0.435,0.62,0.76),Vector3(0.545,0.55,0.84)],0.011,trim,s,20)
++	var airbox: MeshInstance3D = Panels.formed(p,"Airbox",[Vector4(-0.14,0.075,0,0.070),Vector4(-0.12,0.105,0,0.100),Vector4(0.09,0.110,0,0.110),Vector4(0.14,0.080,0,0.085)],trim,s)
++	airbox.position = Vector3(0.56,0.45,0.39)
++	G.tube(p,"IntakeManifold",[Vector3(0.405,0.43,0.66),Vector3(0.48,0.41,0.50),Vector3(0.56,0.43,0.45)],0.035,trim,s,16)
++	G.tube(p,"ExhaustHeader",[Vector3(0.40,0.43,0.82),Vector3(0.38,0.40,0.90),Vector3(0.25,0.38,0.98),Vector3(0.20,0.38,1.02)],0.027,bronze,s,24)
++	var exhaust := Node3D.new()
++	exhaust.name = "ExhaustAssembly"
++	exhaust.position = Vector3(0.20,0.38,1.02)
++	exhaust.rotation.y = -PI*0.5
++	p.add_child(exhaust)
++	var chamber_profile: Array[Vector4] = [Vector4(0,0.027,0,0.027),Vector4(0.12,0.060,0,0.060),Vector4(0.30,0.075,0,0.075),Vector4(0.49,0.034,0,0.034),Vector4(0.55,0.024,0,0.024)]
++	G.loft(exhaust,"ExpansionChamber",chamber_profile,bronze,s,1)
++	G.tube(p,"ExhaustStinger",[Vector3(-0.35,0.38,1.02),Vector3(-0.42,0.35,1.03),Vector3(-0.44,0.35,1.07)],0.013,bronze,s,12)
++	var silencer := Node3D.new()
++	silencer.name = "ExhaustSilencer"
++	silencer.position = Vector3(-0.44,0.35,1.06)
++	p.add_child(silencer)
++	G.loft(silencer,"SilencerCan",[Vector4(0,0.016,0,0.016),Vector4(0.015,0.034,0,0.034),Vector4(0.105,0.034,0,0.034),Vector4(0.12,0.016,0,0.016)],metal,s,1)
++	var outlet: MeshInstance3D = G.lathe(silencer,"HollowExhaustOutlet",[Vector2(0,0.010),Vector2(0,0.015),Vector2(0.06,0.015),Vector2(0.06,0.010),Vector2(0,0.010)],bronze,s)
++	outlet.position.z = 0.11
++	outlet.rotation.y = -PI*0.5
++	for x: float in [0.08,-0.15]:
++		var radius: float = _chamber_radius(chamber_profile,0.20-x)+0.004
++		G.tube(p,"ExhaustChassisStay",[Vector3(signf(x)*0.30,0.17,1.06),Vector3(x,0.38-radius,1.02)],0.010,metal,s,8)
++		var strap: Array[Vector3] = []
++		for step: int in range(17):
++			var a: float = TAU*step/16
++			strap.append(Vector3(x,0.38+sin(a)*radius,1.02+cos(a)*radius))
++		G.tube(p,"ExhaustStrap",strap,0.005,metal,s,48)
++	G.tube(p,"RearBrakeLine",[Vector3(-0.26,0.19,-0.75),Vector3(-0.45,0.205,0.10),Vector3(-0.45,0.205,0.74),Vector3(-0.45,0.22,0.80),Vector3(-0.33,0.30,0.87)],0.006,trim,s,32)
++	# Turned live-axle disc and guarded chain run sit inboard of the rear tyres.
++	var brake := Node3D.new()
++	brake.position = Vector3(-0.34,0.22,0.88)
++	p.add_child(brake)
++	G.lathe(brake,"RearBrakeRotor",[Vector2(-0.008,0.045),Vector2(-0.008,0.125),Vector2(0.008,0.125),Vector2(0.008,0.045),Vector2(-0.008,0.045)],metal,s)
++	G.rounded(p,"RearCaliper",Vector3(-0.34,0.315,0.87),Vector3(0.07,0.07,0.13),0.023,cast,s)
++	G.rounded(p,"ChainGuard",Vector3(0.22,0.33,0.80),Vector3(0.026,0.055,0.46),0.012,trim,s)
++	G.tube(p,"ChainUpperRun",[Vector3(0.225,0.30,0.61),Vector3(0.225,0.295,0.96)],0.010,cast,s,10)
++	G.tube(p,"ChainLowerRun",[Vector3(0.225,0.19,0.61),Vector3(0.225,0.13,0.96)],0.010,cast,s,10)
++	# Rear-left frame bay: outside the cockpit and opposite the right engine.
++	var fuel := Node3D.new()
++	fuel.name = "FuelAssembly"
++	fuel.position = Vector3(-0.36,0,0.64)
++	p.add_child(fuel)
++	var tank := CompactFinish.rubber(Color("b8afa0"))
++	Panels.formed(fuel,"FuelTank",[Vector4(0.215,0.044,0,0.075),Vector4(0.230,0.060,0,0.100),Vector4(0.315,0.060,0,0.100),Vector4(0.347,0.048,0.005,0.082),Vector4(0.363,0.032,0.012,0.052),Vector4(0.372,0.028,0.015,0.038)],tank,s,true)
++	var cap: MeshInstance3D = G.lathe(fuel,"FuelCap",[Vector2(-0.009,0),Vector2(-0.009,0.025),Vector2(-0.005,0.032),Vector2(0.006,0.032),Vector2(0.011,0.025),Vector2(0.011,0)],trim,s)
++	cap.position = Vector3(0,0.383,0.015)
++	cap.rotation.z = PI*0.5
++	for z: float in [-0.058,0.058]:
++		Detail.plate(fuel,"FuelCradle"+str(z),Vector3(0,0.204,z),Vector3(0.146,0.014,0.040),0.006,metal)
++		G.rounded(fuel,"FuelMountPad"+str(z),Vector3(0,0.213,z),Vector3(0.108,0.006,0.032),0.002,trim,s)
++		G.tube(fuel,"FuelRetainingStrap"+str(z),[Vector3(-0.063,0.215,z),Vector3(-0.065,0.303,z),Vector3(-0.049,0.348,z),Vector3(0.049,0.348,z),Vector3(0.065,0.303,z),Vector3(0.063,0.215,z)],0.004,trim,s,20)
++		Detail.fastener(fuel,"FuelMountBolt"+str(z),Vector3(-0.068,0.214,z),Vector3.UP,0.006,bright)
++	G.tube(p,"FuelLine",[Vector3(-0.305,0.245,0.615),Vector3(-0.24,0.205,0.68),Vector3(0.15,0.205,0.68),Vector3(0.38,0.35,0.53)],0.005,trim,s,32)
++
++static func _chamber_radius(profile: Array[Vector4], longitudinal: float) -> float:
++	for station: int in range(profile.size()-1):
++		if longitudinal <= profile[station+1].x:
++			var fraction: float = inverse_lerp(profile[station].x,profile[station+1].x,longitudinal)
++			return G.loft_station(profile,(station+fraction)/(profile.size()-1)).y
++	return profile[-1].y
++
++static func _wheel(car: CarVisual, center: Vector3, trim: Material, metal: Material, bright: Material) -> void:
++	var s: bool = car.simple_model
++	var side: float = signf(center.x)
++	var pivot := Node3D.new()
++	pivot.name = "KartWheelUpright"
++	pivot.position = center
++	car.add_child(pivot)
++	var rubber := ShaderMaterial.new()
++	rubber.shader = preload("res://vehicle/kart_slick.gdshader")
++	G.lathe(pivot,"SlickTyre",[Vector2(-0.135,0.12),Vector2(-0.137,0.175),Vector2(-0.129,0.202),Vector2(-0.105,0.217),Vector2(-0.076,0.22),Vector2(0.076,0.22),Vector2(0.105,0.217),Vector2(0.129,0.202),Vector2(0.137,0.175),Vector2(0.135,0.12)],rubber,s)
++	build_rims(car,pivot,side)
++	var bearing := VisualGeometry.cylinder(pivot,0.029,0.30,Vector3.ZERO,metal,true)
++	bearing.rotation.z = PI*0.5
++	if center.z < 0: car.front_wheels.append(pivot)
++	car.register_rolling_wheel(pivot,0.22)
++
++static func build_nose(car: CarVisual) -> void:
++	var p: Node3D = car.new_kit_frame("hood",car.body) if car.editable_kits else car.body
++	var s: bool = car.simple_model
++	var paint: Material = car.paint_materials.body
++	var accent: Material = car.paint_materials.accent
++	var trim: Material = CompactFinish.rubber(Color("171e22"))
++	var kind: String = str(car.customisation.hood)
++	var suffix: String = Kits.suffix(kind)
++	# Keep the entire broad nose ahead of the front tyres' full steering sweep.
++	Panels.formed(p,"NoseLowerReturn"+suffix,[Vector4(-1.40,0.50,0.185,0.018),Vector4(-1.375,0.68,0.185,0.025),Vector4(-1.25,0.735,0.19,0.028),Vector4(-1.195,0.60,0.19,0.020)],trim,s)
++	var nose_profile: Array[Vector4] = [Vector4(-1.40,0.49,0.255,0.045),Vector4(-1.385,0.63,0.265,0.070),Vector4(-1.345,0.70,0.280,0.085),Vector4(-1.245,0.72,0.285,0.095),Vector4(-1.212,0.65,0.275,0.080),Vector4(-1.20,0.59,0.260,0.055)]
++	nose_profile = Kits.nose_profile(kind,nose_profile)
++	Kits.panel(p,"SculptedFrontFairing"+suffix,nose_profile,paint,s,kind)
++	var nose: MeshInstance3D = p.get_child(-1)
++	_fitted_inlay(p,"NoseInlayKeyline"+suffix,nose,nose_profile,0.075,0.18,0.96,trim,s,0.0007)
++	_fitted_inlay(p,"NoseCenterInlay"+suffix,nose,nose_profile,0.065,0.18,0.96,accent,s)
++	var fairing := Node3D.new()
++	p.add_child(fairing)
++	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
++	fairing_profile = Kits.fairing_profile(kind,fairing_profile)
++	# Seat the leading end in the actual front panel.  The old independent
++	# profiles left several fairings visibly suspended above the nose.
++	var join_z: float = -1.285
++	var join_hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(0,1,join_z),Vector3.DOWN)
++	assert(not join_hit.is_empty(), "Kart fairing requires front panel backing")
++	var tip: Vector4 = fairing_profile[0]
++	tip.x = join_z
++	# Bury the end cap instead of leaving an exposed lip on taller noses.
++	tip.z = join_hit.position.y - tip.w * 1.15
++	fairing_profile.push_front(tip)
++	Kits.panel(fairing,"NassauFairing"+suffix,fairing_profile,paint,s,kind)
++	_fitted_inlay(p,"FairingInlayKeylineJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
++	_fitted_inlay(p,"FairingCenterInlayJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
++	if kind=="mohawk":
++		# The low roots disappear into the fairing; the tips sweep rearwards.
++		for fin: Vector3 in [Vector3(-1.16,0.37,0.085),Vector3(-0.97,0.40,0.115),Vector3(-0.78,0.44,0.135),Vector3(-0.59,0.48,0.11)]:
++			var crest: Array[Vector4] = [Vector4(fin.x,0.020,fin.y,0.014),Vector4(fin.x+0.065,0.027,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.018,fin.y+0.035,0.030),Vector4(fin.x+0.19,0.010,fin.y+0.02,0.012)]
++			Kits.panel(p,"MohawkCrestRefined"+str(fin.x),crest,accent,s,kind)
++	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
++	for side: float in [-1.0,1.0]:
++		if kind=="stock":
++			G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
++			G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
++		else:
++			# The original fixed lamps were hidden inside several sealed kit noses.
++			var hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(side*0.33,nose_profile[0].z,-2),Vector3.BACK)
++			assert(not hit.is_empty(),"Kart lamp requires actual nose backing")
++			var mount := Node3D.new()
++			mount.name = "KitFrontLampMount_"+("left" if side<0 else "right")
++			mount.position = hit.position+hit.normal*0.004
++			mount.quaternion = Quaternion(Vector3.FORWARD,hit.normal)
++			p.add_child(mount)
++			G.rounded(mount,"FrontLampRecess",Vector3.ZERO,Vector3(0.12,0.048,0.025),0.012,trim,s)
++			G.rounded(mount,"FrontLampGlass",Vector3(0,0,-0.014),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
++
++static func build_pods(car: CarVisual) -> void:
++	var p: Node3D = car.new_kit_frame("body",car.body) if car.editable_kits else car.body
++	var s: bool = car.simple_model
++	var paint: Material = car.paint_materials.body
++	var accent: Material = car.paint_materials.accent
++	var kind: String = str(car.customisation.body)
++	var suffix: String = Kits.suffix(kind)
++	for side: float in [-1.0,1.0]:
++		var pod := Node3D.new()
++		pod.position.x = side*0.535
++		p.add_child(pod)
++		var pod_profile: Array[Vector4] = [Vector4(-0.60,0.075,0.28,0.045),Vector4(-0.48,0.155,0.28,0.095),Vector4(-0.12,0.160,0.29,0.105),Vector4(0.34,0.147,0.275,0.09),Vector4(0.49,0.10,0.25,0.05)]
++		pod_profile = Kits.pod_profile(kind,pod_profile)
++		Kits.panel(pod,"FormedSidePod"+suffix,pod_profile,paint,s,kind,true)
++		_fitted_inlay(pod,"PodInsetStripe"+suffix,pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
++		if kind=="mohawk":
++			# Matching low fins follow the pod crown without reaching the tyres.
++			for fin: Vector3 in [Vector3(-0.43,0.35,0.065),Vector3(-0.22,0.36,0.085),Vector3(-0.01,0.36,0.075)]:
++				var crest: Array[Vector4] = [Vector4(fin.x,0.018,fin.y,0.012),Vector4(fin.x+0.06,0.024,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.016,fin.y+0.025,0.025),Vector4(fin.x+0.19,0.009,fin.y+0.014,0.010)]
++				Kits.panel(pod,"MohawkPodCrest"+str(fin.x),crest,accent,s,kind,true)
++	Detail.pods(car,CompactFinish.rubber(Color("171e22")),CompactFinish.alloy(Color("6e7778")))
++
++static func build_bumper(car: CarVisual) -> void:
++	var p: Node3D = car.new_kit_frame("aero",car.body) if car.editable_kits else car.body
++	var s: bool = car.simple_model
++	var trim: Material = CompactFinish.rubber(Color("171e22"))
++	var metal: Material = CompactFinish.alloy(Color("6e7778"))
++	if car.customisation.aero=="stock":
++		G.tube(p,"RearProtection",[Vector3(-0.75,0.18,1.22),Vector3(-0.69,0.18,1.30),Vector3(-0.32,0.18,1.32),Vector3(0.32,0.18,1.32),Vector3(0.69,0.18,1.30),Vector3(0.75,0.18,1.22)],0.037,trim,s,40)
++		for side: float in [-1.0,1.0]:
++			G.tube(p,"RearBumperChassisMount",[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.18,1.32)],0.022,metal,s,16)
++			G.ellipsoid(p,"RearBumperEndCap",Vector3(side*0.75,0.18,1.22),Vector3.ONE*0.037,trim,s)
++	else: Kits.bumper(car,p,trim,metal)
++	for side: float in [-1.0,1.0]:
++		G.rounded(p,"RearLampBezel",Vector3(side*0.55,0.225,1.31),Vector3(0.16,0.09,0.045),0.018,trim,s)
++		G.rounded(p,"RearLampLens",Vector3(side*0.55,0.225,1.335),Vector3(0.125,0.055,0.015),0.007,car.brake_material,s)
++
++static func build_rims(car: CarVisual, wheel: Node3D, side: float) -> void:
++	var pivot: Node3D = car.new_kit_frame("rims",wheel) if car.editable_kits else wheel
++	var s: bool = car.simple_model
++	var metal: Material = CompactFinish.alloy(Color("6e7778"))
++	var bright: Material = CompactFinish.alloy(Color("a8aea9"))
++	var trim: Material = CompactFinish.rubber(Color("171e22"))
++	if car.customisation.rims!="stock":
++		Kits.rim(car,pivot,side,metal,bright,trim)
++		return
++	var magnesium := CompactFinish.alloy(Color("807b68"))
++	magnesium.roughness = 0.43
++	G.lathe(pivot,"DishedMagnesiumRim",[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
++	# Open recesses between six formed spokes, independent of the steering pivot.
++	for spoke: int in range(6):
++		var a: float = TAU*spoke/6
++		G.tube(pivot,"MagnesiumSpoke",[Vector3(side*0.09,sin(a)*0.035,cos(a)*0.035),Vector3(side*0.115,sin(a+0.08)*0.082,cos(a+0.08)*0.082),Vector3(side*0.125,sin(a+0.12)*0.128,cos(a+0.12)*0.128)],0.012,magnesium,s,10)
++	var cap := VisualGeometry.cylinder(pivot,0.042,0.20,Vector3.ZERO,metal,true)
++	cap.rotation.z = PI*0.5
++	for bolt: int in range(3):
++		var a: float = TAU*bolt/3
++		G.ellipsoid(pivot,"WheelNut",Vector3(side*0.111,sin(a)*0.052,cos(a)*0.052),Vector3(0.009,0.008,0.008),bright,s)
++	G.tube(pivot,"ValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)
+diff --git a/scripts/finish_kart_tank_refresh.py b/scripts/finish_kart_tank_refresh.py
+new file mode 100644
+index 0000000..b313bc5
+--- /dev/null
++++ b/scripts/finish_kart_tank_refresh.py
+@@ -0,0 +1,50 @@
++"""Repair only revisions changed by the concurrent Challenger writer."""
++import json
++import fnmatch
++import subprocess
++import sys
++from rebuild_kart_tank_clearance import ROOT, OUT, sources, identity, run
++
++
++def main():
++    previous = json.loads((OUT / "identity-final-before.json").read_text())
++    before = sources()
++    current = identity("identity-repair-before")
++    changed = [car for car, revision in current["modular_car_sha256"].items()
++               if revision != previous["modular_car_sha256"].get(car)]
++    original_inputs = json.loads((OUT / "refresh-inputs.json").read_text())
++    changed_inputs = [p for p in original_inputs.keys() | before.keys() if original_inputs.get(p) != before.get(p)]
++    manifest = json.loads((ROOT / "game/vehicle/prepared_asset_dependencies.json").read_text())
++    # Generated native bytes can change without an authored-source revision.
++    # Rebuild their consumers as well; never restamp their source receipt.
++    for path in changed_inputs:
++        # Native vehicle buffers require their consumers to be rebuilt even
++        # when semantic source revisions coincide. Garage scenery scripts
++        # affect pictures, not the native car scenes; identity already routes
++        # any UI sources that really do contribute to prepared car geometry.
++        if not path.startswith("game/assets/vehicles/"): continue
++        matched = next((rule["vehicles"] for rule in manifest["rules"] if fnmatch.fnmatchcase(path, rule["pattern"])), manifest["vehicles"])
++        changed.extend(car for car in matched if car not in changed)
++    assert set(changed) <= {"super_rally"}, changed
++    (OUT / "repair-inputs.json").write_text(json.dumps(before, indent=2))
++    for car in changed:
++        for stage, script in (("bases", "bake_modular_car_bases"), ("kits", "bake_modular_car_kits"),
++                              ("garage", "bake_garage_cars")):
++            run("repair-" + car + "-" + stage, "res://tests/" + script + ".gd", "--headless", "--", "--vehicle=" + car)
++    run("repair-garage-pictures", "res://../scripts/bake_garage_previews.gd", "--rendering-method", "gl_compatibility")
++    after = sources()
++    drift = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    final = identity("identity-repair-after")
++    stable = not drift and final["modular_car_sha256"] == current["modular_car_sha256"]
++    (OUT / "repair-source-receipt.json").write_text(json.dumps({"input_count": len(before), "rebuilt_cars": changed,
++        "reused_cars": [car for car in current["modular_car_sha256"] if car not in changed], "drift": drift,
++        "revisions_stable": stable}, indent=2))
++    assert stable, "Sources changed during repair"
++    run("prepared-preflight", "res://tests/check_prepared_assets.gd", "--headless")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    print("KART_DRIVER_REFRESH: exact unchanged revisions reused; both final preflights passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/rebuild_kart_tank_clearance.py b/scripts/rebuild_kart_tank_clearance.py
+new file mode 100644
+index 0000000..e94373a
+--- /dev/null
++++ b/scripts/rebuild_kart_tank_clearance.py
+@@ -0,0 +1,86 @@
++"""Ordered native refresh with exact source/revision fences and private profiles."""
++from concurrent.futures import ThreadPoolExecutor
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/kart-tank-clearance-2026-11-12"
++WORK = ROOT / "build/kart-tank-clearance-2026-11-12"
++RUNNER = ROOT / "scripts/run_kart_tank_clearance.py"
++
++
++def run(name, script, *args):
++    subprocess.run([sys.executable, str(RUNNER), name, script, *args], cwd=ROOT,
++                   check=True, stdout=subprocess.DEVNULL)
++    print(name, "passed", flush=True)
++
++
++def identity(name):
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
++               "$ErrorActionPreference='Stop'; . ./scripts/build_identity.ps1; "
++               "Write-ClientBuildIdentity (Get-Location).Path 'build/kart-tank-clearance-2026-11-12/identity'"]
++    with (OUT / f"{name}.log").open("w", encoding="utf-8") as log:
++        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    data = json.loads((WORK / "identity/client-build-identity.json").read_text(encoding="utf-8-sig"))
++    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
++    return data
++
++
++def sources():
++    files = []
++    for folder in ("game/vehicle", "game/resources", "game/ui", "game/track"):
++        files.extend(p for p in (ROOT / folder).rglob("*")
++                     if p.suffix in (".gd", ".tres", ".json", ".gdshader", ".gdshaderinc"))
++    files.extend(p for p in (ROOT / "game/assets/vehicles").rglob("*")
++                 if p.is_file() and p.suffix in (".res", ".json", ".png")
++                 and "modular_car_bases_v1" not in p.parts and "modular_kits_v1" not in p.parts
++                 and p.name != "manifest.json")
++    files.extend(p for p in (ROOT / "game/assets/liveries").rglob("*") if p.suffix in (".png", ".svg", ".json"))
++    files.extend(ROOT / f for f in ("scripts/build_identity.ps1", "scripts/garage_preview_identity.ps1",
++                                    "scripts/prepared_asset_identity.ps1", "godot-version.txt"))
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
++
++
++def main():
++    OUT.mkdir(parents=True, exist_ok=True)
++    run("native-tank-and-shadow", "res://tests/bake_kart_tank_geometry.gd", "--headless")
++    identity("identity-for-art")
++    for name, script in (("art-bases", "bake_modular_car_bases"), ("art-kits", "bake_modular_car_kits"),
++                         ("art-garage", "bake_garage_cars")):
++        run(name, "res://tests/" + script + ".gd", "--headless", "--", "--vehicle=kart")
++    run("catalogue-art", "res://tests/test_kart_refinement_ui.gd", "--rendering-method", "gl_compatibility",
++        "--", "--bake-art", "--evidence-root=res://../docs/evidence/kart-tank-clearance-2026-11-12/catalogue")
++    run("news-art", "res://tests/bake_news_car_photos.gd", "--rendering-method", "gl_compatibility", "--",
++        "--vehicle=kart", "--evidence-root=res://../docs/evidence/kart-tank-clearance-2026-11-12/news")
++    run("livery-art", "res://tests/bake_livery_previews.gd", "--rendering-method", "gl_compatibility", "--", "--vehicle=kart")
++    run("header-art", "res://tests/bake_kart_finishing_art.gd", "--rendering-method", "gl_compatibility", "--", "--header-only")
++    before = sources()
++    first = identity("identity-final-before")
++    (OUT / "refresh-inputs.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++    run("final-all-bases", "res://tests/bake_modular_car_bases.gd", "--headless")
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(run, "final-kits-" + car, "res://tests/bake_modular_car_kits.gd",
++                            "--headless", "--", "--vehicle=" + car)
++                for car in ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")]
++        for job in jobs:
++            job.result()
++    run("final-all-garage", "res://tests/bake_garage_cars.gd", "--headless")
++    run("final-header-template", "res://tests/bake_header_simple_compact.gd", "--headless")
++    run("final-garage-pictures", "res://../scripts/bake_garage_previews.gd", "--rendering-method", "gl_compatibility")
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    (OUT / "refresh-source-receipt.json").write_text(json.dumps({"input_count": len(before), "changed": changed}, indent=2))
++    assert not changed, "Sources changed during final native refresh"
++    final = identity("identity-final-after")
++    assert first["modular_car_sha256"] == final["modular_car_sha256"], "Prepared geometry fingerprints changed"
++    run("prepared-preflight", "res://tests/check_prepared_assets.gd", "--headless")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    print("KART_DRIVER_REFRESH: stable sources and both strict preflights passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/run_kart_tank_clearance.py b/scripts/run_kart_tank_clearance.py
+new file mode 100644
+index 0000000..ed5f94c
+--- /dev/null
++++ b/scripts/run_kart_tank_clearance.py
+@@ -0,0 +1,75 @@
++"""Pinned Godot runner for the offline driver adaptation and native captures.
++
++The standard dev.ps1 entry point kills native tests on the Windows certificate
++store diagnostic. This bounded runner retains that diagnostic in the log.
++"""
++import json
++import os
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/kart-tank-clearance-2026-11-12"
++
++
++def main():
++    name, script, *options = sys.argv[1:]
++    project_root = Path(os.environ.get("BMT_DRIVER_PROJECT_ROOT", str(ROOT))).resolve()
++    if not project_root.is_relative_to(ROOT):
++        raise ValueError("Driver review project must stay within this workspace")
++    OUT.mkdir(parents=True, exist_ok=True)
++    profile = ROOT / ("build/kart-tank-clearance-2026-11-12/profile" if project_root == ROOT else "build/kart-tank-clearance-2026-11-12/profile-frozen")
++    for folder in [profile / "roaming", profile / "local"]:
++        folder.mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"),
++               LOCALAPPDATA=str(profile / "local"), BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++    engine = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
++    actual = subprocess.check_output([sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine, "--version"], text=True).strip()
++    assert actual == (project_root / "godot-version.txt").read_text().strip(), actual
++    command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine,
++               "--path", str(project_root / "game"), "--audio-driver", "Dummy", "--position", "10000,10000"]
++    command += (["--editor", "--headless", "--import", "--quit"] if script == "@import"
++                else ["--script", script])
++    command += options
++    started = time.monotonic()
++    with (OUT / (name + ".log")).open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
++                                   stderr=subprocess.STDOUT)
++        (OUT / (name + "-process.json")).write_text(json.dumps({"pid": process.pid, "command": command}), encoding="utf-8")
++        try:
++            while process.poll() is None:
++                time.sleep(0.1)
++                output = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
++                if "SCRIPT ERROR:" in output:
++                    stopped = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                                             stdout=log, stderr=subprocess.STDOUT, check=False)
++                    if stopped.returncode:
++                        # A parse failure may have exited between poll and kill.
++                        try:
++                            process.wait(timeout=5)
++                        except subprocess.TimeoutExpired as error:
++                            raise RuntimeError(f"Cannot stop owned failed test PID {process.pid}; explicit process cleanup required") from error
++                    break
++                if time.monotonic() - started > 900:
++                    raise subprocess.TimeoutExpired(command, 900)
++            code = process.wait()
++        except subprocess.TimeoutExpired:
++            # Kill only this runner's owned child tree, including native Godot.
++            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                           stdout=log, stderr=subprocess.STDOUT, check=False)
++            code = 124
++    lines = (OUT / (name + ".log")).read_text(encoding="utf-8").splitlines()
++    errors = [line for line in lines if line.startswith(("ERROR:", "SCRIPT ERROR:"))
++              and line != "ERROR: Failed to read the root certificate store."]
++    receipt = dict(command=command, exit_code=code, errors=errors,
++                   seconds=round(time.monotonic() - started, 3), engine=actual)
++    (OUT / (name + ".json")).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(receipt))
++    print("\n".join(lines[-18:]))
++    return int(code != 0 or bool(errors))
++
++
++if __name__ == "__main__":
++    sys.exit(main())

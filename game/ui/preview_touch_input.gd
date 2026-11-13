@@ -1,5 +1,5 @@
 extends Node
-## Preview workers also need releases delivered to a popup's separate viewport.
+## Observe releases before menu gestures or popups consume their input.
 const TRACKERS: StringName=&"preview_touch_trackers"
 const RELAY_META: StringName=&"preview_touch_relay"
 const WINDOW_META: StringName=&"preview_touch_observer"
@@ -17,7 +17,9 @@ static func bind(tracker: Node) -> void:
 
 func _ready() -> void:
 	if popup_observer: return
-	set_process_input(false)
+	# The root relay runs before the App's children. Page swipes can pass DOWN
+	# through to a worker and handle UP, so releases need the same forwarding
+	# here as in a popup's separate viewport. Keep each other finger intact.
 	get_tree().node_added.connect(_node_added)
 	_watch_existing(get_tree().root)
 

@@ -69,6 +69,8 @@ def test_nested_router_prefixes_and_normal_requests_use_same_safe_template(auth_
     from fastapi import APIRouter, Depends
     from fastapi.testclient import TestClient
 
+    auth_app.state.http_costs.sample = 1000
+
     calls = []
     def dependency():
         calls.append("dependency")
@@ -84,7 +86,9 @@ def test_nested_router_prefixes_and_normal_requests_use_same_safe_template(auth_
     class Capture(logging.Handler):
         def emit(self, record):
             if record.getMessage().startswith('{'):
-                rows.append(json.loads(record.getMessage()))
+                value = json.loads(record.getMessage())
+                if value.get("event") == "http_request":
+                    rows.append(value)
     logger = logging.getLogger("bmt.requests")
     handler = Capture()
     logger.addHandler(handler)

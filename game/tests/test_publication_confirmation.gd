@@ -163,8 +163,11 @@ func run() -> void:
 	check(current() == dialog and dialog.phase == "waiting","pending window stays locked before five seconds")
 	await create_timer(0.55).timeout; await settle()
 	check(current() == dialog and dialog.timed_out and dialog.phase == "outcome" and Time.get_ticks_msec()-started >= 5000,"real five-second deadline resolves the bounded wait")
-	check(dialog.heading.text == "Publication not confirmed" and not dialog.activity.visible and not dialog.confirm_button.disabled,"timeout is honest, stopped and dismissible")
-	check(flow.calls == before+1 and flow.job.publication_id == "same-intent" and flow.job.state == "queued","timeout does not cancel, duplicate or replace the durable intent")
+	check(dialog.heading.text == "Publishing track…" and dialog.activity.visible and not dialog.confirm_button.disabled and not dialog.close_button.disabled,"slow verification stays pending and animated while allowing dismissal")
+	check(dialog.message_label.text.contains("close this message") and dialog._publication_value.symbol == "publish","queued verification never flashes a fault after the dismissal deadline")
+	flow.job.state = "verifying"; flow.changed.emit(); await settle()
+	check(dialog.heading.text == "Publishing track…" and dialog.activity.visible and dialog.message_label.text.contains("being checked"),"verification updates retain the pending presentation after the deadline")
+	check(flow.calls == before+1 and flow.job.publication_id == "same-intent" and flow.job.state == "verifying","timeout does not cancel, duplicate or replace the durable intent")
 	await capture("timeout")
 	flow.job = {"state":"published","receipt":{"version_id":"late-version","track_id":"fixture-track"}}
 	flow.changed.emit(); await settle()

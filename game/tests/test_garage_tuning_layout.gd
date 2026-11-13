@@ -75,7 +75,7 @@ func _run() -> void:
 			last.grab_focus()
 			await settle()
 			check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"focus reveals last "+category+" choice")
-			check(CompactKitThumbnail.images.size()<=16,"native photo cache remains bounded")
+			check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
 		await capture("tuning-"+str(dimensions.x))
 	page._show_section("care")
 	await settle()

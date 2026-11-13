@@ -2,6 +2,7 @@ extends MenuButton
 ## The car half of the header; the adjacent player name opens Profile.
 signal vehicle_selected(index: int)
 var records: LocalRecords
+var request_pictures: Callable
 const Icons = preload("res://ui/header_car_icons.gd")
 
 func _ready() -> void:
@@ -35,6 +36,7 @@ func _populate() -> void:
 		var row: int = popup.item_count-1
 		popup.set_item_icon_max_width(row,88)
 	popup.set_focused_item(0)
+	if request_pictures.is_valid(): request_pictures.call(records)
 
 func refresh_picture(vehicle: String) -> void:
 	var popup: PopupMenu = get_popup()

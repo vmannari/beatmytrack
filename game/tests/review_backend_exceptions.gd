@@ -96,7 +96,7 @@ func _run() -> void:
 		var repository: String = ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
 		cloud.root_override = repository.path_join("build/exception-probe-outbox").path_join(mode+"-"+str(Time.get_ticks_usec()))
 		var ticket_id: String = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-		cloud.queue_run({"ticket_id":ticket_id},[[0,255,0]],"",[])
+		(await cloud.queue_run_async({"ticket_id":ticket_id},[[0,255,0]],"",[]))
 		if mode == "missing":
 			var job: Dictionary = cloud.upload_job(ticket_id)
 			var path: String = str(job._path)

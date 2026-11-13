@@ -51,7 +51,9 @@ static func point(angle: float, y: float) -> Vector3:
 
 static func outward(angle: float, y: float) -> Vector3:
 	if y > CROWN-0.001: return Vector3.UP
-	return Vector3(sin(angle),(y-0.925)*4,-cos(angle)).normalized()
+	var across: Vector3 = point(angle+0.0001,y)-point(angle-0.0001,y)
+	var along: Vector3 = point(angle,minf(CROWN-0.00001,y+0.0001))-point(angle,y-0.0001)
+	return along.cross(across).normalized()
 
 static func bounds(angle: float) -> Vector2:
 	var t: float = clampf(absf(wrapf(angle,-PI,PI))/OPENING,0,1)

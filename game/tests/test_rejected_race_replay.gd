@@ -83,13 +83,13 @@ func rejection_upload() -> void:
 	cloud.client = client
 	cloud.root_override = "user://rejected_replay_test_"+TrackLibrary.unique_id()
 	root.add_child(cloud)
-	check(cloud.queue_run({"ticket_id":"rejected-fixture"},[[0,255,0]]),"queue disposable upload")
-	var job: Dictionary = cloud.upload_jobs()[0]
+	check((await cloud.queue_run_async({"ticket_id":"rejected-fixture"},[[0,255,0]])),"queue disposable upload")
+	var job: Dictionary = (await cloud.upload_history())[0]
 	job.run_id = "rejected-fixture-run"
 	cloud._save_job(str(job._path),job)
 	await cloud.flush_outbox()
 	check(cloud.status.contains("Server replay could not verify this finish") and not cloud.status.contains("invalid_replay"),"polled rejection explains recovery instead of showing an internal code")
-	var retained: Dictionary = cloud.upload_jobs()[0]
+	var retained: Dictionary = (await cloud.upload_history())[0]
 	var replay_path: String = str(retained._path).get_base_dir().path_join(str(retained.replay))
 	check(retained.failure == "invalid_replay" and not retained.retryable and cloud._replay_integrity(replay_path,str(retained.replay_hash)),"terminal rejection preserves replay and original diagnostic code")
 	if DisplayServer.get_name() != "headless":

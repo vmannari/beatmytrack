@@ -18,7 +18,7 @@ func _ready() -> void:
 	_button = MenuStyle.button("World Ranking",func() -> void: preload("res://ui/world_ranking.gd").open(self,client,player_id))
 	_button.custom_minimum_size = Vector2(140,48)
 	add_child(_button)
-	_label = MenuStyle.label("Published weekly · Compact Circuit",16,true)
+	_label = MenuStyle.label("Published weekly · All cars" if Adapter.multi_supported(client) else "Published weekly · Compact Circuit",16,true)
 	_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_label.custom_minimum_size.y = 44
 	add_child(_label)
@@ -29,7 +29,7 @@ func _ready() -> void:
 func _identity_changed() -> void:
 	_request += 1
 	honors_loaded.emit({})
-	_label.text = "Published weekly · Compact Circuit"
+	_label.text = "Published weekly · All cars" if Adapter.multi_supported(client) else "Published weekly · Compact Circuit"
 	if _scope != _adapter.scope():
 		_button.disabled = true
 		return

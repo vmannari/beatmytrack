@@ -47,9 +47,18 @@ func run() -> void:
 	game.hud.pause_menu._settings()
 	game.hud.pause_menu.settings_overlay.page._show_section("camera")
 	await capture(output.path_join("pause-camera-1280x720.png"))
+	var camera_page: SettingsPage = game.hud.pause_menu.settings_overlay.page
+	camera_page.content_scroll.ensure_control_visible(camera_page.find_child("Camera_low_angle", true, false))
+	await capture(output.path_join("pause-camera-angles-1280x720.png"))
 	root.size = Vector2i(960, 540)
 	root.content_scale_size = Vector2i(960, 540)
 	await capture(output.path_join("pause-camera-960x540.png"))
+	if "--angles-only" in OS.get_cmdline_user_args():
+		game.queue_free()
+		await process_frame
+		print("CAMERA_CAPTURE: %d angle comparisons and pause settings captures saved" % captures)
+		quit()
+		return
 	game.toggle_pause()
 	# Compare the same fast car pose/speed, differing only in speed zoom.
 	for dimensions: Vector2i in [Vector2i(1280, 720), Vector2i(960, 540)]:

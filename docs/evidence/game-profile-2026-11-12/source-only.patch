@@ -1,0 +1,980 @@
+diff --git a/scripts/prepare_game_profile.py b/scripts/prepare_game_profile.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/prepare_game_profile.py
+@@ -0,0 +1,59 @@
++"""Copy a private current project; detect races with concurrent source writers."""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import os
++
++ROOT = Path(__file__).resolve().parents[1]
++DEST = ROOT / "build/game-profile-2026-11-12/snapshot"
++OUT = ROOT / "docs/evidence/game-profile-2026-11-12"
++if (DEST / "game/project.godot").exists():
++    raise SystemExit("Snapshot already exists; use the retained measured snapshot or choose a fresh destination before preparing again.")
++
++
++def inputs():
++    found = []
++    for p in (ROOT / "game").rglob("*"):
++        relative = p.relative_to(ROOT / "game")
++        if not p.is_file() or relative.parts[0] in ("android", "tmp", "build", ".godot", "assets"):
++            continue
++        found.append(p)
++    found += [ROOT / "game/.godot" / n for n in ("global_script_class_cache.cfg", "extension_list.cfg", "uid_cache.bin")]
++    return [p for p in found if p.is_file()]
++
++
++paths = inputs()
++before = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
++for p in paths:
++    target = DEST / p.relative_to(ROOT)
++    target.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copy2(p, target)
++shutil.copytree(ROOT / "backend/tests/fixtures", DEST / "backend/tests/fixtures", dirs_exist_ok=True)
++asset_root = ROOT / "game/assets"
++asset_target = DEST / "game/assets"
++if not asset_target.exists():
++    for p in asset_root.rglob("*"):
++        target = asset_target / p.relative_to(asset_root)
++        if p.is_dir(): target.mkdir(parents=True, exist_ok=True)
++        elif p.is_file():
++            target.parent.mkdir(parents=True, exist_ok=True)
++            os.link(p, target)
++for relative in ("game/.godot/imported",):
++    target = DEST / relative
++    target.parent.mkdir(parents=True, exist_ok=True)
++    if not target.exists():
++        env = dict(os.environ, BMT_PROFILE_LINK=str(target), BMT_PROFILE_TARGET=str(ROOT / relative))
++        subprocess.run(["powershell", "-NoProfile", "-Command", "New-Item -ItemType Junction -Path $env:BMT_PROFILE_LINK -Target $env:BMT_PROFILE_TARGET | Out-Null"], env=env, check=True)
++changed = []
++for p in paths:
++    key = str(p.relative_to(ROOT))
++    copied = hashlib.sha256((DEST / key).read_bytes()).hexdigest()
++    if before[key] != copied or before[key] != hashlib.sha256(p.read_bytes()).hexdigest():
++        changed.append(key)
++OUT.mkdir(parents=True, exist_ok=True)
++(OUT / "snapshot-manifest.json").write_text(json.dumps(dict(files=before, changed_during_copy=changed, hardlinked_assets="game/assets", shared_read_only_assets=["game/.godot/imported"], reason="Disk space prevents a complete binary snapshot; each run hashes runtime assets before and after. In-place writes to hardlinked files remain visible."), indent=2), encoding="utf-8")
++print(json.dumps(dict(files=len(paths), bytes=sum(p.stat().st_size for p in paths), changed=changed)))
++if changed:
++    raise SystemExit(1)
+diff --git a/scripts/profile_game_overview.py b/scripts/profile_game_overview.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile_game_overview.py
+@@ -0,0 +1,101 @@
++"""Bounded, offline desktop profiling; preserve commands, sources and raw output."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++import shutil
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/game-profile-2026-11-12"
++ENGINE = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
++PROJECT = ROOT / "build/game-profile-2026-11-12/snapshot/game"
++
++
++def sources():
++    return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in PROJECT.rglob("*") if p.is_file()
++            and (".godot" not in p.parts or "imported" in p.parts)
++            and ("imported" in p.parts or p.suffix in (".gd", ".godot", ".gdshader", ".json", ".gdextension", ".tscn", ".scn", ".res", ".png", ".dll"))}
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("name")
++    parser.add_argument("script")
++    parser.add_argument("--renderer", default="gl_compatibility")
++    parser.add_argument("--profile", default="")
++    parser.add_argument("--timeout", type=int, default=600)
++    parser.add_argument("--headless", action="store_true")
++    args, extra = parser.parse_known_args()
++    OUT.mkdir(parents=True, exist_ok=True)
++    captures = OUT / args.name
++    captures.mkdir(exist_ok=True)
++    private = ROOT / "build/game-profile-2026-11-12" / (args.profile or args.name)
++    env = dict(os.environ, APPDATA=str(private / "roaming"), LOCALAPPDATA=str(private / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="", BMT_LOADING_OUTPUT=str(OUT / f"{args.name}-metrics.json"),
++               BMT_GRAPHICS_OUTPUT=str(captures))
++    Path(env["APPDATA"]).mkdir(parents=True, exist_ok=True)
++    Path(env["LOCALAPPDATA"]).mkdir(parents=True, exist_ok=True)
++    wrapped = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", str(ENGINE)]
++    version = subprocess.check_output(wrapped + ["--version"], text=True).strip()
++    assert version == (ROOT / "godot-version.txt").read_text().strip(), version
++    command = wrapped + ["--path", str(PROJECT if PROJECT.exists() else ROOT / "game"), "--audio-driver", "Dummy", "--position", "10000,10000",
++                         "--rendering-method", args.renderer, "--script", args.script]
++    if args.headless:
++        command.append("--headless")
++    if extra:
++        command += extra if extra[0] == "--" else ["--", *extra]
++    before = sources()
++    (OUT / f"{args.name}-sources.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++    started = time.monotonic()
++    log_path = OUT / f"{args.name}.log"
++    with log_path.open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++        (OUT / f"{args.name}-process.json").write_text(json.dumps(dict(pid=process.pid, command=command), indent=2))
++        code = None
++        while process.poll() is None:
++            time.sleep(0.3)
++            content = log_path.read_text(encoding="utf-8", errors="replace")
++            if "SCRIPT ERROR:" in content or time.monotonic() - started > args.timeout:
++                stopped = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=log, stderr=subprocess.STDOUT)
++                if stopped.returncode:
++                    try:
++                        process.wait(timeout=2)
++                    except subprocess.TimeoutExpired:
++                        blocked = dict(exit_code=126, cleanup_required=True, pid=process.pid, command=command,
++                                       reason="Windows denied termination of this owned profiling tree; stop it before launching another GPU probe.")
++                        (OUT / f"{args.name}-receipt.json").write_text(json.dumps(blocked, indent=2))
++                        print(json.dumps(blocked), flush=True)
++                        return 126
++                code = 124 if "SCRIPT ERROR:" not in content else 125
++                break
++        native_code = process.wait()
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
++    errors = list(dict.fromkeys(s for s in lines if s.startswith(("ERROR:", "SCRIPT ERROR:", "WARNING:"))))
++    receipt = dict(command=command, engine=version, exit_code=native_code if code is None else code,
++                   wall_seconds=round(time.monotonic() - started, 3), source_changes=changed,
++                   diagnostics=errors, private_profile=str(private), network="explicitly disabled", audio_driver="Dummy")
++    # Keep raw measurements and saves; reclaim only our completed throwaway GPU cache.
++    reclaimed = 0
++    if not args.profile:
++        for cache in private.rglob("shader_cache"):
++            resolved = cache.resolve()
++            if not resolved.is_relative_to(private.resolve()) or resolved.name != "shader_cache":
++                raise ValueError("Unexpected cache cleanup target")
++            reclaimed += sum(p.stat().st_size for p in cache.rglob("*") if p.is_file())
++            shutil.rmtree(resolved)
++    receipt["completed_private_shader_cache_bytes_reclaimed"] = reclaimed
++    (OUT / f"{args.name}-receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++    print(json.dumps(dict(name=args.name, exit_code=receipt["exit_code"], wall_seconds=receipt["wall_seconds"], source_change_count=len(changed), diagnostics=errors)), flush=True)
++    print("\n".join(lines[-8:]), flush=True)
++    return int(receipt["exit_code"] != 0 or bool(changed) or any(s.startswith("SCRIPT ERROR:") for s in errors))
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/profile_game_suite.py b/scripts/profile_game_suite.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile_game_suite.py
+@@ -0,0 +1,34 @@
++"""Run GPU measurements sequentially so our own probes never compete."""
++from pathlib import Path
++import json
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++jobs = [
++    ("races-gl", "res://tests/profile_races_half.gd", "gl_compatibility", ["--", "--themes=pine,desert,winter", "--cycles=2"]),
++    ("driving-gl", "res://tests/profile_overview_driving.gd", "gl_compatibility", []),
++    ("editor-gl", "res://tests/profile_overview_editor.gd", "gl_compatibility", []),
++    ("menus-mobile", "res://tests/profile_loading_half.gd", "mobile", []),
++    ("races-mobile", "res://tests/profile_races_half.gd", "mobile", ["--", "--themes=pine,desert,winter", "--cycles=2"]),
++    ("driving-mobile", "res://tests/profile_overview_driving.gd", "mobile", []),
++    ("editor-mobile", "res://tests/profile_overview_editor.gd", "mobile", []),
++]
++if "--followup" in sys.argv:
++    jobs = [
++        ("editor-gl-fixed", "res://tests/profile_overview_editor.gd", "gl_compatibility", []),
++        ("driving-gl-fixed", "res://tests/profile_overview_driving.gd", "gl_compatibility", []),
++        ("navigation-gl", "res://tests/profile_menu_responsiveness.gd", "gl_compatibility", ["--", "--output="+str(ROOT / "docs/evidence/game-profile-2026-11-12/navigation-gl")]),
++        ("assets-final", "res://tests/profile_overview_assets.gd", "gl_compatibility", ["--headless"]),
++        ("startup-final-cold", "res://tests/profile_startup_shell.gd", "gl_compatibility", ["--profile", "startup-final"]),
++        ("startup-final-repeat", "res://tests/profile_startup_shell.gd", "gl_compatibility", ["--profile", "startup-final"]),
++    ]
++results = []
++for name, script, renderer, extra in jobs:
++    print("BEGIN " + name, flush=True)
++    code = subprocess.run([sys.executable, str(ROOT / "scripts/profile_game_overview.py"), name, script, "--renderer", renderer, *extra], cwd=ROOT).returncode
++    if code == 126:
++        raise SystemExit("Owned failed probe needs process cleanup before continuing")
++    results.append(dict(name=name, runner_exit_code=code))
++    (ROOT / "docs/evidence/game-profile-2026-11-12" / ("followup-suite.json" if "--followup" in sys.argv else "suite.json")).write_text(json.dumps(results, indent=2))
++    print("END " + name + " " + str(code), flush=True)
+diff --git a/scripts/profile_game_final_suite.py b/scripts/profile_game_final_suite.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/profile_game_final_suite.py
+@@ -0,0 +1,44 @@
++"""Queue final cache-matched observations after the preliminary probes finish."""
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/game-profile-2026-11-12"
++deadline = time.monotonic() + 1200
++while True:
++    try:
++        ready = len(json.loads((OUT / "followup-suite.json").read_text())) == 6
++    except (FileNotFoundError, json.JSONDecodeError):
++        ready = False
++    if ready:
++        break
++    if time.monotonic() > deadline:
++        raise SystemExit("Earlier sequential suite did not finish")
++    time.sleep(2)
++print("BEGIN final asset copy", flush=True)
++subprocess.run([sys.executable, str(ROOT / "scripts/freeze_game_profile_assets.py")], check=True)
++for name in ("profile_overview_driving.gd", "profile_overview_assets.gd"):
++    shutil.copy2(ROOT / "game/tests" / name, ROOT / "build/game-profile-2026-11-12/snapshot/game/tests" / name)
++jobs = [
++    ("assets-qualified", "res://tests/profile_overview_assets.gd", "gl_compatibility", ["--headless"]),
++    ("menus-gl-final", "res://tests/profile_loading_half.gd", "gl_compatibility", []),
++    ("menus-mobile-final", "res://tests/profile_loading_half.gd", "mobile", []),
++    ("races-gl-final", "res://tests/profile_races_half.gd", "gl_compatibility", ["--", "--themes=pine,desert,winter", "--cycles=2"]),
++    ("races-mobile-final", "res://tests/profile_races_half.gd", "mobile", ["--", "--themes=pine,desert,winter", "--cycles=2"]),
++    ("editor-mobile-final", "res://tests/profile_overview_editor.gd", "mobile", []),
++    ("driving-mobile-qualified", "res://tests/profile_overview_driving.gd", "mobile", ["--", "--cases=compact:pine,compact:winter,kart:pine"]),
++]
++results = []
++for name, script, renderer, extra in jobs:
++    print("BEGIN " + name, flush=True)
++    code = subprocess.run([sys.executable, str(ROOT / "scripts/profile_game_overview.py"), name, script, "--renderer", renderer, *extra], cwd=ROOT).returncode
++    if code == 126:
++        raise SystemExit("Owned failed probe needs process cleanup before continuing")
++    results.append(dict(name=name, runner_exit_code=code))
++    (OUT / "final-suite.json").write_text(json.dumps(results, indent=2))
++    print("END " + name + " " + str(code), flush=True)
++subprocess.run([sys.executable, str(ROOT / "scripts/summarize_game_profile.py")], check=True)
+diff --git a/scripts/freeze_game_profile_assets.py b/scripts/freeze_game_profile_assets.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/freeze_game_profile_assets.py
+@@ -0,0 +1,51 @@
++"""Detach mutable asset hardlinks after concurrent bakes; never change live assets."""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import os
++
++ROOT = Path(__file__).resolve().parents[1]
++STAGE = ROOT / "build/game-profile-2026-11-12/snapshot/game"
++OUT = ROOT / "docs/evidence/game-profile-2026-11-12"
++asset_root = STAGE / "assets"
++assert asset_root.resolve() == asset_root.absolute()
++manifest = {}
++changed = []
++for target in asset_root.rglob("*"):
++    if not target.is_file():
++        continue
++    if not target.resolve().is_relative_to(asset_root.resolve()):
++        raise ValueError("Asset target escaped the private snapshot")
++    source = ROOT / "game/assets" / target.relative_to(asset_root)
++    digest = hashlib.sha256(source.read_bytes()).hexdigest()
++    temp = target.with_name(target.name + ".profilecopy")
++    shutil.copy2(source, temp)
++    if hashlib.sha256(temp.read_bytes()).hexdigest() != digest or hashlib.sha256(source.read_bytes()).hexdigest() != digest:
++        changed.append(str(source.relative_to(ROOT)))
++    os.replace(temp, target)
++    manifest[str(target.relative_to(STAGE))] = digest
++source_imports = ROOT / "game/.godot/imported"
++private_imports = STAGE / ".godot/imported"
++if private_imports.resolve() == source_imports.resolve():
++    temporary_imports = STAGE / ".godot/imported-profile-copy"
++    shutil.copytree(source_imports, temporary_imports)
++    for source in source_imports.rglob("*"):
++        if not source.is_file():
++            continue
++        copied = temporary_imports / source.relative_to(source_imports)
++        digest = hashlib.sha256(source.read_bytes()).hexdigest()
++        if hashlib.sha256(copied.read_bytes()).hexdigest() != digest:
++            changed.append(str(source.relative_to(ROOT)))
++        manifest[".godot/imported/"+source.relative_to(source_imports).as_posix()] = digest
++    # Remove only the verified junction itself, never its live contents.
++    assert private_imports.resolve() == source_imports.resolve()
++    os.rmdir(private_imports)
++    os.replace(temporary_imports, private_imports)
++for relative in ("core/build_identity.gd", "project.godot"):
++    shutil.copy2(ROOT / "game" / relative, STAGE / relative)
++    manifest[relative] = hashlib.sha256((STAGE / relative).read_bytes()).hexdigest()
++(OUT / "frozen-assets.json").write_text(json.dumps(dict(files=manifest, changed_during_copy=changed, imports="Private byte-checked copy", assets="All asset hardlinks detached into private byte-checked copies"), indent=2))
++print(json.dumps(dict(copied=len(manifest), changes=changed, free_bytes=shutil.disk_usage(ROOT).free)), flush=True)
++if changed:
++    raise SystemExit(1)
+diff --git a/scripts/summarize_game_profile.py b/scripts/summarize_game_profile.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/summarize_game_profile.py
+@@ -0,0 +1,141 @@
++"""Build the review report from retained measurements, never from planned runs."""
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/game-profile-2026-11-12"
++
++
++def read(name):
++    path = OUT / name
++    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
++
++
++def table(headers, rows):
++    return "\n".join(["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |", *["| " + " | ".join(map(str, row)) + " |" for row in rows]])
++
++
++def preferred(*names):
++    for name in names:
++        value = read(name + "-metrics.json")
++        if value is not None:
++            return name, value
++    return "", None
++
++
++data = {"environment": read("environment.json"), "receipts": {}}
++for p in OUT.glob("*-receipt.json"):
++    receipt = json.loads(p.read_text())
++    receipt["diagnostic_line_count"] = len(receipt.get("diagnostics",[]))
++    receipt["diagnostics"] = list(dict.fromkeys(receipt.get("diagnostics",[])))
++    data["receipts"][p.stem.removesuffix("-receipt")] = receipt
++sections = ["# Game profiling — 12 November 2026", "Measured local debug-engine behavior on the current code snapshot. This is a profiling review; production game code, handling, quality defaults and player saves were not edited.",
++"Requirements: PRF01 startup; PRF02 menu loading and navigation; PRF03 race loading and retry; PRF04 real driving frame times; PRF05 track editor; PRF06 reproducibility and limitations.",
++"## Measurement conditions", "Windows build 26300; Intel Core i7-11700K, 16 logical CPUs; NVIDIA RTX 3090. Pinned official Godot 4.7.2 (`ed1daf0bf`), 1280×720 native rendered windows positioned outside the desktop. Compatibility uses OpenGL; desktop Mobile uses Vulkan. Processes run sequentially. Private APPDATA/LOCALAPPDATA, explicit empty backend URL, offline race fixtures, Dummy audio driver and music disabled. Driving uses uncapped frame rate, disabled VSync, normal Auto graphics, stock approved simpler car models, real AI simulation, a complete countdown, two seconds of warmup and ten seconds of sampling per case. FPS is measured frame-loop throughput, not a physical-display presentation trace.",
++"Cold means first use in a fresh profiling process/private application profile, with existing project imports and OS/driver caches. It is not a disk-cache purge or first install. Restart startup reuses its private profile. Warm page entries and race re-entries occur in the same process. Raw timing includes rendered completion where the probe supports it; race loading excludes the three-second countdown and the separately recorded track compilation. Menu ready times include navigation settling, which can exceed first draw.",
++"The drive initially had about 345 MiB free after an unsuccessful full-copy attempt. Exploratory code/native libraries were copied while assets were first shared by junction and then NTFS hardlinks; concurrent in-place asset writes remained visible. Later, free space recovered and all 25,378 asset/import/identity files were copied and checked with zero copy-time changes. Final `-final` / `-qualified` runs use private assets and imports, with before/after SHA-256 receipts. Other workspace work was active and its processes were not stopped. These are local debug-engine diagnostics, not an uncontended release benchmark or Android qualification.",
++"## Startup"]
++startup_rows = []
++for name in ("startup-cold", "startup-isolated-cold", "startup-isolated-repeat", "startup-final-cold", "startup-final-repeat", "startup-frozen-cold", "startup-frozen-repeat"):
++    d = read(name + "-metrics.json")
++    if d:
++        startup_rows.append([name, f"{d['engine_to_menu_ms']/1000:.3f}", f"{d['resource_ms']:.1f}", f"{d['initialization_ms']:.1f}", str(d["network_disabled"])])
++sections += [table(["Run", "Engine to drawn menu (s)", "App graph load (ms)", "App initialization (ms)", "Offline"], startup_rows),
++"The account menu is the ordinary unsigned-in startup destination. These startup probes deliberately avoid parsing the heavy game graph before loading App. The first live run and initial shared-asset snapshot runs have concurrency changes in their receipts; retain them as observations, not stable-build comparisons.", "## Menu loading"]
++for renderer in ("gl", "mobile"):
++    name, d = preferred("menus-" + renderer + "-final-fixed", "menus-" + renderer + "-final", "menus-" + renderer)
++    if not d:
++        continue
++    data[name] = d
++    cold = {r["page"]: r for r in d["menus"] if r["cycle"] == 0}
++    warm = {r["page"]: r for r in d["menus"] if r["cycle"] == 1}
++    rows = [[page, f"{row['ready_ms']/1000:.3f}", f"{warm[page]['ready_ms']:.1f}", f"{row['max_frame_ms']:.1f}", f"{warm[page]['max_frame_ms']:.1f}"] for page, row in cold.items()]
++    sections += [f"### {renderer} — {d['checks']} checks, {d['failures']} failures", table(["Page", "First ready (s)", "Repeat ready (ms)", "First worst frame (ms)", "Repeat worst frame (ms)"], rows),
++                 "First feature resource loads (ms): " + "; ".join(f"{p.split('/')[-1]} {v:.1f}" for p, v in d["feature_load_ms"].items()) + "."]
++nav = OUT / "navigation-gl/profile.json"
++if nav.exists():
++    d = json.loads(nav.read_text())
++    data["navigation-gl"] = d
++    sections += ["### Actual navigation with saved custom liveries", "This separate scenario invokes `_navigate_menu_page`, including neighbor promotion and background preparation, and samples 80 frames per action. Its preloaded App graph means it is not another startup benchmark.", table(["Destination", "Handler (ms)", "p95 frame (ms)", "Worst frame (ms)", "Frames >50 ms"], [[r["destination"],f"{r['call_ms']:.2f}",f"{r['p95_ms']:.2f}",f"{r['max_ms']:.2f}",r["over_50ms"]] for r in d["transitions"]])]
++sections += ["## Race loading", "The Star spline circuit is the larger loading workload; Grass, Desert and Winter each have a first load and same-process re-entry. The original installation, full countdown, five-lap rules, cover-release and retry-reuse assertions remain in the probe. This is offline preparation; network tickets, downloads and verification latency are excluded."]
++for renderer in ("gl", "mobile"):
++    name, d = preferred("races-" + renderer + "-final", "races-" + renderer)
++    if not d:
++        continue
++    data[name] = d
++    sections += [f"### {renderer} — {d['checks']} checks, {d['failures']} failures", table(["Biome", "Entry", "Load (s)", "Worst frame (ms)", "Retry (ms)", "Compile before entry (ms)"], [[r["theme"],"first" if r["cycle"] == 0 else "repeat",f"{r['wall_ms']/1000:.3f}",f"{r['max_frame_ms']:.1f}",f"{r['retry_ms']:.1f}",f"{r['compile_ms_before_race']:.1f}"] for r in d["samples"]])]
++    phases = []
++    for r in d["samples"]:
++        marks = {m["name"]:m["us"] for m in r["marks"]}
++        pairs = [("roads_begin","roads_end"),("game_begin","game_end"),("graphics_begin","graphics_end"),("effects_begin","effects_end")]
++        phases.append([r["theme"],r["cycle"],*[f"{(marks[b]-marks[a])/1000:.1f}" if a in marks and b in marks else "—" for a,b in pairs]])
++    sections += [table(["Biome","Cycle","Road preparation (ms)","Game construction (ms)","Covered world graphics (ms)","Effects/final finish (ms)"],phases), "Phase hooks are timestamps in an in-memory copy of the shipping controller. They do not modify the production source. Covered graphics and final effects include rendering waits and possible compilation; they are not pure CPU timings."]
++sections += ["## Driving FPS and frame pacing", "The verified oval is a separate, smaller gameplay workload. Every biome uses Rally; the other five cars are sampled on Grass. These broad matrices are exploratory runs that overlapped asset writes and disk housekeeping; the three final cache-matched driving checks appear below. Renderer ranges are observations, not a controlled renderer speedup comparison. The short samples cover opening driving segments, not full laps or all high-speed/contact/effect cases. Per-frame script counter costs are averages across rendered frames and include AI driving; CPU, render and GPU times overlap and must not be added together. The existing broad car/presentation timer spans several nested audio/weathering/contact tasks, so those counter values also overlap. A tick-progress guard requires at least 90% of elapsed-time simulation progress; rows with failures are not qualified as real-time driving. No FPS is inferred from headless execution."]
++for renderer in ("gl", "mobile"):
++    name, d = preferred("driving-" + renderer + "-fixed", "driving-" + renderer)
++    if not d:
++        continue
++    data[name] = d
++    sections += [f"### {renderer} — {d['failures']} progress failures",table(["Car / biome","FPS","p50 / p95 / p99 (ms)","Worst (ms)","Frames >33.3 ms","GPU p95 (ms)","Simulated ticks"], [[r["vehicle"]+" / "+r["theme"],f"{r['fps']:.1f}"," / ".join(f"{r['frame_ms'][q]:.2f}" for q in ("p50","p95","p99")),f"{r['frame_ms']['max']:.2f}",r["frame_ms"]["over_33_333"],f"{r['gpu_ms'].get('p95',0):.2f}",r["ticks"]] for r in d["rows"]])]
++    costs = []
++    for r in d["rows"]:
++        c = r["callback_costs"]
++        costs.append([r["vehicle"]+" / "+r["theme"],f"{c['physics_total_ms_per_frame']:.3f}",f"{c['process_total_ms_per_frame']:.3f}",f"{c['sim_ms_per_frame']:.3f}",f"{c['ai_ms_per_frame']:.3f}",f"{r['static_bytes']/1048576:.1f}",f"{r['video_bytes']/1048576:.1f}"])
++    sections += [table(["Car / biome","Physics callback ms/frame","Presentation callback ms/frame","Simulation ms/frame","AI ms/frame","Godot static MiB","Reported video MiB"], costs), "Static allocation and video-memory monitors are not process RSS or Android PSS. Ten-second samples do not measure long-run memory drift, battery use, thermal throttling or all track/effect combinations. Native gameplay screenshots accompany the rows."]
++sections += ["## Track editor"]
++for renderer in ("gl", "mobile"):
++    folder = next((OUT / n for n in ("editor-"+renderer+"-final","editor-"+renderer+"-fixed","editor-"+renderer) if (OUT/n/("results-gl_compatibility.json" if renderer == "gl" else "results-mobile.json")).exists()),None)
++    if folder is None:
++        continue
++    p = folder / ("results-gl_compatibility.json" if renderer == "gl" else "results-mobile.json")
++    d = json.loads(p.read_text())
++    data[folder.name] = d
++    rows = []
++    for r in d["rows"]:
++        if r["operation"] == "editor_open": rows.append(["open "+r["theme"]+" "+str(r["pieces"])+" roads / "+str(r["objects"])+" objects",f"{r['ready_ms']:.1f}",f"{r.get('frame',{}).get('max_ms',0):.1f}"])
++        elif "ms" in r: rows.append([r["operation"],f"{r['ms']:.1f}","—"])
++        elif "handler" in r: rows.append([r["operation"]+" handler p95",f"{r['handler']['p95_ms']:.2f}",f"{r['synthetic_event_to_frame']['max_ms']:.1f}"])
++    sections += [f"### {renderer} — {d['checks']} checks, {d['failures']} failures",table(["Operation","Time (ms)","Worst observed frame/event-to-frame (ms)"],rows)]
++sections += ["The editor workload includes a 96-road circuit, width editing, 120 synthetic drag updates, undo/redo, two practice entries/returns, 95 authored sheds, overview/detail rendering and Winter surface changes. It retains the original scene-identity, authored-data, history, ownership and cancellation assertions. Synthetic event-to-frame time is not physical touch latency. This refers to the game's track editor; the Godot IDE was not profiled.",
++"## Prepared-asset qualification and corrected measurements", "Preliminary runs overlapped in-place asset rebuilds. A live-versus-snapshot source comparison found only the generated build identity and an offline baking test had changed. The old generated cache revisions could reject newly rebuilt prepared scenes even though authored runtime geometry sources matched. Thus the early Vulkan repeat-car/practice times are observations of a stale development cache, not evidence of a general renderer regression. The initial identity and the snapshot-only refresh receipt are preserved. Once space became available, all runtime assets were detached from hardlinks into private copies, imported resources were copied and their verified junction was removed, and snapshot identity/project version were refreshed together. The final loading/menu/editor passes use that complete private copy. No live source or asset was changed by these adaptations."]
++qualified = read("assets-qualified-metrics.json")
++if qualified:
++    data["assets-qualified"] = qualified
++    sections += [table(["Car","Prepared key matches","Authored source hashes match","Different source paths"],[[r["car"],r["key_matches"],r["source_hashes_match"],", ".join(r["different_sources"])] for r in qualified["rows"]])]
++qd = read("driving-mobile-qualified-metrics.json")
++if qd:
++    data["driving-mobile-qualified"] = qd
++    sections += ["Cache-matched driving cross-check (same uncapped 720p workload):",table(["Car / biome","FPS","p95 frame (ms)","Modular base cache hits during load","Progress failures"],[[r["vehicle"]+" / "+r["theme"],f"{r['fps']:.1f}",f"{r['frame_ms']['p95']:.2f}",r.get("modular_base_hits_during_load","—"),qd["failures"]] for r in qd["rows"]])]
++sections += [
++"## Findings and next work", "First-use work and frame stalls should be investigated before assuming steady driving FPS is the primary problem. The measurements separate script/dependency loading, construction, covered rendering and final effects. Rivalry's feature graph alone takes seconds, while its much longer first frame indicates additional first-render cost. Garage spends many seconds reaching a prepared showroom even after its feature script has loaded. Race re-entry and retry already benefit strongly from retained state. Warm navigation still has isolated frames above a 60 Hz budget; the actual-navigation scenario distinguishes retained-neighbor behavior from direct page construction. These are measured priorities and source-based hypotheses, not implemented optimizations.",
++"## Validation, retained failures and limits", "The initial full snapshot failed with no disk space; only that task-owned incomplete copy was removed. Hardware WMI reads were denied; CPU identification came from the read-only Windows processor registry and the renderer identified the GPU. The initial gameplay fixture omitted the offline fixture's required published-track marker, so no game was installed and that run exited 1. The initial editor fixture inherited a synchronous page-open helper that no longer waited for lazy feature loading; it logged script errors and was rejected. The dedicated probe adapters were corrected without changing runtime code or weakening the original assertions. Initial failed receipts remain alongside corrected runs.",
++"All native runs retain the sandbox's root-certificate-store diagnostic. Online configuration was explicitly disabled, so the report does not claim TLS or online-path validation. Other shutdown/resource diagnostics are listed verbatim in each receipt and must not be read as clean exits merely because a measurement file exists. Source/asset guard changes cause a nonzero runner status even when functional assertions pass. Initial menu/race runs overlap external asset writes; the full receipts identify every changed path. The report does not claim one immutable binary build or a whole-tree release gate.",
++"The first frozen Vulkan menu pass exposed another stale profiler assumption: an adopted `garage_preloaded_studio.gd` has `prepared`/`warming` fields, rather than the cooperative showroom's `preparing` field. That pass logged script errors and was rejected. The dedicated menu adapter retains the original cover/readiness checks for both studio types. Sandboxed termination of that owned failed test was denied; automatic approval review allowed termination of only its recorded process tree, and cleanup succeeded. Later runner code stops the sequence if owned-process cleanup is denied.",
++table(["Run","Engine exit","Changed files","Distinct diagnostics","Wall seconds"],[[name,r.get("exit_code"),len(r.get("source_changes",[])),len(r.get("diagnostics",[])),r.get("wall_seconds","—")] for name,r in sorted(data["receipts"].items())]),
++"No physical device was queried or tested. No APK/export, deployment, backend request, owner save/process change, main-index write or physics change was performed. Remaining qualification: uncontended stable-asset repetitions with more free disk space, packed release measurements, signed-in data/network cases, representative saved/fitted cars and large tracks, physical-device frame-time/thermal/memory runs and owner interaction review.",
++"## Files and reproduction", "New source: `scripts/prepare_game_profile.py`, `scripts/profile_game_overview.py`, `scripts/profile_game_suite.py`, `scripts/summarize_game_profile.py`, `game/tests/profile_overview_driving.gd`, and `game/tests/profile_overview_editor.gd`. The runner invokes `scripts/run_no_crash_dialog.py` for automated Godot process trees, pins `godot-version.txt`, bounds each process, retains raw logs/commands/hashes, and cleans only its completed private shader cache. Existing production scripts and existing regression fixtures were not edited.",
++"Additional source: `scripts/freeze_game_profile_assets.py`, `scripts/profile_game_final_suite.py`, `game/tests/profile_overview_assets.gd` and `game/tests/profile_overview_menus.gd`. Disk-pressure housekeeping is recorded in `maintenance.json`; only task-owned copied files, evidence and private shader caches were compressed/cleaned. That housekeeping and external writers overlapped exploratory samples and are additional reasons not to treat the exploratory renderer comparison as uncontended. Final cache-matched passes are labeled with `-final` or `-qualified`; earlier raw results remain available.",
++"Raw results and exact commands: [evidence directory](evidence/game-profile-2026-11-12/), especially `*-receipt.json`, `*-process.json`, `*-sources.json`, `*-metrics.json`, native capture folders, `environment.json`, `snapshot-manifest.json` and `frozen-assets.json`. The combined machine-readable result is [summary.json](evidence/game-profile-2026-11-12/summary.json). The task's new source/report delta is reviewable in [source-only.patch](evidence/game-profile-2026-11-12/source-only.patch), with hashes and reverse-apply validation in `source-checkpoint.json`. Commands actually executed are listed in the receipts, including any `--themes`, `--cycles`, `--renderer`, profile reuse and navigation-output arguments. Re-run one probe through `python scripts/profile_game_overview.py NAME res://tests/PROBE.gd --renderer gl_compatibility`; use `mobile` for desktop Vulkan. Startup pairs must share `--profile NAME`. Prepare a fresh verified snapshot before reproduction; the retained snapshot contains the measured runtime sources."]
++headline = []
++cold, warm = read("startup-frozen-cold-metrics.json"), read("startup-frozen-repeat-metrics.json")
++if cold and warm:
++    headline.append(["Startup",f"{cold['engine_to_menu_ms']/1000:.2f} s",f"{warm['engine_to_menu_ms']/1000:.2f} s after process restart"])
++for renderer in ("gl","mobile"):
++    _, menu = preferred("menus-"+renderer+"-final-fixed","menus-"+renderer+"-final")
++    if menu:
++        for page in ("rivalry","garage","create"):
++            a = next(r for r in menu["menus"] if r["page"]==page and r["cycle"]==0)
++            b = next(r for r in menu["menus"] if r["page"]==page and r["cycle"]==1)
++            headline.append([renderer+" / "+page,f"{a['ready_ms']/1000:.2f} s first entry",f"{b['ready_ms']:.0f} ms repeat"])
++    race = read("races-"+renderer+"-final-metrics.json")
++    if race:
++        first = [r["wall_ms"] for r in race["samples"] if r["cycle"]==0]
++        repeat = [r["wall_ms"] for r in race["samples"] if r["cycle"]==1]
++        headline.append([renderer+" / race loading",f"{min(first)/1000:.1f}–{max(first)/1000:.1f} s first entry",f"{min(repeat)/1000:.2f}–{max(repeat)/1000:.2f} s repeat"])
++if qd:
++    headline.append(["Vulkan / matched driving",f"{min(r['fps'] for r in qd['rows']):.0f}–{max(r['fps'] for r in qd['rows']):.0f} FPS",f"p95 frame {min(r['frame_ms']['p95'] for r in qd['rows']):.2f}–{max(r['frame_ms']['p95'] for r in qd['rows']):.2f} ms"])
++if headline:
++    sections[2:2] = ["First-use loading and frame stalls dominate this desktop profile. Final copied-asset results:",table(["Workload","First use / throughput","Repeat / pacing"],headline)]
++(OUT / "summary.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
++(ROOT / "docs/GAME_PROFILE_2026_11_12.md").write_text("\n\n".join(sections)+"\n",encoding="utf-8")
++print("Wrote docs/GAME_PROFILE_2026_11_12.md and combined summary.json")
+diff --git a/game/tests/profile_overview_assets.gd b/game/tests/profile_overview_assets.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_overview_assets.gd
+@@ -0,0 +1,30 @@
++extends SceneTree
++## Read-only cache qualification: explain fallback without bypassing its guards.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	var base: GDScript = load("res://vehicle/modular_car_base.gd")
++	var validation: GDScript = load("res://vehicle/prepared_asset_sources.gd")
++	var rows: Array = []
++	for id: String in VehicleCatalog.IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id; car.simple_model = true
++		car.customisation = VehicleCustomisation.defaults()
++		var path: String = base.path_for(car)
++		var scene: PackedScene = load(path)
++		var holder: Node = scene.instantiate()
++		var metadata: Dictionary = holder.get_meta("modular_car_base",{})
++		var saved: Dictionary = validation.runtime_projection(metadata.get("sources",{}))
++		var current: Dictionary = validation.runtime_hashes(id)
++		var differences: Array = []
++		for source: String in current:
++			if saved.get(source) != current[source]: differences.append(source)
++		for source: String in saved:
++			if not current.has(source): differences.append(source)
++		var row: Dictionary = {"car":id,"path":path,"key_matches":metadata.get("key",[])==base.key_for(car),"source_hashes_match":saved==current,"different_sources":differences}
++		rows.append(row)
++		print("PROFILE_ASSET ",JSON.stringify(row))
++		holder.free(); car.free()
++	var failures: int = rows.filter(func(row: Dictionary) -> bool: return not row.key_matches or not row.source_hashes_match).size()
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"rows":rows,"failures":failures,"engine":Engine.get_version_info().string},"  "))
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_overview_driving.gd b/game/tests/profile_overview_driving.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_overview_driving.gd
+@@ -0,0 +1,112 @@
++extends SceneTree
++## Native real-App races, uncapped diagnostic driving and timestamp observations.
++var app: Node
++var rows: Array = []
++var failures: int = 0
++const COUNTERS = ["sim","rules","ai","particles","trails","weather","car","props","camera","hud","audio","contact","music","water","history","condition","weathering","physics_total","process_total"]
++
++func _initialize() -> void: run.call_deferred()
++
++func quantiles(values: Array) -> Dictionary:
++	if values.is_empty(): return {}
++	var ordered: Array = values.duplicate(); ordered.sort()
++	var total: float = 0.0
++	for value: float in ordered: total += value
++	return {"count":ordered.size(),"mean":total/ordered.size(),"p50":ordered[ordered.size()/2],"p95":ordered[mini(ordered.size()-1,ceili(ordered.size()*0.95)-1)],"p99":ordered[mini(ordered.size()-1,ceili(ordered.size()*0.99)-1)],"max":ordered[-1],"over_16_667":ordered.filter(func(v: float) -> bool: return v>16.667).size(),"over_33_333":ordered.filter(func(v: float) -> bool: return v>33.333).size()}
++
++func foreground() -> void:
++	if not is_instance_valid(app): return
++	app._publishing_slots_foreground = true
++	if is_instance_valid(app.game) and app.game.paused: app.game.toggle_pause()
++	if is_instance_valid(app._garage_preloader):
++		app._garage_preloader.idle_ms = 100000000
++		app._garage_preloader.foreground = false
++
++func sample(seconds: float) -> Dictionary:
++	var game: Node = app.game
++	var frames: Array = []; var gpu: Array = []; var render_cpu: Array = []; var physics: Array = []; var process: Array = []; var draws: Array = []; var primitives: Array = []
++	var start: int = Time.get_ticks_usec(); var last: int = start
++	var initial_tick: int = game.sim.state.tick
++	var counters: Dictionary = {}
++	for key: String in COUNTERS: counters[key] = game.get("profile_"+key+"_us")
++	while Time.get_ticks_usec()-start < seconds*1000000.0:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		frames.append((now-last)/1000.0); last = now
++		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(root.get_viewport_rid()))
++		render_cpu.append(RenderingServer.viewport_get_measured_render_time_cpu(root.get_viewport_rid()))
++		physics.append(Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS)*1000.0)
++		process.append(Performance.get_monitor(Performance.TIME_PROCESS)*1000.0)
++		draws.append(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
++		primitives.append(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
++	var costs: Dictionary = {}
++	for key: String in counters: costs[key+"_ms_per_frame"] = (int(game.get("profile_"+key+"_us"))-int(counters[key]))/1000.0/maxi(1,frames.size())
++	var elapsed_ms: float = (Time.get_ticks_usec()-start)/1000.0
++	var ticks: int = game.sim.state.tick-initial_tick
++	if ticks < elapsed_ms*0.12*0.90: failures += 1
++	return {"elapsed_ms":elapsed_ms,"fps":frames.size()*1000.0/elapsed_ms,"frame_ms":quantiles(frames),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(render_cpu),"physics_cpu_ms":quantiles(physics),"process_cpu_ms":quantiles(process),"draws":quantiles(draws),"primitives":quantiles(primitives),"callback_costs":costs,"ticks":ticks,"laps":game.track_session.completed_laps,"contacts":game.sim.state.collision_count,"speed_kmh":game.sim.state.velocity.length()*3.6,"static_bytes":OS.get_static_memory_usage(),"video_bytes":Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)}
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	RenderingServer.viewport_set_measure_render_time(root.get_viewport_rid(),true)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = load("res://persistence/local_records.gd").new("user://overview/records.json")
++	app.records.settings.music_enabled = false
++	app.library = load("res://persistence/track_library.gd").new("user://overview/tracks")
++	app.cloud_root_override = "user://overview/cloud"
++	app.race_profile_enabled = true
++	root.add_child(app)
++	process_frame.connect(foreground)
++	while not app.startup_complete: await process_frame
++	if app.online.configured: push_error("Offline profiling required"); quit(1); return
++	var cases: Array = [["compact","pine"],["compact","desert"],["compact","winter"],["compact","storm"],["compact","night_city"],["kart","pine"],["super_rally","pine"],["electric","pine"],["forklift","pine"],["hovercraft","pine"]]
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--cases="):
++			cases.clear()
++			for value: String in argument.trim_prefix("--cases=").split(","):
++				var fields: PackedStringArray = value.split(":")
++				if fields.size() == 2: cases.append([fields[0],fields[1]])
++	for entry: Array in cases:
++		var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++		fixture.document.theme = entry[1]
++		var track: NativeTrack = TrackCompiler.compile(fixture.document)
++		track.metadata.cloud_version = "owned-offline-profile"
++		app.records.settings.selected_car = entry[0]
++		VehicleCatalog.selected = entry[0]
++		app.records.settings.camera_mode = "overhead"
++		await app._show_screen("tracks")
++		app.selected_track = track
++		var base_cache: GDScript = load("res://vehicle/modular_car_base.gd")
++		var base_hits_before: int = base_cache.hits
++		var began: int = Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var load_ms: float = (Time.get_ticks_usec()-began)/1000.0
++		if not is_instance_valid(app.game):
++			failures += 1
++			printerr("PROFILE_RACE_NOT_INSTALLED ",entry)
++			continue
++		var game: Node = app.game
++		if game.vehicle_id != entry[0]: push_error("Selected vehicle mismatch"); quit(1); return
++		game.ai_enabled = true
++		game.hitch_diagnostics.persist_enabled = false
++		game.track_session.target_laps = 10000
++		while game.countdown_ticks > 0: await process_frame
++		await sample(2.0)
++		var row: Dictionary = await sample(10.0)
++		row.vehicle = entry[0]; row.theme = entry[1]; row.load_ms = load_ms
++		row.preparation_costs = game.preparation_costs.duplicate(true)
++		row.render_scale = root.scaling_3d_scale; row.msaa = root.msaa_3d
++		row.car_simple = game.car.simple_model
++		row.modular_base_hits_during_load = base_cache.hits-base_hits_before
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_OUTPUT").path_join(str(entry[0])+"-"+str(entry[1])+".png"))
++		rows.append(row)
++		print("OVERVIEW_DRIVING ",JSON.stringify(row))
++		FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"rows":rows,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"engine":Engine.get_version_info().string,"viewport":[root.size.x,root.size.y],"vsync":"disabled","fps_cap":0,"music":false,"network_disabled":not app.online.configured},"  "))
++		app._leave_race()
++		for _i: int in range(5): await process_frame
++	app.queue_free(); app = null
++	for _i: int in range(18): await process_frame
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_overview_editor.gd b/game/tests/profile_overview_editor.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_overview_editor.gd
+@@ -0,0 +1,29 @@
++extends "res://tests/test_editor_t01_t04.gd"
++## Reuse the real editor lifecycle and its original assertions, with fresh output.
++var previous_frame: int = 0
++var intervals: Array[float] = []
++
++func observe() -> void:
++	var now: int = Time.get_ticks_usec()
++	if previous_frame > 0: intervals.append((now-previous_frame)/1000.0)
++	previous_frame = now
++	if is_instance_valid(app):
++		app._publishing_slots_foreground = true
++		if is_instance_valid(app._garage_preloader): app._garage_preloader.foreground = true
++		if is_instance_valid(app.game) and app.game.paused: app.game.toggle_pause()
++
++func show(doc: Dictionary) -> void:
++	var began: int = Time.get_ticks_usec()
++	intervals.clear(); previous_frame = began
++	app.canvas = null; app.document = doc; app.editor_pending_tools.clear(); app.editor_view.clear(); app.history.clear(); app.redo_history.clear()
++	await app._show_screen("create")
++	await settle()
++	record("editor_open",{"pieces":doc.pieces.size(),"objects":doc.objects.size(),"theme":doc.theme,"ready_ms":(Time.get_ticks_usec()-began)/1000.0,"frame":stats(intervals) if not intervals.is_empty() else {}})
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	out = OS.get_environment("BMT_GRAPHICS_OUTPUT")
++	process_frame.connect(observe)
++	await app_loop()
++	record("complete",{"checks":checks,"failures":failures,"static_bytes":OS.get_static_memory_usage(),"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name()})
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_overview_menus.gd b/game/tests/profile_overview_menus.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_overview_menus.gd
+@@ -0,0 +1,10 @@
++extends "res://tests/profile_loading_half.gd"
++## Preserve readiness assertions for both live and adopted preloaded studios.
++func content_ready(page: String) -> bool:
++	if page != "garage": return super.content_ready(page)
++	if is_instance_valid(app._feature_loading) or not is_instance_valid(app._retained_garage): return false
++	var studio: Node = app._retained_garage.showroom
++	if not is_instance_valid(studio) or not studio.showroom_ready: return false
++	if studio.get_script().resource_path == "res://ui/garage_preloaded_studio.gd":
++		return studio.prepared and not studio.warming
++	return super.content_ready(page)
+diff --git a/docs/GAME_PROFILE_2026_11_12.md b/docs/GAME_PROFILE_2026_11_12.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GAME_PROFILE_2026_11_12.md
+@@ -0,0 +1,314 @@
++# Game profiling — 12 November 2026
++
++Measured local debug-engine behavior on the current code snapshot. This is a profiling review; production game code, handling, quality defaults and player saves were not edited.
++
++First-use loading and frame stalls dominate this desktop profile. Final copied-asset results:
++
++| Workload | First use / throughput | Repeat / pacing |
++| --- | --- | --- |
++| Startup | 5.45 s | 4.59 s after process restart |
++| gl / rivalry | 22.83 s first entry | 142 ms repeat |
++| gl / garage | 1.74 s first entry | 365 ms repeat |
++| gl / create | 17.74 s first entry | 709 ms repeat |
++| gl / race loading | 31.8–71.1 s first entry | 0.54–1.00 s repeat |
++| mobile / rivalry | 11.86 s first entry | 120 ms repeat |
++| mobile / garage | 0.97 s first entry | 361 ms repeat |
++| mobile / create | 4.12 s first entry | 575 ms repeat |
++| mobile / race loading | 20.0–32.0 s first entry | 1.03–1.30 s repeat |
++| Vulkan / matched driving | 188–241 FPS | p95 frame 5.18–6.54 ms |
++
++Requirements: PRF01 startup; PRF02 menu loading and navigation; PRF03 race loading and retry; PRF04 real driving frame times; PRF05 track editor; PRF06 reproducibility and limitations.
++
++## Measurement conditions
++
++Windows build 26300; Intel Core i7-11700K, 16 logical CPUs; NVIDIA RTX 3090. Pinned official Godot 4.7.2 (`ed1daf0bf`), 1280×720 native rendered windows positioned outside the desktop. Compatibility uses OpenGL; desktop Mobile uses Vulkan. Processes run sequentially. Private APPDATA/LOCALAPPDATA, explicit empty backend URL, offline race fixtures, Dummy audio driver and music disabled. Driving uses uncapped frame rate, disabled VSync, normal Auto graphics, stock approved simpler car models, real AI simulation, a complete countdown, two seconds of warmup and ten seconds of sampling per case. FPS is measured frame-loop throughput, not a physical-display presentation trace.
++
++Cold means first use in a fresh profiling process/private application profile, with existing project imports and OS/driver caches. It is not a disk-cache purge or first install. Restart startup reuses its private profile. Warm page entries and race re-entries occur in the same process. Raw timing includes rendered completion where the probe supports it; race loading excludes the three-second countdown and the separately recorded track compilation. Menu ready times include navigation settling, which can exceed first draw.
++
++The drive initially had about 345 MiB free after an unsuccessful full-copy attempt. Exploratory code/native libraries were copied while assets were first shared by junction and then NTFS hardlinks; concurrent in-place asset writes remained visible. Later, free space recovered and all 25,378 asset/import/identity files were copied and checked with zero copy-time changes. Final `-final` / `-qualified` runs use private assets and imports, with before/after SHA-256 receipts. Other workspace work was active and its processes were not stopped. These are local debug-engine diagnostics, not an uncontended release benchmark or Android qualification.
++
++## Startup
++
++| Run | Engine to drawn menu (s) | App graph load (ms) | App initialization (ms) | Offline |
++| --- | --- | --- | --- | --- |
++| startup-cold | 5.184 | 2016.1 | 173.0 | True |
++| startup-isolated-cold | 6.513 | 2497.1 | 205.0 | True |
++| startup-isolated-repeat | 5.508 | 2600.7 | 260.2 | True |
++| startup-final-cold | 6.826 | 2488.4 | 237.9 | True |
++| startup-final-repeat | 5.337 | 2391.7 | 193.5 | True |
++| startup-frozen-cold | 5.451 | 2065.0 | 184.2 | True |
++| startup-frozen-repeat | 4.592 | 2046.9 | 192.7 | True |
++
++The account menu is the ordinary unsigned-in startup destination. These startup probes deliberately avoid parsing the heavy game graph before loading App. The first live run and initial shared-asset snapshot runs have concurrency changes in their receipts; retain them as observations, not stable-build comparisons.
++
++## Menu loading
++
++### gl — 39 checks, 0 failures
++
++| Page | First ready (s) | Repeat ready (ms) | First worst frame (ms) | Repeat worst frame (ms) |
++| --- | --- | --- | --- | --- |
++| rivalry | 22.830 | 142.2 | 13080.6 | 56.8 |
++| daily | 0.611 | 90.9 | 592.6 | 80.6 |
++| tracks | 0.946 | 82.7 | 905.1 | 76.3 |
++| challenges | 1.222 | 124.2 | 716.0 | 118.3 |
++| biome | 0.310 | 396.7 | 48.6 | 41.1 |
++| drafts | 1.410 | 51.8 | 1316.6 | 42.2 |
++| profile | 2.836 | 57.6 | 2295.3 | 48.1 |
++| settings | 3.470 | 74.2 | 1452.2 | 62.3 |
++| store | 0.308 | 456.4 | 56.7 | 87.8 |
++| garage | 1.745 | 365.0 | 953.9 | 59.4 |
++| create | 17.742 | 709.3 | 8757.4 | 106.7 |
++
++First feature resource loads (ms): challenges.gd 567.4; creator.gd 64.4; daily.gd 460.7; editor.gd 1184.0; garage.gd 836.4; rivalry.gd 2365.7; settings.gd 473.0; tracks.gd 763.4.
++
++### mobile — 39 checks, 0 failures
++
++| Page | First ready (s) | Repeat ready (ms) | First worst frame (ms) | Repeat worst frame (ms) |
++| --- | --- | --- | --- | --- |
++| rivalry | 11.856 | 120.3 | 4076.3 | 50.2 |
++| daily | 0.325 | 69.5 | 314.2 | 64.5 |
++| tracks | 0.588 | 62.8 | 519.9 | 60.2 |
++| challenges | 0.559 | 108.9 | 537.9 | 106.4 |
++| biome | 0.309 | 392.1 | 40.3 | 39.0 |
++| drafts | 1.140 | 63.4 | 1056.6 | 52.3 |
++| profile | 0.212 | 38.1 | 176.7 | 35.1 |
++| settings | 0.391 | 56.8 | 370.6 | 53.8 |
++| store | 0.273 | 423.2 | 39.8 | 88.4 |
++| garage | 0.968 | 361.1 | 746.8 | 46.5 |
++| create | 4.123 | 575.4 | 2627.9 | 93.1 |
++
++First feature resource loads (ms): challenges.gd 408.4; creator.gd 66.0; daily.gd 254.7; editor.gd 955.2; garage.gd 652.4; rivalry.gd 2387.1; settings.gd 303.5; tracks.gd 427.7.
++
++### Actual navigation with saved custom liveries
++
++This separate scenario invokes `_navigate_menu_page`, including neighbor promotion and background preparation, and samples 80 frames per action. Its preloaded App graph means it is not another startup benchmark.
++
++| Destination | Handler (ms) | p95 frame (ms) | Worst frame (ms) | Frames >50 ms |
++| --- | --- | --- | --- | --- |
++| tracks | 477.92 | 1295.76 | 3656.95 | 17 |
++| biome | 1.41 | 8.48 | 10.67 | 0 |
++| garage | 3355.04 | 20.11 | 47.02 | 0 |
++| tracks | 1.40 | 25.10 | 2691.59 | 3 |
++| store | 23.01 | 30.76 | 2892.92 | 3 |
++| biome | 1.04 | 26.04 | 327.71 | 2 |
++| garage | 5.37 | 1139.14 | 1237.93 | 25 |
++| settings | 407.18 | 21.53 | 137.99 | 2 |
++| tracks | 3.96 | 8.41 | 33.84 | 0 |
++| garage | 1.65 | 8.41 | 13.47 | 0 |
++
++## Race loading
++
++The Star spline circuit is the larger loading workload; Grass, Desert and Winter each have a first load and same-process re-entry. The original installation, full countdown, five-lap rules, cover-release and retry-reuse assertions remain in the probe. This is offline preparation; network tickets, downloads and verification latency are excluded.
++
++### gl — 53 checks, 0 failures
++
++| Biome | Entry | Load (s) | Worst frame (ms) | Retry (ms) | Compile before entry (ms) |
++| --- | --- | --- | --- | --- | --- |
++| pine | first | 71.060 | 8939.6 | 18.3 | 361.8 |
++| pine | repeat | 0.541 | 163.3 | 19.4 | 361.8 |
++| desert | first | 31.817 | 2338.0 | 17.1 | 380.5 |
++| desert | repeat | 0.998 | 172.3 | 18.7 | 380.5 |
++| winter | first | 38.545 | 4991.2 | 18.8 | 782.8 |
++| winter | repeat | 0.810 | 217.7 | 16.7 | 782.8 |
++
++| Biome | Cycle | Road preparation (ms) | Game construction (ms) | Covered world graphics (ms) | Effects/final finish (ms) |
++| --- | --- | --- | --- | --- | --- |
++| pine | 0 | 6371.9 | 9609.4 | 41601.7 | 11815.6 |
++| pine | 1 | 0.0 | 172.2 | 62.9 | 241.3 |
++| desert | 0 | 10688.9 | 9218.3 | 11740.7 | 103.9 |
++| desert | 1 | 0.0 | 592.2 | 86.2 | 255.6 |
++| winter | 0 | 4690.3 | 9932.6 | 17039.6 | 6807.2 |
++| winter | 1 | 0.0 | 322.9 | 71.5 | 350.6 |
++
++Phase hooks are timestamps in an in-memory copy of the shipping controller. They do not modify the production source. Covered graphics and final effects include rendering waits and possible compilation; they are not pure CPU timings.
++
++### mobile — 53 checks, 0 failures
++
++| Biome | Entry | Load (s) | Worst frame (ms) | Retry (ms) | Compile before entry (ms) |
++| --- | --- | --- | --- | --- | --- |
++| pine | first | 32.004 | 4247.2 | 18.6 | 387.6 |
++| pine | repeat | 1.037 | 382.5 | 22.7 | 387.6 |
++| desert | first | 27.975 | 3524.9 | 21.7 | 398.4 |
++| desert | repeat | 1.300 | 245.5 | 20.6 | 398.4 |
++| winter | first | 20.032 | 3111.7 | 22.5 | 842.8 |
++| winter | repeat | 1.030 | 178.1 | 20.2 | 842.8 |
++
++| Biome | Cycle | Road preparation (ms) | Game construction (ms) | Covered world graphics (ms) | Effects/final finish (ms) |
++| --- | --- | --- | --- | --- | --- |
++| pine | 0 | 7032.6 | 17510.8 | 1734.1 | 4056.7 |
++| pine | 1 | 0.0 | 773.6 | 53.2 | 148.8 |
++| desert | 0 | 12194.1 | 11715.4 | 3854.1 | 150.5 |
++| desert | 1 | 0.0 | 1003.9 | 80.8 | 144.4 |
++| winter | 0 | 5042.7 | 11053.7 | 3552.8 | 311.2 |
++| winter | 1 | 0.0 | 737.7 | 66.1 | 172.8 |
++
++Phase hooks are timestamps in an in-memory copy of the shipping controller. They do not modify the production source. Covered graphics and final effects include rendering waits and possible compilation; they are not pure CPU timings.
++
++## Driving FPS and frame pacing
++
++The verified oval is a separate, smaller gameplay workload. Every biome uses Rally; the other five cars are sampled on Grass. These broad matrices are exploratory runs that overlapped asset writes and disk housekeeping; the three final cache-matched driving checks appear below. Renderer ranges are observations, not a controlled renderer speedup comparison. The short samples cover opening driving segments, not full laps or all high-speed/contact/effect cases. Per-frame script counter costs are averages across rendered frames and include AI driving; CPU, render and GPU times overlap and must not be added together. The existing broad car/presentation timer spans several nested audio/weathering/contact tasks, so those counter values also overlap. A tick-progress guard requires at least 90% of elapsed-time simulation progress; rows with failures are not qualified as real-time driving. No FPS is inferred from headless execution.
++
++### gl — 0 progress failures
++
++| Car / biome | FPS | p50 / p95 / p99 (ms) | Worst (ms) | Frames >33.3 ms | GPU p95 (ms) | Simulated ticks |
++| --- | --- | --- | --- | --- | --- | --- |
++| compact / pine | 160.1 | 6.32 / 7.75 / 8.72 | 10.02 | 0 | 2.43 | 1201 |
++| compact / desert | 171.9 | 5.53 / 8.93 / 11.21 | 16.77 | 0 | 1.95 | 1200 |
++| compact / winter | 176.0 | 5.63 / 7.55 / 8.30 | 10.27 | 0 | 2.21 | 1201 |
++| compact / storm | 126.5 | 7.90 / 9.75 / 10.66 | 12.74 | 0 | 2.90 | 1199 |
++| compact / night_city | 171.0 | 5.81 / 7.53 / 8.30 | 9.41 | 0 | 2.36 | 1200 |
++| kart / pine | 227.2 | 4.29 / 6.04 / 7.15 | 8.89 | 0 | 1.78 | 1201 |
++| super_rally / pine | 200.0 | 4.91 / 6.72 / 7.36 | 8.96 | 0 | 1.93 | 1200 |
++| electric / pine | 167.1 | 6.01 / 7.86 / 9.07 | 11.51 | 0 | 2.24 | 1200 |
++| forklift / pine | 191.2 | 5.17 / 7.26 / 8.30 | 10.48 | 0 | 2.04 | 1201 |
++| hovercraft / pine | 263.4 | 3.67 / 5.42 / 6.00 | 8.14 | 0 | 1.75 | 1200 |
++
++| Car / biome | Physics callback ms/frame | Presentation callback ms/frame | Simulation ms/frame | AI ms/frame | Godot static MiB | Reported video MiB |
++| --- | --- | --- | --- | --- | --- | --- |
++| compact / pine | 0.792 | 1.069 | 0.423 | 0.037 | 216.9 | 282.7 |
++| compact / desert | 0.693 | 1.009 | 0.353 | 0.031 | 213.3 | 289.8 |
++| compact / winter | 0.722 | 1.084 | 0.376 | 0.028 | 235.1 | 293.2 |
++| compact / storm | 0.958 | 1.352 | 0.493 | 0.045 | 233.9 | 295.8 |
++| compact / night_city | 0.648 | 0.901 | 0.343 | 0.032 | 214.2 | 300.9 |
++| kart / pine | 0.425 | 0.816 | 0.223 | 0.020 | 216.6 | 301.7 |
++| super_rally / pine | 0.542 | 0.874 | 0.288 | 0.026 | 217.6 | 303.5 |
++| electric / pine | 0.751 | 1.342 | 0.419 | 0.036 | 219.2 | 303.9 |
++| forklift / pine | 0.574 | 0.922 | 0.296 | 0.028 | 222.7 | 305.7 |
++| hovercraft / pine | 0.265 | 0.756 | 0.152 | 0.017 | 222.8 | 305.4 |
++
++Static allocation and video-memory monitors are not process RSS or Android PSS. Ten-second samples do not measure long-run memory drift, battery use, thermal throttling or all track/effect combinations. Native gameplay screenshots accompany the rows.
++
++### mobile — 0 progress failures
++
++| Car / biome | FPS | p50 / p95 / p99 (ms) | Worst (ms) | Frames >33.3 ms | GPU p95 (ms) | Simulated ticks |
++| --- | --- | --- | --- | --- | --- | --- |
++| compact / pine | 454.1 | 2.11 / 3.30 / 3.91 | 5.14 | 0 | 0.38 | 1201 |
++| compact / desert | 480.0 | 2.00 / 3.13 / 3.75 | 5.09 | 0 | 0.37 | 1200 |
++| compact / winter | 369.4 | 2.59 / 4.04 / 4.82 | 17.98 | 0 | 0.42 | 1200 |
++| compact / storm | 301.2 | 3.19 / 4.80 / 5.61 | 8.91 | 0 | 1.08 | 1200 |
++| compact / night_city | 439.3 | 2.15 / 3.55 / 4.26 | 20.86 | 0 | 0.40 | 1200 |
++| kart / pine | 555.1 | 1.70 / 2.68 / 3.27 | 4.71 | 0 | 0.33 | 1199 |
++| super_rally / pine | 436.7 | 2.16 / 3.69 / 4.46 | 8.33 | 0 | 0.42 | 1200 |
++| electric / pine | 381.0 | 2.49 / 4.04 / 4.73 | 5.84 | 0 | 0.44 | 1201 |
++| forklift / pine | 485.9 | 1.94 / 3.14 / 3.80 | 6.15 | 0 | 0.33 | 1200 |
++| hovercraft / pine | 416.9 | 2.29 / 3.64 / 4.22 | 5.79 | 0 | 0.42 | 1202 |
++
++| Car / biome | Physics callback ms/frame | Presentation callback ms/frame | Simulation ms/frame | AI ms/frame | Godot static MiB | Reported video MiB |
++| --- | --- | --- | --- | --- | --- | --- |
++| compact / pine | 0.194 | 0.666 | 0.104 | 0.010 | 245.5 | 260.0 |
++| compact / desert | 0.179 | 0.637 | 0.090 | 0.009 | 259.5 | 268.4 |
++| compact / winter | 0.283 | 0.809 | 0.147 | 0.012 | 286.0 | 278.3 |
++| compact / storm | 0.300 | 0.888 | 0.156 | 0.015 | 300.0 | 281.7 |
++| compact / night_city | 0.200 | 0.651 | 0.106 | 0.010 | 284.2 | 285.6 |
++| kart / pine | 0.137 | 0.579 | 0.071 | 0.007 | 287.1 | 286.3 |
++| super_rally / pine | 0.209 | 0.675 | 0.111 | 0.010 | 288.1 | 288.3 |
++| electric / pine | 0.257 | 0.973 | 0.142 | 0.013 | 290.3 | 290.0 |
++| forklift / pine | 0.168 | 0.634 | 0.085 | 0.009 | 294.0 | 290.5 |
++| hovercraft / pine | 0.174 | 0.749 | 0.100 | 0.012 | 294.4 | 291.7 |
++
++Static allocation and video-memory monitors are not process RSS or Android PSS. Ten-second samples do not measure long-run memory drift, battery use, thermal throttling or all track/effect combinations. Native gameplay screenshots accompany the rows.
++
++## Track editor
++
++### gl — 60 checks, 0 failures
++
++| Operation | Time (ms) | Worst observed frame/event-to-frame (ms) |
++| --- | --- | --- |
++| open pine 96 roads / 0 objects | 25124.2 | 6867.6 |
++| 96_width_settle | 4562.6 | — |
++| drag_width_preview_120 handler p95 | 0.83 | 41.1 |
++| practice_enter_0 | 37589.6 | — |
++| practice_return_0 | 20.2 | — |
++| practice_enter_1 | 3939.2 | — |
++| practice_return_1 | 21.2 | — |
++| open pine 96 roads / 95 objects | 8229.2 | 1611.8 |
++| open winter 2 roads / 0 objects | 15458.1 | 8338.0 |
++
++### mobile — 60 checks, 0 failures
++
++| Operation | Time (ms) | Worst observed frame/event-to-frame (ms) |
++| --- | --- | --- |
++| open pine 96 roads / 0 objects | 14244.7 | 3779.6 |
++| 96_width_settle | 5864.7 | — |
++| drag_width_preview_120 handler p95 | 0.86 | 42.8 |
++| practice_enter_0 | 14887.2 | — |
++| practice_return_0 | 17.9 | — |
++| practice_enter_1 | 3310.1 | — |
++| practice_return_1 | 20.2 | — |
++| open pine 96 roads / 95 objects | 7633.8 | 329.1 |
++| open winter 2 roads / 0 objects | 5423.7 | 3124.2 |
++
++The editor workload includes a 96-road circuit, width editing, 120 synthetic drag updates, undo/redo, two practice entries/returns, 95 authored sheds, overview/detail rendering and Winter surface changes. It retains the original scene-identity, authored-data, history, ownership and cancellation assertions. Synthetic event-to-frame time is not physical touch latency. This refers to the game's track editor; the Godot IDE was not profiled.
++
++## Prepared-asset qualification and corrected measurements
++
++Preliminary runs overlapped in-place asset rebuilds. A live-versus-snapshot source comparison found only the generated build identity and an offline baking test had changed. The old generated cache revisions could reject newly rebuilt prepared scenes even though authored runtime geometry sources matched. Thus the early Vulkan repeat-car/practice times are observations of a stale development cache, not evidence of a general renderer regression. The initial identity and the snapshot-only refresh receipt are preserved. Once space became available, all runtime assets were detached from hardlinks into private copies, imported resources were copied and their verified junction was removed, and snapshot identity/project version were refreshed together. The final loading/menu/editor passes use that complete private copy. No live source or asset was changed by these adaptations.
++
++| Car | Prepared key matches | Authored source hashes match | Different source paths |
++| --- | --- | --- | --- |
++| compact | True | True |  |
++| kart | True | True |  |
++| forklift | True | True |  |
++| electric | True | True |  |
++| hovercraft | True | True |  |
++| super_rally | True | True |  |
++
++Cache-matched driving cross-check (same uncapped 720p workload):
++
++| Car / biome | FPS | p95 frame (ms) | Modular base cache hits during load | Progress failures |
++| --- | --- | --- | --- | --- |
++| compact / pine | 240.9 | 5.18 | 1 | 0 |
++| compact / winter | 188.0 | 6.54 | 1 | 0 |
++| kart / pine | 225.1 | 5.70 | 1 | 0 |
++
++## Findings and next work
++
++First-use work and frame stalls should be investigated before assuming steady driving FPS is the primary problem. The measurements separate script/dependency loading, construction, covered rendering and final effects. Rivalry's feature graph alone takes seconds, while its much longer first frame indicates additional first-render cost. Garage spends many seconds reaching a prepared showroom even after its feature script has loaded. Race re-entry and retry already benefit strongly from retained state. Warm navigation still has isolated frames above a 60 Hz budget; the actual-navigation scenario distinguishes retained-neighbor behavior from direct page construction. These are measured priorities and source-based hypotheses, not implemented optimizations.
++
++## Validation, retained failures and limits
++
++The initial full snapshot failed with no disk space; only that task-owned incomplete copy was removed. Hardware WMI reads were denied; CPU identification came from the read-only Windows processor registry and the renderer identified the GPU. The initial gameplay fixture omitted the offline fixture's required published-track marker, so no game was installed and that run exited 1. The initial editor fixture inherited a synchronous page-open helper that no longer waited for lazy feature loading; it logged script errors and was rejected. The dedicated probe adapters were corrected without changing runtime code or weakening the original assertions. Initial failed receipts remain alongside corrected runs.
++
++All native runs retain the sandbox's root-certificate-store diagnostic. Online configuration was explicitly disabled, so the report does not claim TLS or online-path validation. Other shutdown/resource diagnostics are listed verbatim in each receipt and must not be read as clean exits merely because a measurement file exists. Source/asset guard changes cause a nonzero runner status even when functional assertions pass. Initial menu/race runs overlap external asset writes; the full receipts identify every changed path. The report does not claim one immutable binary build or a whole-tree release gate.
++
++The first frozen Vulkan menu pass exposed another stale profiler assumption: an adopted `garage_preloaded_studio.gd` has `prepared`/`warming` fields, rather than the cooperative showroom's `preparing` field. That pass logged script errors and was rejected. The dedicated menu adapter retains the original cover/readiness checks for both studio types. Sandboxed termination of that owned failed test was denied; automatic approval review allowed termination of only its recorded process tree, and cleanup succeeded. Later runner code stops the sequence if owned-process cleanup is denied.
++
++| Run | Engine exit | Changed files | Distinct diagnostics | Wall seconds |
++| --- | --- | --- | --- | --- |
++| assets-final | 0 | 1 | 1 | 14.906 |
++| assets-qualified | 0 | 0 | 1 | 12.359 |
++| driving-gl | 1 | 1 | 3 | 14.922 |
++| driving-gl-fixed | 0 | 598 | 1 | 324.39 |
++| driving-mobile | 0 | 322 | 1 | 220.86 |
++| driving-mobile-qualified | 0 | 0 | 1 | 112.015 |
++| editor-gl | 125 | 2 | 4 | 18.203 |
++| editor-gl-fixed | 0 | 5 | 1 | 138.141 |
++| editor-mobile | 0 | 38 | 1 | 103.453 |
++| editor-mobile-final | 0 | 0 | 1 | 94.875 |
++| menus-gl | 0 | 114 | 1 | 70.344 |
++| menus-gl-final | 0 | 0 | 1 | 98.062 |
++| menus-mobile | 0 | 5 | 1 | 56.625 |
++| menus-mobile-final | 125 | 0 | 3 | 225.922 |
++| menus-mobile-final-fixed | 0 | 0 | 1 | 39.859 |
++| navigation-gl | 0 | 14 | 1 | 70.485 |
++| races-gl | 0 | 27 | 1 | 111.25 |
++| races-gl-final | 0 | 0 | 1 | 175.75 |
++| races-mobile | 0 | 26 | 1 | 155.343 |
++| races-mobile-final | 0 | 0 | 1 | 133.032 |
++| startup-cold | 0 | 2 | 1 | 12.203 |
++| startup-final-cold | 0 | 1 | 1 | 17.172 |
++| startup-final-repeat | 0 | 1 | 1 | 14.515 |
++| startup-frozen-cold | 0 | 0 | 1 | 12.687 |
++| startup-frozen-repeat | 0 | 0 | 1 | 12.0 |
++| startup-isolated-cold | 0 | 49 | 1 | 17.156 |
++| startup-isolated-repeat | 0 | 45 | 1 | 15.406 |
++
++No physical device was queried or tested. No APK/export, deployment, backend request, owner save/process change, main-index write or physics change was performed. Remaining qualification: uncontended stable-asset repetitions with more free disk space, packed release measurements, signed-in data/network cases, representative saved/fitted cars and large tracks, physical-device frame-time/thermal/memory runs and owner interaction review.
++
++## Files and reproduction
++
++New source: `scripts/prepare_game_profile.py`, `scripts/profile_game_overview.py`, `scripts/profile_game_suite.py`, `scripts/summarize_game_profile.py`, `game/tests/profile_overview_driving.gd`, and `game/tests/profile_overview_editor.gd`. The runner invokes `scripts/run_no_crash_dialog.py` for automated Godot process trees, pins `godot-version.txt`, bounds each process, retains raw logs/commands/hashes, and cleans only its completed private shader cache. Existing production scripts and existing regression fixtures were not edited.
++
++Additional source: `scripts/freeze_game_profile_assets.py`, `scripts/profile_game_final_suite.py`, `game/tests/profile_overview_assets.gd` and `game/tests/profile_overview_menus.gd`. Disk-pressure housekeeping is recorded in `maintenance.json`; only task-owned copied files, evidence and private shader caches were compressed/cleaned. That housekeeping and external writers overlapped exploratory samples and are additional reasons not to treat the exploratory renderer comparison as uncontended. Final cache-matched passes are labeled with `-final` or `-qualified`; earlier raw results remain available.
++
++Raw results and exact commands: [evidence directory](evidence/game-profile-2026-11-12/), especially `*-receipt.json`, `*-process.json`, `*-sources.json`, `*-metrics.json`, native capture folders, `environment.json`, `snapshot-manifest.json` and `frozen-assets.json`. The combined machine-readable result is [summary.json](evidence/game-profile-2026-11-12/summary.json). The task's new source/report delta is reviewable in [source-only.patch](evidence/game-profile-2026-11-12/source-only.patch), with hashes and reverse-apply validation in `source-checkpoint.json`. Commands actually executed are listed in the receipts, including any `--themes`, `--cycles`, `--renderer`, profile reuse and navigation-output arguments. Re-run one probe through `python scripts/profile_game_overview.py NAME res://tests/PROBE.gd --renderer gl_compatibility`; use `mobile` for desktop Vulkan. Startup pairs must share `--profile NAME`. Prepare a fresh verified snapshot before reproduction; the retained snapshot contains the measured runtime sources.

@@ -236,4 +236,4 @@ def test_operator_queue_counts_explicit_publication_work_and_oldest_age(product,
     assert health['queue_depth']==health['pending_publications']==2 and health['pending_races']==0
     assert health['oldest_age_seconds']==250 and health['estimated_wait_seconds'] is None
     overview=client.get('/v1/admin/overview',headers=headers).json()
-    assert overview['publications']=={'pending':2,'failed':1,'failed_count_capped':False}
+    assert overview['publications']=={'pending':2,'failed':1,'failed_count_capped':False,'pending_count_capped':False}

@@ -34,8 +34,10 @@ def aborting(app):
     return bool(control and control.abort.is_set())
 
 
-def run_worker(app, process_job, *, once=False, control=None, install_signals=True, idle_seconds=1.0):
-    if not 0.1 <= idle_seconds <= 60:
+def run_worker(app, process_job, *, once=False, control=None, install_signals=True, idle_seconds=1.0,
+               max_idle_seconds=None):
+    max_idle_seconds = idle_seconds if max_idle_seconds is None else max_idle_seconds
+    if not 0.1 <= idle_seconds <= max_idle_seconds <= 60:
         raise ValueError("Invalid bounded worker idle interval")
     control = control or WorkerControl()
     app.state.worker_control = control
@@ -56,6 +58,7 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
             app.state.verifier.request_stop()
 
     def work():
+        idle_wait = idle_seconds
         try:
             while not stopping(app):
                 if signals is not None:
@@ -75,7 +78,15 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
                     retire = getattr(app.state.verifier, "retire_idle", None)
                     if retire is not None:
                         retire()
-                    (signals.worker if signals is not None else control.stop).wait(idle_seconds)
+                    # Longer competition waits require a working listener.
+                    # Publication/small-pool and lost-listener fallbacks remain
+                    # bounded to one second without an extra pool connection.
+                    ceiling = max_idle_seconds if signals is not None and signals.listening else min(max_idle_seconds, 1.0)
+                    wait = min(idle_wait, ceiling)
+                    hinted = (signals.worker if signals is not None else control.stop).wait(wait)
+                    idle_wait = idle_seconds if hinted else min(ceiling, wait * 2)
+                else:
+                    idle_wait = idle_seconds
         except BaseException as error:  # noqa: BLE001 - transport fatal job-thread errors to the supervisor
             errors.append(error)
         finally:

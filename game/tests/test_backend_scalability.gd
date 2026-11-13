@@ -48,7 +48,7 @@ func run() -> void:
 	before = frames_seen
 	check(await cloud.queue_run_async({"ticket_id":"large-fixture"},large),"large outbox atomically persists")
 	check(frames_seen > before+1,"outbox hash/JSON/file writes yield rendering frames")
-	var jobs: Array = cloud.upload_jobs()
+	var jobs: Array = (await cloud.upload_history())
 	check(jobs.size() == 1,"durable metadata names one outbox job")
 	var restored: Variant = await client._background(Cloud._load_replay.bind(cloud.outbox_path().get_base_dir().path_join("runs").path_join(jobs[0].replay),jobs[0].replay_hash))
 	check(restored is Dictionary and restored.has("frames") and restored.frames.size() == large.size(),"background read validates the full durable replay hash")

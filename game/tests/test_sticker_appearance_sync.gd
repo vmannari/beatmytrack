@@ -86,10 +86,10 @@ func run() -> void:
 	var writes: int = fake.puts
 	await sb.refresh()
 	check(fake.puts == writes,"clean fresh device never uploads defaults")
-	edit(b,"pickup","123456")
+	edit(b,"forklift","123456")
 	await sb.refresh()
 	await sa.refresh()
-	check(State.car(a.settings,"pickup").livery.colors.body == "123456","running first device downloads edits")
+	check(State.car(a.settings,"forklift").livery.colors.body == "123456","running first device downloads edits")
 	# Independent cars are retained when both devices edit offline.
 	edit(a,"compact","abcdef")
 	edit(b,"kart","fedcba")
@@ -98,11 +98,11 @@ func run() -> void:
 	await sb.refresh()
 	check(State.car(b.settings,"compact").livery.colors.body == "abcdef" and State.car(a.settings,"kart").livery.colors.body == "fedcba","independent car edits merge")
 	# The older offline car cannot overwrite a newer accepted online car.
-	edit(a,"pickup","111111")
-	edit(b,"pickup","222222")
+	edit(a,"forklift","111111")
+	edit(b,"forklift","222222")
 	await sb.refresh()
 	await sa.refresh()
-	check(State.car(a.settings,"pickup").livery.colors.body == "222222","same-car conflict retains accepted online value")
+	check(State.car(a.settings,"forklift").livery.colors.body == "222222","same-car conflict retains accepted online value")
 	fake.available = false
 	edit(a,"hovercraft","333333")
 	await sa.refresh()

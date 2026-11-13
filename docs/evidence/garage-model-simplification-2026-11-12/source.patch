@@ -1,0 +1,338 @@
+diff --git a/game/tests/bake_garage_architecture.gd b/game/tests/bake_garage_architecture.gd
+index 472bcc10b..23bab1695 100644
+--- a/game/tests/bake_garage_architecture.gd
++++ b/game/tests/bake_garage_architecture.gd
+@@ -3,11 +3,14 @@ extends SceneTree
+ const SOURCES: Array[String]=[
+ 	"ui/garage_environment.gd","ui/garage_details.gd","ui/garage_drain.gd",
+ 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
++	"ui/garage_workshop.gd","ui/garage_plant.gd",
++	"ui/garage_plant_leaf.gdshader","ui/garage_plant_ceramic.gdshader",
+ 	"ui/garage_timber.gdshader","ui/garage_audio_wood.gdshader","ui/garage_vinyl.gdshader",
+ 	"ui/garage_audio_lid.gdshader","ui/garage_display_backing.gdshader",
+ 	"ui/garage_display_stone.gdshader","ui/garage_surface_finish.gdshader",
+ 	"soundtrack/record_library.gd",
+ 	"tests/support/garage_mesh_lods.gd",
++	"tests/support/car_refinement_lods.gd","vehicle/car_mesh_lods.gd",
+ ]
+ func _initialize() -> void: run.call_deferred()
+ func run() -> void:
+diff --git a/game/ui/garage_environment.gd b/game/ui/garage_environment.gd
+index 7695cefb3..463585b46 100644
+--- a/game/ui/garage_environment.gd
++++ b/game/ui/garage_environment.gd
+@@ -7,6 +7,7 @@ const ROOF_CUTAWAY_HEIGHT: float = 4.95
+ static var surfaces: Dictionary = {}
+ static var architecture_scene: PackedScene
+ static var cabinet_meshes: Dictionary = {}
++static var pedestal_scene: PackedScene
+ const PREPARED_ARCHITECTURE: String = "res://assets/garage/workshop_v1.scn"
+ 
+ static func deck_finish() -> ShaderMaterial:
+@@ -44,6 +45,8 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float,
+ 	mesh.bottom_radius = radius
+ 	mesh.height = height
+ 	mesh.radial_segments = 96
++	# The side is straight: intermediate height rings add no shape or shading.
++	mesh.rings = 0
+ 	node.mesh = mesh
+ 	node.position = at
+ 	node.material_override = material
+@@ -175,6 +178,32 @@ static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = f
+ 	return environment
+ 
+ static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
++	var stage: Node3D
++	if pedestal_scene != null:
++		stage = pedestal_scene.instantiate()
++		world.add_child(stage)
++	else:
++		stage = _build_pedestal_shell(world)
++		_set_owner(stage, stage)
++		pedestal_scene = PackedScene.new()
++		if pedestal_scene.pack(stage) != OK:
++			pedestal_scene = null
++		else:
++			# Keep the cached material neutral: the first live reflection must
++			# not bind its viewport texture into the shared scene template.
++			stage.free()
++			stage = pedestal_scene.instantiate()
++			world.add_child(stage)
++	car.reparent(stage)
++	car.position.y = DECK_HEIGHT
++	ShowroomStudio._studio_glass(car, {})
++	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
++	for wheel: Vector3 in car.wheel_rest_positions:
++		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
++	ShowroomStudio._contact(stage, Vector3(0, 0.002, 0), Vector2.ONE * (DECK_RADIUS * 2.2), 0.52)
++	return stage
++
++static func _build_pedestal_shell(world: Node3D) -> Node3D:
+ 	var inset: Material = surfaces.inset
+ 	var steel: Material = surfaces.steel
+ 	var edges: Material = surfaces.edges
+@@ -184,7 +213,10 @@ static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
+ 	var radius: float = DECK_RADIUS
+ 	cylinder(stage, Vector3(0, 0.035, 0), radius + 0.13, 0.07, inset)
+ 	cylinder(stage, Vector3(0, 0.11, 0), radius, 0.17, steel)
+-	cylinder(stage, Vector3(0, 0.205, 0), radius - 0.055, 0.03, deck_finish())
++	var deck: ShaderMaterial = deck_finish()
++	# Reflection textures belong to each showroom, even when meshes are shared.
++	deck.resource_local_to_scene = true
++	cylinder(stage, Vector3(0, 0.205, 0), radius - 0.055, 0.03, deck)
+ 	ring(stage, radius + 0.018, 0.085, 0.014, surface("rimlight", "d8ba64", 0.1, 0.65, 0.45))
+ 	ring(stage, radius - 0.04, 0.216, 0.015, edges)
+ 	for index: int in range(24):
+@@ -192,13 +224,6 @@ static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
+ 		var mark := box(stage, Vector3(sin(angle) * (radius - 0.2), 0.222, cos(angle) * (radius - 0.2)), Vector3(0.035, 0.003, 0.11), inset)
+ 		mark.rotation.y = angle
+ 	_batch(stage)
+-	car.reparent(stage)
+-	car.position.y = DECK_HEIGHT
+-	ShowroomStudio._studio_glass(car, {})
+-	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
+-	for wheel: Vector3 in car.wheel_rest_positions:
+-		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
+-	ShowroomStudio._contact(stage, Vector3(0, 0.002, 0), Vector2.ONE * (radius * 2.2), 0.52)
+ 	return stage
+ 
+ static func _workbench(root: Node3D, position: Vector3) -> void:
+diff --git a/game/ui/garage_furnishings.gd b/game/ui/garage_furnishings.gd
+index c48c0ddd1..ab522ddb2 100644
+--- a/game/ui/garage_furnishings.gd
++++ b/game/ui/garage_furnishings.gd
+@@ -35,6 +35,8 @@ static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material
+ 		shape.bottom_radius = radius
+ 		shape.height = length
+ 		shape.radial_segments = sides
++		# Preserve every radial sample; a straight shaft needs only its end rings.
++		shape.rings = 0
+ 		meshes[key] = shape
+ 	var node: MeshInstance3D = mesh(parent,(a+b)*0.5,meshes[key],material)
+ 	node.quaternion = Quaternion(Vector3.UP,(b-a).normalized())
+diff --git a/game/tests/test_garage_model_simplification.gd b/game/tests/test_garage_model_simplification.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_model_simplification.gd
+@@ -0,0 +1,221 @@
++extends SceneTree
++## Offline component review: real cars, room, reflections and close prop views.
++var output: String = "res://../build/garage-model-review-2026-11-12"
++var phase: String = "final"
++var checks: int = 0
++var failures: int = 0
++var report: Dictionary = {}
++var reference_room: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func stats(holder: Node) -> Dictionary:
++	var result: Dictionary = {"meshes":0,"vertices":0,"triangles":0,"bytes":0,"lod_bytes":0}
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		if part.mesh == null or part.get_parent() is CarVisual: continue
++		# A pedestal's car is measured separately from its immutable shell.
++		var ancestor: Node = part
++		var is_car: bool = false
++		while ancestor != holder:
++			if ancestor is CarVisual: is_car = true
++			ancestor = ancestor.get_parent()
++		if is_car: continue
++		result.meshes += 1
++		for surface: int in range(part.mesh.get_surface_count()):
++			var arrays: Array = part.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			result.vertices += vertices.size()
++			result.triangles += (indices.size() if not indices.is_empty() else vertices.size())/3
++		if part.mesh is ArrayMesh:
++			result.bytes += preload("res://tests/support/car_model_buffers.gd").payload(part.mesh)
++			for packet: Dictionary in part.mesh.get("_surfaces"):
++				var lods: Array = packet.get("lods",[])
++				for index: int in range(1,lods.size(),2): result.lod_bytes += lods[index].size()
++	return result
++
++func frames(count: int = 12) -> void:
++	for i: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(view: CarShowroom, label: String) -> void:
++	view.invalidate_render()
++	await frames()
++	if DisplayServer.get_name() == "headless": return
++	check(view.showroom_viewport.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++	for index: int in range(2):
++		check(view.reflections.views[index].get_texture().get_image().save_png(output.path_join(label+"-reflection"+str(index)+".png")) == OK,"capture reflection "+label)
++
++func pedestal_reuse(view: CarShowroom) -> void:
++	var car := CarVisual.new()
++	var world := Node3D.new()
++	root.add_child(world)
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	var first: Node3D = GarageEnvironment.build_pedestal(world,car)
++	car.reparent(world)
++	var second: Node3D = GarageEnvironment.build_pedestal(world,car)
++	var a: Array[Node] = first.get_children().filter(func(n: Node) -> bool: return n is MeshInstance3D and (n.material_override is BaseMaterial3D or (n.material_override is ShaderMaterial and n.material_override.shader == preload("res://ui/garage_deck.gdshader"))))
++	var b: Array[Node] = second.get_children().filter(func(n: Node) -> bool: return n is MeshInstance3D and (n.material_override is BaseMaterial3D or (n.material_override is ShaderMaterial and n.material_override.shader == preload("res://ui/garage_deck.gdshader"))))
++	check(a.size() == b.size() and a.size() == 5,"all five pedestal batches remain")
++	if phase != "source-control":
++		for i: int in range(mini(a.size(),b.size())):
++			check(a[i].mesh == b[i].mesh,"pedestal reuses immutable mesh "+str(i))
++			if a[i].material_override is ShaderMaterial:
++				check(a[i].material_override != b[i].material_override,"each pedestal owns its reflection material")
++				a[i].material_override.set_shader_parameter("reflection_enabled",true)
++				var independent: ShaderMaterial = b[i].material_override
++				independent.set_shader_parameter("reflection_enabled",false)
++				check(a[i].material_override.get_shader_parameter("reflection_enabled") != false,"changing another pedestal cannot disable this reflection")
++		var template: Node3D = GarageEnvironment.pedestal_scene.instantiate()
++		for part: Node in template.get_children():
++			if part is MeshInstance3D and part.material_override is ShaderMaterial:
++				check(part.material_override.get_shader_parameter("reflection_image") == null,"cached pedestal retains no live viewport texture")
++		template.free()
++	var times: Array[float] = []
++	for i: int in range(12):
++		car.reparent(world)
++		second.free()
++		var start: int = Time.get_ticks_usec()
++		second = GarageEnvironment.build_pedestal(world,car)
++		times.append((Time.get_ticks_usec()-start)/1000.0)
++	times.sort()
++	report.pedestal_rebuild_median_ms = times[6]
++	world.free()
++	view.invalidate_render()
++
++func straight_cylinders() -> void:
++	var holder := Node3D.new()
++	var finish := StandardMaterial3D.new()
++	for sides: int in [6,12,20,32,48,64,96]:
++		var part: MeshInstance3D = GarageFurnishings.tube(holder,Vector3(0,-0.75,0),Vector3(0,0.75,0),0.16,finish,sides)
++		var reduced: CylinderMesh = part.mesh
++		check(reduced.rings == 0 and reduced.radial_segments == sides,"straight tube retains radial silhouette "+str(sides))
++		var original := CylinderMesh.new()
++		original.top_radius = 0.16
++		original.bottom_radius = 0.16
++		original.height = 1.5
++		original.radial_segments = sides
++		check(original.get_aabb() == reduced.get_aabb(),"tube bounds unchanged "+str(sides))
++		var a: Array = original.surface_get_arrays(0)
++		var b: Array = reduced.surface_get_arrays(0)
++		check(b[Mesh.ARRAY_INDEX].size()*3 == a[Mesh.ARRAY_INDEX].size(),"two thirds of redundant tube triangles removed "+str(sides))
++		var original_corners: Dictionary = {}
++		for i: int in range(a[Mesh.ARRAY_VERTEX].size()):
++			var position: Vector3 = a[Mesh.ARRAY_VERTEX][i]
++			if absf(position.y) < 0.749: continue
++			original_corners[[position,a[Mesh.ARRAY_NORMAL][i],a[Mesh.ARRAY_TEX_UV][i]]] = true
++		var exact: bool = true
++		for i: int in range(b[Mesh.ARRAY_VERTEX].size()):
++			if not original_corners.has([b[Mesh.ARRAY_VERTEX][i],b[Mesh.ARRAY_NORMAL][i],b[Mesh.ARRAY_TEX_UV][i]]): exact = false
++		check(exact,"tube end rings, cap vertices, normals and UVs exact "+str(sides))
++	var deck: MeshInstance3D = GarageEnvironment.cylinder(holder,Vector3.ZERO,3.65,0.17,finish)
++	check((deck.mesh as CylinderMesh).rings == 0 and (deck.mesh as CylinderMesh).radial_segments == 96,"turntable preserves 96-sided outline")
++	holder.free()
++
++func compare_room(a: Node, b: Node) -> void:
++	check(a.get_class() == b.get_class() and a.get_child_count() == b.get_child_count(),"room hierarchy retained "+str(a.name))
++	if a is Node3D and b is Node3D:
++		check(a.transform == b.transform,"room transform retained "+str(a.name))
++	if a is MeshInstance3D and b is MeshInstance3D:
++		check(a.layers == b.layers and a.cast_shadow == b.cast_shadow,"room visibility and shadows retained")
++		check(a.mesh.get_aabb().is_equal_approx(b.mesh.get_aabb()),"room mesh bounds retained")
++		check(a.mesh.get_surface_count() == b.mesh.get_surface_count(),"room material slots retained")
++		for surface: int in range(mini(a.mesh.get_surface_count(),b.mesh.get_surface_count())):
++			var left: Material = a.get_active_material(surface)
++			var right: Material = b.get_active_material(surface)
++			check(left.get_class() == right.get_class(),"room finish type retained")
++			if left is ShaderMaterial and right is ShaderMaterial:
++				check(left.shader.code == right.shader.code,"room shader retained")
++			elif left is BaseMaterial3D and right is BaseMaterial3D:
++				for key: String in ["albedo_color","metallic","roughness","metallic_specular","emission_enabled","emission","emission_energy_multiplier","transparency","cull_mode","shading_mode","vertex_color_use_as_albedo"]:
++					check(left.get(key) == right.get(key),"room finish retained "+key)
++				if left.albedo_texture != null and right.albedo_texture != null:
++					check(left.albedo_texture.get_image().get_data() == right.albedo_texture.get_image().get_data(),"room texture retained")
++	for i: int in range(mini(a.get_child_count(),b.get_child_count())): compare_room(a.get_child(i),b.get_child(i))
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: print("FAIL: Garage model review deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output = arg.trim_prefix("--output=")
++		if arg.begins_with("--phase="): phase = arg.trim_prefix("--phase=")
++		if arg.begins_with("--reference-room="): reference_room = arg.trim_prefix("--reference-room=")
++	if phase == "source-control":
++		# Task-start procedural settings, using the same current prop/art sources.
++		var environment: Script = load("res://ui/garage_environment.gd")
++		environment.source_code = environment.source_code.replace("mesh.rings = 0","mesh.rings = 4").replace("if pedestal_scene != null:","if false:")
++		check(environment.reload(true) == OK,"load original pedestal and cylinder settings in memory")
++		var furnishings: Script = load("res://ui/garage_furnishings.gd")
++		furnishings.source_code = furnishings.source_code.replace("shape.rings = 0","shape.rings = 4")
++		check(furnishings.reload(true) == OK,"restore original tube subdivisions in memory")
++		var world := Node3D.new()
++		root.add_child(world)
++		var control_car := CarVisual.new()
++		world.add_child(control_car)
++		while not control_car.model_ready: await process_frame
++		GarageEnvironment.architecture_scene = null
++		GarageEnvironment.build(world,control_car,false,false)
++		var control_path: String = "res://../build/garage-model-review-2026-11-12/source-control-"+RenderingServer.get_current_rendering_method()+".scn"
++		check(ResourceSaver.save(GarageEnvironment.architecture_scene,control_path,ResourceSaver.FLAG_COMPRESS) == OK,"save source control")
++		check(preload("res://tests/support/garage_mesh_lods.gd").new().bake(control_path) == OK,"prepare original LOD policy on source control")
++		GarageEnvironment.architecture_scene = ResourceLoader.load(control_path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP)
++		world.free()
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	Engine.max_fps = 60
++	var music: GameSoundtrack = GameSoundtrack.instance()
++	music.music_enabled = false
++	var view := CarShowroom.new()
++	view.garage_mode = true
++	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(view)
++	while not view.showroom_ready: await process_frame
++	await frames()
++	report = {"renderer":RenderingServer.get_current_rendering_method(),"engine":Engine.get_version_info().string,"room":stats(view.camera.get_parent().find_child("GarageArchitecture",true,false)),"pedestal":stats(view.turntable)}
++	if phase not in ["before","source-control"]: straight_cylinders()
++	if not reference_room.is_empty():
++		var original: Node = (load(reference_room) as PackedScene).instantiate()
++		var optimized: Node = (load(GarageEnvironment.PREPARED_ARCHITECTURE) as PackedScene).instantiate()
++		compare_room(original,optimized)
++		original.free()
++		optimized.free()
++	for id: String in VehicleCatalog.IDS:
++		if id != view.vehicle_id: view.replace_car(id,VehicleLivery.defaults(id),{})
++		view.finish_car_transition()
++		view.reset_view()
++		await capture(view,id+"-front")
++		view.rotate_view(Vector2(180,0))
++		await capture(view,id+"-rear")
++		view.reset_view()
++		view.set_zoom(CarShowroom.MIN_ZOOM)
++		await capture(view,id+"-close")
++		view.reset_view()
++	view.set_record_view(true)
++	await create_timer(0.9).timeout
++	await capture(view,"record")
++	view.set_record_view(false)
++	view.set_trophy_view(true)
++	await create_timer(0.9).timeout
++	await capture(view,"trophies")
++	view.set_trophy_view(false)
++	await create_timer(0.9).timeout
++	for pose: Array in [["workbench",Vector3(6.35,1.6,4.7),Vector3(6.35,0.9,7.65)],["tyres",Vector3(7,1.8,5.1),Vector3(9.2,1.0,7.6)],["overhead",Vector3(0,9,-7),Vector3(0,0,0)]]:
++		view.camera.position = pose[1]
++		view.camera.look_at(pose[2])
++		await capture(view,pose[0])
++	if phase != "before": await pedestal_reuse(view)
++	report.checks = checks
++	report.failures = failures
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t")+"\n")
++	print("GARAGE_MODEL_REVIEW ",JSON.stringify(report))
++	view.free()
++	await process_frame
++	quit(1 if failures else 0)

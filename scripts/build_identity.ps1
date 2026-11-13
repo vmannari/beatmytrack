@@ -13,7 +13,7 @@ function Test-GaragePreviewSource([string]$Relative) {
         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
-        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd', 'game/ui/garage_lp_box.gd',
+        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd',
         'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
         'game/ui/garage_wash_geometry.gd', 'game/ui/garage_wash_tool.gd', 'game/ui/garage_hose_geometry.gd',
         'game/ui/garage_hose_rig.gd'

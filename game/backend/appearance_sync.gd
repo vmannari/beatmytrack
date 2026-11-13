@@ -13,6 +13,23 @@ var _debounce: Timer
 var _poll: Timer
 var refresh_allowed: Callable
 var _last_success_msec: int = -1
+var _rejected: Dictionary = {}
+var _retry_failures: int = 0
+
+func _fingerprint(local: Dictionary, previous: Variant) -> String:
+	var contract: String = str(client.appearance_contract()) if client.has_method("appearance_contract") else ""
+	return JSON.stringify({"appearance":local,"previous":previous,"contract":contract}).sha256_text()
+
+func _blocked(id: String, local: Dictionary, previous: Variant) -> bool:
+	return _rejected.get(id,"") == _fingerprint(local,previous)
+
+func _reset_backoff() -> void:
+	_retry_failures = 0
+	if is_instance_valid(_poll): _poll.wait_time = 30.0
+
+func _retry_later() -> void:
+	_retry_failures = mini(_retry_failures+1,4)
+	_poll.start(minf(300.0,30.0*pow(2.0,_retry_failures)))
 
 func _ready() -> void:
 	_debounce = Timer.new()
@@ -39,6 +56,8 @@ func bind_records(value: LocalRecords) -> void:
 	busy = false
 	status = ""
 	_last_success_msec = -1
+	_rejected = records.settings.get(State.KEY,{}).get("rejected",{}).duplicate() if records != null else {}
+	_reset_backoff()
 	if records != null: records.appearance_committed.connect(_committed)
 	if is_instance_valid(_debounce): _debounce.stop()
 	if is_instance_valid(_poll):
@@ -47,15 +66,18 @@ func bind_records(value: LocalRecords) -> void:
 
 func _committed() -> void:
 	if not _applying and not scope().is_empty() and _scope == scope():
+		_reset_backoff()
 		_debounce.start()
 		_poll.start()
 
 func _needs_recovery() -> bool:
 	if records == null: return false
-	if not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
+	if not records.settings.has(State.KEY): return true
 	var base: Dictionary = State.baseline(records.settings)
+	var pending: Dictionary = State.pending(records.settings)
 	for id: String in VehicleCatalog.IDS:
-		if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id): return true
+		var local: Dictionary = State.car(records.settings,id)
+		if (pending.has(id) or (State.authored(records.settings,id) and local != base.get(id))) and not _blocked(id,local,base.get(id)): return true
 	return false
 
 func _poll_refresh() -> void:
@@ -77,6 +99,7 @@ func _save(base: Dictionary, value: Dictionary = {}, pending: Dictionary = {}) -
 	_applying = true
 	if not value.is_empty(): State.apply(records.settings,value)
 	records.settings[State.KEY] = {"version":1,"baseline":base.duplicate(true),"pending":pending.duplicate(true)}
+	if not _rejected.is_empty(): records.settings[State.KEY].rejected = _rejected.duplicate()
 	var error: Error = records.save_records()
 	_applying = false
 	if error != OK: status = "Garage changes could not be saved. Check storage."
@@ -97,7 +120,8 @@ func refresh() -> void:
 	if not response.get("ok",false) or not State.valid_collection(response.get("data",{}).get("appearances")):
 		status = "Garage sync needs a server update." if response.get("status",0) == 404 else "Garage changes saved on this device. Sync will retry."
 		busy = false
-		if not _needs_recovery(): _poll.stop()
+		if _needs_recovery(): _retry_later()
+		else: _poll.stop()
 		changed.emit()
 		return
 	status = ""
@@ -113,6 +137,7 @@ func refresh() -> void:
 		# A lost reply can precede a second local edit. A durable attempted value
 		# identifies our own accepted write without discarding that newer edit.
 		if pending.has(id) and server == pending[id]:
+			_rejected.erase(id)
 			base[id] = server.duplicate(true)
 			previous = base[id]
 			pending.erase(id)
@@ -122,14 +147,19 @@ func refresh() -> void:
 		# conflicts the accepted online edit wins; untouched cars never upload.
 		if server != null and (not initialized or not dirty or server != previous):
 			if previous != server or local != server:
+				_rejected.erase(id)
 				base[id] = server.duplicate(true)
 				pending.erase(id)
 				if not _save(base,server,pending): break
 			continue
 		if not dirty:
 			if pending.has(id):
+				_rejected.erase(id)
 				pending.erase(id)
 				if not _save(base,{},pending): break
+			continue
+		if _blocked(id,local,previous):
+			status = "Garage changes saved on this device. This design could not be synced."
 			continue
 		var operation: Dictionary = {"appearance":local.duplicate(true),"previous":previous}
 		pending[id] = local.duplicate(true)
@@ -137,6 +167,7 @@ func refresh() -> void:
 		response = await client.request_api("/me/appearances",HTTPClient.METHOD_PUT,operation,"",true)
 		if not _current(epoch,owner): return
 		if response.get("ok",false) and State.valid_car(response.get("data")) and State.normalized_car(response.data) == local:
+			_rejected.erase(id)
 			base[id] = local.duplicate(true)
 			pending.erase(id)
 			if not _save(base,{},pending): break
@@ -145,15 +176,23 @@ func refresh() -> void:
 			status = "Garage changed on another device. Refreshing."
 			_debounce.start()
 			break
+		elif int(response.get("status",0)) == 422:
+			_rejected[id] = _fingerprint(local,previous)
+			status = "Garage changes saved on this device. This design could not be synced."
+			if not _save(base,{},pending): break
+			continue
 		elif response.get("error","") == "COSMETIC_NOT_OWNED":
 			status = "This design includes items not owned by this account."
-			break
+			_retry_later()
+			continue
 		else:
 			status = "Garage changes saved on this device. Sync will retry."
+			_retry_later()
 			break
 	if status.is_empty() and not records.settings.has(State.KEY): _save(base,{},pending)
 	busy = false
 	if status.is_empty():
+		_reset_backoff()
 		_last_success_msec = Time.get_ticks_msec()
 		for id: String in VehicleCatalog.IDS:
 			if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id):

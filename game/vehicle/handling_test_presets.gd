@@ -4,8 +4,7 @@ extends RefCounted
 ## never change the catalog resources or the canonical handling contracts.
 
 const LABELS: Array[String] = ["Stable", "Agile", "Flow", "Slide", "Loose"]
-const HOVER_LABELS: Array[String] = ["Slide 5 (reference)", "Slide 5.1", "Slide 5.2", "Slide 5.3", "Slide 5.4", "Slide 5.5"]
-const VEHICLES: Array[String] = ["pickup", "hovercraft"]
+const VEHICLES: Array[String] = ["pickup"]
 
 # Steering, grip and recovery are tuned separately for each car. Engine, brakes,
 # top speed, collision dimensions and vehicle-specific pedal layouts stay intact.
@@ -24,20 +23,12 @@ const TUNING: Dictionary = {
 		{"steering_rate": 7.0, "countersteering_rate": 15.0, "lateral_grip": 42.0, "lateral_response": 10.0, "brake_rotation": 0.25, "countersteer_assistance": 0.8},
 		{"steering_rate": 8.0, "countersteering_rate": 16.0, "lateral_grip": 38.0, "lateral_response": 7.0, "brake_rotation": 0.4, "countersteer_assistance": 1.0},
 	],
-	"hovercraft": [
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.0, "lateral_response": 0.28},
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.9, "lateral_response": 0.28},
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.8, "lateral_response": 0.28},
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.7, "lateral_response": 0.28},
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.6, "lateral_response": 0.28},
-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.5, "lateral_response": 0.28},
-	],
 }
 
 static func names(vehicle_id: String) -> Array[String]:
 	var result: Array[String] = []
 	if vehicle_id in VEHICLES:
-		result.assign(HOVER_LABELS if vehicle_id == "hovercraft" else LABELS)
+		result.assign(LABELS)
 	return result
 
 static func config(vehicle_id: String, preset_index: int) -> HandlingConfig:
@@ -47,11 +38,6 @@ static func config(vehicle_id: String, preset_index: int) -> HandlingConfig:
 	var changes: Dictionary = TUNING[vehicle_id][preset_index]
 	for property: String in changes:
 		result.set(property, changes[property])
-	if vehicle_id == "hovercraft":
-		# Preserve the chosen Slide 5 snapshot and identity for comparison.
-		result.profile_name = "%s / %s" % [result.profile_name, "Slide 5" if preset_index == 0 else HOVER_LABELS[preset_index]]
-		result.version += "-hover-slide-5" if preset_index == 0 else "-hover-slide5-%d" % preset_index
-	else:
-		result.profile_name = "%s / %s" % [result.profile_name, LABELS[preset_index]]
-		result.version += "-test-%d" % (preset_index + 1)
+	result.profile_name = "%s / %s" % [result.profile_name, LABELS[preset_index]]
+	result.version += "-test-%d" % (preset_index + 1)
 	return result

@@ -471,16 +471,8 @@ func _ready() -> void:
 	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
 	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
 	ui_left_handed = bool(records.settings.get("left_handed", false))
-	selected_track = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
-	var last: String = str(records.settings.get("last_track",""))
-	if last in BUILTIN_IDS:
-		selected_track = NativeTrack.read("res://resources/tracks/"+last+".json")
-	elif last.begins_with("creator_"):
-		var saved: Dictionary = library.load_document(last.trim_prefix("creator_"))
-		if not saved.is_empty():
-			var compiled: NativeTrack = TrackCompiler.compile(saved)
-			if compiled != null: selected_track = compiled
-	elif last.begins_with("cloud_"): _restore_cloud_selection(last)
+	var startup_fallback: NativeTrack = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
+	selected_track = startup_fallback
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 20
 	add_child(menu_layer)
@@ -504,6 +496,9 @@ func _ready() -> void:
 	# First Garage entry prepares one live showroom; carousel photos are cached.
 	_show_screen("restoring")
 	if capture_path.is_empty(): await online.start_session()
+	# Account restoration selects its own track through _select_player_storage.
+	# Compile Guest's remembered creation only when Guest remains the owner.
+	if active_profile.is_empty(): _restore_selected_track(startup_fallback)
 	# Restoring a saved account can replace Guest's music preferences. Start
 	# only after the active profile is known, before the remaining picture work.
 	GameSoundtrack.instance().show_menu()
@@ -742,7 +737,9 @@ func _show_screen(next: String) -> void:
 		state_style.content_margin_right = 16
 		account_button.add_theme_stylebox_override(state, state_style)
 	var car_picker := preload("res://ui/header_car_picker.gd").new()
-	if header_car_cache != null: header_car_cache.bind_records(records)
+	if header_car_cache != null:
+		car_picker.request_pictures = header_car_cache.request_pictures
+		header_car_cache.bind_records(records)
 	car_picker.records = records
 	car_picker.vehicle_selected.connect(_select_header_vehicle)
 	account_button.add_child(car_picker)
@@ -828,24 +825,6 @@ func _show_screen(next: String) -> void:
 	if vertical_slide: _slide_race_mode_page(slide_direction,rail_rect,race_slide_height)
 	elif slide: _slide_menu_page(slide_direction, drag_offset)
 	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
-
-func _open_profile_achievements(family: String = "") -> void:
-	var owner: LocalRecords = records
-	if not is_inside_tree() or screen != "profile" or records != owner: return
-	await _show_screen("garage")
-	if not is_instance_valid(_retained_garage) or screen != "garage": return
-	_retained_garage._show_section("achievements")
-	if not family.is_empty():
-		var album: Node = _retained_garage.find_child("AchievementsMenu",true,false)
-		if album != null: album._show_achievement(family)
-
-func _open_profile_tracks() -> void:
-	browser_state.clear()
-	browser_state.search = online.player_name()
-	browser_state.search_kind = 2
-	browser_state.page = 0
-	race_area_mode = "free"
-	_show_screen("tracks")
 
 func _attach_profile_car(parent: Control) -> void:
 	var view: Control = _retained_profile_car
@@ -1525,7 +1504,13 @@ func _select_player_storage() -> void:
 	test_return_to_drafts = false
 	returning_to_editor = false
 	pending_menu_notice = profile_save_error
-	selected_track = NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
+	_restore_selected_track()
+	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
+	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
+	ui_left_handed = bool(records.settings.get("left_handed", false))
+
+func _restore_selected_track(fallback: NativeTrack = null) -> void:
+	selected_track = fallback if fallback != null else NativeTrack.read("res://resources/tracks/" + BUILTIN_IDS[0] + ".json")
 	var last: String = str(records.settings.get("last_track", ""))
 	if last in BUILTIN_IDS:
 		selected_track = NativeTrack.read("res://resources/tracks/" + last + ".json")
@@ -1535,9 +1520,6 @@ func _select_player_storage() -> void:
 			var track: NativeTrack = TrackCompiler.compile(saved)
 			if track != null: selected_track = track
 	elif last.begins_with("cloud_"): _restore_cloud_selection(last)
-	VehicleCatalog.selected = VehicleCatalog.valid_id(str(records.settings.get("selected_car", "compact")))
-	ui_touch_scale = float(records.settings.get("touch_scale", 1.0))
-	ui_left_handed = bool(records.settings.get("left_handed", false))
 
 func _stamp_creator() -> void:
 	if not document.is_empty(): document["creator"] = library.owner_name
@@ -1849,9 +1831,13 @@ func _reset_rivalry_entry_view() -> void:
 func _open_world_circuit() -> void:
 	if is_instance_valid(game) or cloud_starting: return
 	if online != null and not preload("res://backend/world_ranking_client.gd").circuit_open(online.client):
-		_notice("The Compact Circuit has not opened. Check World Ranking for the launch date.")
+		_notice("The weekly Circuit has not opened. Check World Ranking for the launch date.")
 		return
-	rivalry.set_circuit_mode(true)
+	var circuit_car: String = "compact"
+	if online != null and preload("res://backend/world_ranking_client.gd").multi_supported(online.client):
+		var ranking_adapter: Node = preload("res://backend/world_ranking_client.gd").for_client(online.client)
+		circuit_car = ranking_adapter.circuit_vehicle if not ranking_adapter.circuit_vehicle.is_empty() else VehicleCatalog.selected
+	rivalry.set_circuit_mode(true,circuit_car)
 	rivalry_section = "overview"
 	_open_rivalry()
 
@@ -2182,10 +2168,6 @@ func _garage_appearance_changed() -> void:
 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
 		_retained_garage.refresh_cosmetics()
 
-func _garage_pictures_ready() -> bool:
-	if DisplayServer.get_name()=="headless": return true
-	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
-
 func _prepare_garage_pictures() -> bool:
 	# Explicit callers can request a complete snapshot. Startup/navigation
 	# never await this optional work; visible missing views use car ghosts.
@@ -2194,13 +2176,12 @@ func _prepare_garage_pictures() -> bool:
 	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
 	return await _garage_preloader.prepare_pictures(current)
 
-var _header_capture_cover: Control
 var _header_capture_navigation: int = -1
 
 func _header_car_work_allowed() -> bool:
 	return startup_complete and _publishing_slots_foreground and not is_instance_valid(game) and _background_work_allowed() and screen != "restoring"
 
-func _header_car_capture_allowed(vehicle: String) -> bool:
+func _header_car_capture_allowed(_vehicle: String) -> bool:
 	if not _header_car_work_allowed() or not _initial_menu_presented or editor_memory.pressure_requested: return false
 	if is_instance_valid(header_car_cache) and header_car_cache.capture_active() and _header_capture_navigation != _navigation_generation: return false
 	if menu_page_motion != null and menu_page_motion.is_running(): return false
@@ -2209,34 +2190,15 @@ func _header_car_capture_allowed(vehicle: String) -> bool:
 	if is_instance_valid(_garage_preloader.studio): return false
 	if screen in ["account","tracks","rivalry","challenges","settings","profile"]:
 		return not is_instance_valid(_retained_garage) or not _retained_garage.is_visible_in_tree()
-	if screen != "garage": return false
-	if not is_instance_valid(_retained_garage) or _retained_garage.records != records or not _retained_garage.is_visible_in_tree(): return false
-	var pictures: Node = _retained_garage.get("_preview_service")
-	if is_instance_valid(pictures) and pictures.renderer != null: return false
-	var showroom: Control = _retained_garage.showroom
-	if not is_instance_valid(showroom) or not showroom.showroom_ready or showroom.vehicle_id != vehicle: return false
-	if _retained_garage.progressive_entry and showroom.preparing: return false
-	return true
+	# A paint save already updates the live car. Keep it visible and interactive;
+	# optional header rendering waits until the Garage has left the screen.
+	return false
 
-func _header_car_capture_started(vehicle: String) -> void:
-	_header_car_capture_finished()
+func _header_car_capture_started(_vehicle: String) -> void:
 	_header_capture_navigation = _navigation_generation
-	if screen != "garage" or not _header_car_capture_allowed(vehicle): return
-	var showroom: Control = _retained_garage.showroom
-	showroom._clear_gesture()
-	_header_capture_cover = load("res://ui/garage_loading_car.gd").new()
-	_header_capture_cover.name = "HeaderPicturePreparation"
-	_header_capture_cover.vehicle_id = vehicle
-	showroom.add_child(_header_capture_cover)
-	MenuStyle.fill(_header_capture_cover)
-	_header_capture_cover.mouse_filter = Control.MOUSE_FILTER_STOP
 
 func _header_car_capture_finished() -> void:
 	_header_capture_navigation = -1
-	if is_instance_valid(_header_capture_cover):
-		if _header_capture_cover.get_parent() != null: _header_capture_cover.get_parent().remove_child(_header_capture_cover)
-		_header_capture_cover.queue_free()
-	_header_capture_cover = null
 
 func _header_car_picture_ready(vehicle: String) -> void:
 	if not is_instance_valid(account_button): return
@@ -2435,9 +2397,6 @@ func _delete_selection() -> void:
 
 func _rotate_object() -> void:
 	_feature_resource("res://core/features/editor.gd").run_rotate_object(self)
-
-func _selected_object_properties() -> void:
-	_feature_resource("res://core/features/editor.gd").run_selected_object_properties(self)
 
 func _object_property_editing(property: String) -> void:
 	_feature_resource("res://core/features/editor.gd").run_object_property_editing(self ,property)
@@ -2993,7 +2952,10 @@ func _telemetry_observe_activity() -> void:
 
 func _select_header_vehicle(index: int) -> void:
 	if index < 0 or index >= VehicleCatalog.IDS.size() or VehicleCatalog.IDS[index] == VehicleCatalog.selected: return
+	var return_to_rivalry: bool = screen == "rivalry" and rivalry_section == "detail"
+	if return_to_rivalry: rivalry_section = "overview"
 	_select_vehicle(index)
+	if return_to_rivalry: _rivalry()
 	if is_instance_valid(_retained_garage) and _retained_garage.records == records and _retained_garage.is_visible_in_tree():
 		_retained_garage.refresh_selection()
 	if not is_instance_valid(content): return

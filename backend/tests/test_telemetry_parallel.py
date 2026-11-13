@@ -409,7 +409,13 @@ def test_postgres_parallel_workers_and_retry_have_exact_effects(postgres_auth):
     with ThreadPoolExecutor(max_workers=4) as pool:
         for _ in range(8):
             list(pool.map(lambda _i: actor_once(app.state.session_factory, 8), range(4)))
-    project_pending(app.state.session_factory)
+    # A bounded pass can fold a combined batch before its remaining owners
+    # become eligible again. Drive the same alternating stages to quiescence.
+    for _ in range(64):
+        if project_pending(app.state.session_factory)["pending"] == 0:
+            break
+    else:
+        pytest.fail("Concurrent telemetry did not drain within bounded passes")
     assert credits(app) == 0
     with app.state.session_factory() as db:
         assert db.get(ProductMetric, (now() // 86400, "event_menu_ready", "")).value == 64

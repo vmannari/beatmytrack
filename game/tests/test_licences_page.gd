@@ -20,6 +20,8 @@ func settle() -> void:
 func run() -> void:
 	OS.set_environment("BMT_API_URL", "")
 	output = ProjectSettings.globalize_path("res://../docs/evidence/licences-page-2026-10-25/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = ProjectSettings.globalize_path(argument.trim_prefix("--evidence-root="))
 	DirAccess.make_dir_recursive_absolute(output)
 	content()
 	shell = Control.new()
@@ -103,12 +105,19 @@ func run() -> void:
 	var panel: Control = page.licences_panel
 	panel.set("entries",Notices.entries("Android",false))
 	panel.call("_refresh_titles")
-	panel.call("_select",8)
+	var android_entries: Array[Dictionary] = panel.get("entries")
+	for index: int in range(android_entries.size()):
+		if android_entries[index].id == "android": panel.call("_select",index)
 	await settle()
 	var android_document: RichTextLabel = panel.get("document")
 	check(android_document.get_parsed_text().contains(FileAccess.get_file_as_string("res://legal/GOOGLEID-NOTICES.txt")),"complete Android SDK notices render verbatim")
 	check(android_document.get_v_scroll_bar().max_value > android_document.size.y,"complete Android SDK notices remain scrollable")
 	await capture("android-notices")
+	for index: int in range(android_entries.size()):
+		if android_entries[index].id == "kart_driver": panel.call("_select",index)
+	await settle()
+	check(android_document.get_parsed_text() == FileAccess.get_file_as_string("res://legal/kart_driver_notices.txt"),"complete kart creator credit and modifications render verbatim")
+	await capture("kart-driver")
 	await capture("final")
 	shell.queue_free()
 	await settle()

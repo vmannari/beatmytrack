@@ -23,13 +23,12 @@ var report: Dictionary = {}
 static func context_for(game: Node) -> Dictionary:
 	var track: NativeTrack = game.native_track
 	var biome: String = str(track.metadata.get("theme","pine")) if track != null else "unknown"
-	var settings: Dictionary = game.preference_records.settings if game.preference_records != null else {}
 	var viewport: Viewport = game.get_viewport()
 	return {"revision":REVISION,"engine":Engine.get_version_info().string,"engine_hash":Engine.get_version_info().hash,
 		"engine_profile_source":Engine.get_singleton("BMTShaderProfiles").source_revision() if Engine.has_singleton("BMTShaderProfiles") else "",
 		"renderer":RenderingServer.get_current_rendering_method(),"driver":RenderingServer.get_video_adapter_api_version(),
 		"adapter":RenderingServer.get_video_adapter_name(),"vendor":RenderingServer.get_video_adapter_vendor(),
-		"biome":biome,"car":game.vehicle_id,"simple":game.car.simple_model if is_instance_valid(game.car) else bool(settings.get("simple_car_models",false)),
+		"biome":biome,"car":game.vehicle_id,"simple":game.car.simple_model if is_instance_valid(game.car) else true,
 		"graphics":game._graphics.duplicate(),"msaa":viewport.msaa_3d,
 		"screen_aa":viewport.screen_space_aa,"hdr":viewport.use_hdr_2d}
 

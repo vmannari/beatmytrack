@@ -1,0 +1,582 @@
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -14,6 +14,8 @@
+ from mathutils import Vector
+ from mathutils.bvhtree import BVHTree
+ from mathutils.geometry import delaunay_2d_cdt
++sys.path.insert(0,str(Path(__file__).resolve().parent))
++import challenger_detail_geometry as exterior_detail
+ 
+ args = sys.argv[sys.argv.index("--")+1:]
+ source, labels_file, output = map(Path,args[:3])
+@@ -40,6 +42,26 @@
+ 
+ def blender(points): return np.c_[points[:,0],-points[:,2],points[:,1]]
+ fitted_body=game(body_world)
++rear_components=[3150,3156,5779,305156,305161,305248,305253,3271,3276,5906,5911,3467,3472,6102,6107,3451,3456,6086,6091]
++rear_fascia_bvh=BVHTree.FromPolygons(fitted_body.tolist(),tri[np.isin(component,rear_components)].tolist(),all_triangles=True)
++def rear_terms(x,y):
++    x=(np.asarray(x)-.005)/.8;y=(np.asarray(y)-.854)/.1
++    return np.stack([x**i*y**j for i in range(5) for j in range(4)],axis=-1)
++rear_samples=[]
++for x in np.linspace(-.79,.80,81):
++    for y in np.linspace(.772,.936,32):
++        hit=rear_fascia_bvh.ray_cast((float(x),float(y),3),(0,0,-1),2)[0]
++        if hit is not None:rear_samples.append([x,y,hit.z])
++rear_samples=np.asarray(rear_samples);rear_design=rear_terms(rear_samples[:,0],rear_samples[:,1]);rear_keep=np.ones(len(rear_samples),dtype=bool)
++for iteration in range(4):
++    rear_coeff=np.linalg.lstsq(rear_design[rear_keep],rear_samples[rear_keep,2],rcond=None)[0]
++    rear_keep=abs(rear_design@rear_coeff-rear_samples[:,2])<.012
++assert rear_keep.mean()>.75, 'Rear surface must fit the majority of the measured outer fascia'
++print('REAR_SURFACE_FIT',len(rear_samples),int(rear_keep.sum()),float(np.percentile(abs(rear_design@rear_coeff-rear_samples[:,2]),95)),flush=True)
++def rear_surface(x,y):
++    # Fit the full compound curve, including the tucked upper edge and old lamp
++    # openings. A smooth field avoids copying source optical seams into paint.
++    return float(rear_terms(x,y)@rear_coeff)+.003
+ 
+ def smooth(a,b,value):
+     t=np.clip((value-a)/(b-a),0,1)
+@@ -160,6 +182,14 @@
+ if signed_area(hood_boundary)<0:hood_boundary=hood_boundary[::-1]
+ print('HOOD_BOUNDARY',len(hood_boundary),float(signed_area(hood_boundary)),flush=True)
+ assert 1.0<abs(signed_area(hood_boundary))<2.5, 'Hood boundary must be the actual full outer skin'
++pane_planes=[]
++for key in np.unique(component):
++    faces=tri[component==key]
++    if {mesh.materials[int(i)].name for i in np.unique(mi[component==key])}!={'Basic Glass'}:continue
++    points=fitted_body[np.unique(faces)];centre=points.mean(0)
++    normal=np.linalg.svd(points-centre,full_matrices=False)[2][-1]
++    if normal@(centre-np.array([0,.8,.25]))<0:normal=-normal
++    pane_planes.append((centre,normal))
+ 
+ def nearest_boundary(points,boundary):
+     a=boundary;b=np.roll(boundary,-1,axis=0);delta=b-a
+@@ -168,17 +198,25 @@
+     nearest=a[None,:,:]+t[:,:,None]*delta[None,:,:]
+     distance=np.linalg.norm(points[:,None,:]-nearest,axis=2);index=distance.argmin(1)
+     return distance[np.arange(len(points)),index],index,t[np.arange(len(points)),index]
+-def lattice(boundary,spacing):
++def inside_polygon(point,boundary):
++    y,z=point;inside=False
++    for a,b in zip(boundary,np.roll(boundary,-1,axis=0)):
++        if (a[1]>z)!=(b[1]>z) and y<(b[0]-a[0])*(z-a[1])/(b[1]-a[1])+a[0]:inside=not inside
++    return inside
++
++def lattice(boundary,spacing,holes=()):
+     low,high=boundary.min(0),boundary.max(0);points=[]
+     for y in np.arange(low[0]+spacing*.5,high[0],spacing):
+         for z in np.arange(low[1]+spacing*.5,high[1],spacing):
+-            inside=False
+-            for a,b in zip(boundary,np.roll(boundary,-1,axis=0)):
+-                if (a[1]>z)!=(b[1]>z) and y<(b[0]-a[0])*(z-a[1])/(b[1]-a[1])+a[0]:inside=not inside
+-            if inside:points.append([y,z])
+-    points=np.concatenate([boundary,np.array(points)])
+-    vertices,_,faces,*_=delaunay_2d_cdt([Vector(p) for p in points],[],[list(range(len(boundary)))],1,1e-6,False)
+-    return np.array(vertices),faces
++            if inside_polygon((y,z),boundary) and not any(inside_polygon((y,z),h) for h in holes):points.append([y,z])
++    loops=[boundary,*holes];edges=[];offset=0
++    for loop in loops:
++        edges.extend([(offset+i,offset+(i+1)%len(loop)) for i in range(len(loop))]);offset+=len(loop)
++    points=np.concatenate([*loops,np.asarray(points).reshape(-1,2)])
++    vertices,_,faces,*_=delaunay_2d_cdt([Vector(p) for p in points],edges,[],0,1e-6,False)
++    vertices=np.array(vertices)
++    faces=[f for f in faces if inside_polygon(vertices[f].mean(0),boundary) and not any(inside_polygon(vertices[f].mean(0),h) for h in holes)]
++    return vertices,faces
+ 
+ ROLE={'Car Paint':'paint','Paint':'accent','Basic Glass':'glass','Mirror':'mirror','Matter Black':'dark',
+       'Gloss Black':'accent','Chrome':'chrome','Metal09':'dark','Black Metal':'dark',
+@@ -191,6 +229,8 @@
+                    'detail':(.40,.44,.45,1),'rubber':(.014,.018,.02,1),'reverse':(.08,.065,.065,1)}.items():
+     m=bpy.data.materials.new('BMT_'+name);m.diffuse_color=color;materials[name]=m
+ m=bpy.data.materials.new('BMT_contour');m.diffuse_color=(.035,.044,.048,1);materials['contour']=m
++for role,color in {'led':(.65,.69,.66,1),'lens_red':(.08,.006,.005,1),'vent_metal':(.045,.052,.057,1)}.items():
++    m=bpy.data.materials.new('BMT_'+role);m.diffuse_color=color;materials[role]=m
+ 
+ all_source=list(bpy.data.objects)
+ for obj in all_source: obj.hide_render=True;obj.hide_set(True)
+@@ -251,10 +291,18 @@
+                 values.append(tuple(n))
+         obj.data.normals_split_custom_set(values)
+     obj.data.calc_loop_triangles();obj.select_set(False)
++    if all(m.name=='BMT_glass' for m in obj.data.materials):
++        normals=[]
++        for polygon in obj.data.polygons:
++            p=np.mean([obj.data.vertices[i].co[:] for i in polygon.vertices],axis=0)
++            point=np.array([p[0],p[2],-p[1]])
++            _,n=min(pane_planes,key=lambda item:np.linalg.norm(point-item[0]))
++            for loop in polygon.loop_indices:normals.append((n[0],-n[2],n[1]))
++        obj.data.normals_split_custom_set(normals)
+     return len(obj.data.loop_triangles)
+ 
+ def body_target(key, count, simple):
+-    explicit={1464:(7800,4600),1491:(3000,1800),1624:(1800,1100),2149:(2000,1200),
++    explicit={1464:(10000,6000),1491:(4000,2400),1624:(2400,1500),2149:(2000,1200),
+               1862:(700,420),4445:(700,420),2790:(900,450)}
+     if key in explicit:return explicit[key][1 if simple else 0]
+     return min(count,max(40 if simple else 72,int(count*(.018 if simple else .035))))
+@@ -271,8 +319,13 @@
+         tiny=count<128
+         interior=int(key) in [0,732]
+         replaced=int(key) in [1572,321860,323444,323460,1862,4445,3632,6269,6720,430273]
++        # Replace the fragile reduced optics/applique/exhaust with clean,
++        # manufactured surfaces. Paint and structural bumper openings stay.
++        game_points=fitted_body[np.unique(faces)];glo,ghi=game_points.min(0),game_points.max(0)
++        front_optic=not ('Car Paint' in names) and max(abs(glo[0]),abs(ghi[0]))>.45 and glo[1]>.60 and ghi[1]<.82 and glo[2]>-2.02 and ghi[2]<-1.73
++        replaced=replaced or front_optic or int(key) in [305156,305161,305248,305253,3271,3276,5906,5911,325044,352278,325204,352438]
+         if badge or tiny or interior or replaced:
+-            if not simple:record['removed_components'].append({'component':int(key),'triangles':count,'reason':'cabin floor' if interior else 'smooth hood / flush detail replacement' if replaced else 'badge geometry' if badge else 'micro grille/hidden detail'})
++            if not simple:record['removed_components'].append({'component':int(key),'triangles':count,'reason':'cabin floor' if interior else 'authored exterior replacement' if replaced else 'badge geometry' if badge else 'micro grille/hidden detail'})
+             continue
+         if int(key)==1464:
+             centre=fitted_body[faces].mean(1)
+@@ -288,7 +341,8 @@
+             visible=np.array([mesh.materials[int(i)].name!='Matter Black' for i in indices])
+             faces=faces[visible];indices=indices[visible]
+         group='hood' if int(key) in [1572,321860,323444,323460] else 'aero' if int(key)==297986 else 'body'
+-        if names=={'Red Light'}:group='tail_left' if (low[0]+high[0])*0.5>centre_x else 'tail_right'
++        # Source side markers / lower reflectors are static red lenses. Only
++        # the authored rear light guides join the brake-light material groups.
+         if names in [{'White Light'},{'Headlight Glow'}] and high[1]<0:group='head_left' if (low[0]+high[0])*0.5>centre_x else 'head_right'
+         material_names=[m.name for m in mesh.materials]
+         if int(key)==436063:
+@@ -304,18 +358,20 @@
+             planar=delta-np.outer(delta@normal,normal)
+             points[vertices]=window+planar*(.01 if int(key)==294203 else .02)+normal*.003
+         obj=new_piece(group+'_'+str(key),nose(points),faces,indices,material_names)
+-        after=reduce(obj,body_target(int(key),count,simple));pieces.append(obj)
++        after=reduce(obj,body_target(int(key),count,simple))
++        pieces.append(obj)
+         groups[obj.name]=group;statistics.append({'component':int(key),'group':group,'before':count,'after':after})
+-    def add_surface(name,points,faces,role,group):
++    def add_surface(name,points,faces,role,group,orient=True):
+         points=np.asarray(points)
+         clean=[]
+         for face in faces:
+             p=points[list(face)];normal=np.cross(p[1]-p[0],p[2]-p[0])
+             hint=np.array([0,1,0]) if group=='hood' else np.array([np.sign(p[:,0].mean()),0,0])
+-            clean.append(tuple(reversed(face)) if normal@hint<0 else face)
++            clean.append(tuple(reversed(face)) if orient and normal@hint<0 else face)
+         faces=clean
+         data=bpy.data.meshes.new(name);data.from_pydata(blender(nose(np.asarray(points))),[],faces);data.materials.append(materials[role]);data.update()
+         for polygon in data.polygons:polygon.use_smooth=True
++        data.set_sharp_from_angle(angle=math.radians(48))
+         obj=bpy.data.objects.new(name,data);bpy.context.scene.collection.objects.link(obj)
+         pieces.append(obj);groups[obj.name]=group;data.calc_loop_triangles()
+         statistics.append({'group':group,'detail':name,'after':len(data.loop_triangles)})
+@@ -355,7 +411,8 @@
+     ribbon('FuelContour',fuel,.0025,'contour',lambda p,o:on_skin(p,o,-1),offset=.0018)
+     # The perimeter is measured, rather than guessed. Interior samples form a
+     # clean lattice and fade smoothly into the exact source fender/cowl junction.
+-    plane,faces=lattice(hood_boundary,.040 if simple else .028)
++    vent_paths=exterior_detail.vent_paths()
++    plane,faces=lattice(hood_boundary,.035 if simple else .025,vent_paths)
+     distance,index,amount=nearest_boundary(plane,hood_boundary_3d[:,[0,2]])
+     vertices=[]
+     for i,(x,z) in enumerate(plane):
+@@ -365,16 +422,8 @@
+         blend=smooth(0,.075,distance[i])
+         vertices.append([x,original*(1-blend)+hood_y(x,z)*blend,z])
+     add_surface('SmoothHood',vertices,faces,'paint','hood')
+-    hood_skin=BVHTree.FromPolygons(vertices,faces,all_triangles=True)
+-    for x,z,rx,rz in [(0,-1.73,.165,.027),(-.535,-1.558,.088,.052),(.535,-1.558,.088,.052)]:
+-        angle=np.linspace(0,2*math.pi,48 if not simple else 32,endpoint=False)
+-        path=np.c_[x+rx*np.cos(angle),z+rz*np.sin(angle)]
+-        plane,faces=lattice(path,.012)
+-        vertices=[]
+-        for a,b in plane:
+-            hit=hood_skin.ray_cast((float(a),2,float(b)),(0,-1,0),3)[0]
+-            vertices.append([a,(hit.y if hit is not None else hood_y(a,b))+.0025,b])
+-        add_surface('FlushHoodVent'+str(x),vertices,faces,'dark','hood')
++    exterior_detail.vents(add_surface,vent_paths,hood_y)
++    exterior_detail.details(add_surface,simple,rear_surface)
+     # Source wheels are measured above for fitting. The runtime builds exact
+     # round tyres and five-spoke rims, avoiding fragile subpixel source details.
+     # A low-cost glazing backing closes small gaps in the source's window/pillar
+@@ -422,7 +471,7 @@
+     bpy.ops.export_scene.gltf(filepath=str(output/(tier+'.glb')),export_format='GLB',use_selection=True,
+         export_animations=False,export_skins=False,export_yup=True,export_cameras=False,export_lights=False,
+         export_materials='EXPORT',export_extras=False)
+-    total=sum(row['after'] for row in statistics)
++    total=sum(row.get('after',0) for row in statistics)
+     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
+     print('CHALLENGER_EXPORT',tier,total,len(exports),flush=True)
+     for obj in exports:obj.hide_set(True);obj.hide_render=True;obj.name='ARCHIVE_'+tier+'_'+obj.name
+@@ -430,6 +479,6 @@
+ record['source_triangles']=len(tri)+sum(len(o.data.loop_triangles) for o in original_wheels.values())
+ record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source wheel centres retained as alignment reference.'
+ record['opaque_glazing']='Boundary-preserving dissolve, 2% pane overlap and an opaque low-poly glazing backing close source pillar gaps. No cabin contents or rig.'
+-record['refinement']={'nose_extension_metres':.14,'nose_stretch_starts_z':-1.72,'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,'side_fit_inliers':int(keep.sum()),'side_fit_samples':len(samples),'hood':'regular analytic lattice; flush vent markings','fuel_and_handles':'no protruding source detail meshes','glazing_backing_inset_scale':.985}
++record['refinement']={'nose_extension_metres':.14,'nose_stretch_starts_z':-1.72,'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,'side_fit_inliers':int(keep.sum()),'side_fit_samples':len(samples),'hood':'regular analytic lattice; constrained shallow vent openings and vanes','fuel_and_handles':'no protruding source detail meshes','glazing_backing_inset_scale':.985,'exterior_details':'four projectors, light guides, open honeycomb grille, smoked rear applique, rolled oval exhaust tips'}
+ (output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+ print('CHALLENGER_PREPARED',output,flush=True)
+diff --git a/scripts/challenger_detail_geometry.py b/scripts/challenger_detail_geometry.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/challenger_detail_geometry.py
+@@ -0,0 +1,162 @@
++"""Authored exterior manufacturing details for the offline Challenger conversion.
++
++Coordinates are metres in the fitted car frame, before the common nose warp.
++No textures, branding, cabin contents or source scripts are used.
++"""
++import math
++import numpy as np
++
++
++def rounded(cx, cy, width, height, radius, steps=6):
++    points = []
++    for x, y, start in [(1, 1, 0), (-1, 1, 90), (-1, -1, 180), (1, -1, 270)]:
++        for angle in np.linspace(start, start+90, steps, endpoint=False):
++            a = math.radians(angle)
++            points.append([cx+x*(width/2-radius)+radius*math.cos(a),
++                           cy+y*(height/2-radius)+radius*math.sin(a)])
++    return np.asarray(points)
++
++
++def ring(loops):
++    vertices = np.concatenate(loops)
++    count = len(loops[0]); faces = []
++    for j in range(len(loops)-1):
++        for i in range(count):
++            a=j*count+i; b=j*count+(i+1)%count
++            faces.extend([(a,b,b+count),(a,b+count,a+count)])
++    return vertices, faces
++
++
++def disk(path, z_at, rear=False):
++    from mathutils import Vector
++    from mathutils.geometry import delaunay_2d_cdt
++    def inside(x,y):
++        result=False
++        for a,b in zip(path,np.roll(path,-1,axis=0)):
++            if (a[1]>y)!=(b[1]>y) and x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0]:result=not result
++        return result
++    # Regular surface samples preserve the transverse curve. A fan with only
++    # corner samples wrongly pulled the wide applique back toward its ends.
++    boundary=[]
++    for a,b in zip(path,np.roll(path,-1,axis=0)):
++        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/.025)),endpoint=False):boundary.append(a*(1-t)+b*t)
++    points=list(boundary);low,high=path.min(0),path.max(0)
++    for x in np.arange(low[0]+.0125,high[0],.025):
++        for y in np.arange(low[1]+.0125,high[1],.025):
++            if inside(x,y):points.append([x,y])
++    xy,_,faces,*_=delaunay_2d_cdt([Vector(p) for p in points],[],[list(range(len(boundary)))],1,1e-6,False)
++    vertices=[[p.x,p.y,z_at(p.x,p.y)] for p in xy]
++    # All 2D paths are anticlockwise; a front-facing disk looks down -Z.
++    if not rear: faces = [tuple(reversed(f)) for f in faces]
++    return vertices, faces
++
++
++def details(add, simple, rear_surface):
++    """Use one material bucket per role; do not create runtime detail nodes."""
++    count = 48 if simple else 64
++    theta = np.arange(count)*2*math.pi/count
++    def emit(name, vertices, faces, role, group='body'):
++        add(name, vertices, faces, role, group, orient=False)
++
++    # Four projector optics: a turned bezel, recessed dark reflector, lens and
++    # a restrained light guide. The two white buckets remain the night lenses.
++    for side in [-1,1]:
++        group = 'head_left' if side<0 else 'head_right'
++        for index,cx in enumerate([side*.575,side*.730]):
++            cy=.709; cz=-1.946+.035*(abs(cx)/.8)**2
++            def lathe(name,profile,role):
++                loops=[np.c_[cx+r*np.cos(theta),cy+r*np.sin(theta),np.full(count,cz+depth)] for r,depth in profile]
++                v,f=ring(loops)
++                # With an anticlockwise ring, inward-going profiles face -Z.
++                emit(name+str(side)+str(index),v,[tuple(reversed(t)) for t in f],role)
++            lathe('ProjectorHousing',[(.069,.025),(.069,-.001),(.064,-.005),(.054,-.005),(.051,.010)],'dark')
++            lathe('MachinedOpticRim',[(.061,-.006),(.062,-.009),(.059,-.011),(.055,-.010),(.054,-.006)],'chrome')
++            lathe('DaylightGuide',[(.054,-.007),(.054,-.010),(.051,-.010),(.051,-.007)],'led')
++            lathe('ProjectorReflector',[(.049,-.004),(.043,.009),(.029,.016),(.024,.014)],'mirror')
++            # The complete lens geometry belongs to the existing night API.
++            rings=[]
++            for r,depth in [(.026,.009),(.018,.006),(.002,.005)]:
++                rings.append(np.c_[cx+r*np.cos(theta),cy+r*np.sin(theta),np.full(count,cz+depth)])
++            v,f=ring(rings);emit('ProjectorLens'+str(side)+str(index),v,[tuple(reversed(t)) for t in f],'white',group)
++
++    # Recessed satin-black upper grille, with open cells and actual depth.
++    # It is kept inside the bumper opening, clear of the fender corners.
++    grille=rounded(0,.711,1.01,.144,.025,8)
++    grille_z=lambda x:-2.046+.104*(abs(x)/.8)**2
++    v,f=disk(grille,lambda x,y:grille_z(x)+.018)
++    emit('GrilleRecess',v,f,'dark')
++    outer=rounded(0,.711,1.025,.158,.030,8)
++    inner=rounded(0,.711,1.003,.137,.022,8)
++    v,f=ring([np.array([[x,y,grille_z(x)] for x,y in outer]),np.array([[x,y,grille_z(x)-.002] for x,y in inner])])
++    emit('GrillePerimeter',v,[tuple(reversed(t)) for t in f],'vent_metal')
++    vertices=[];faces=[]
++    for row in range(3):
++        for column in range(25):
++            x=(column-12)*.038+(row%2)*.019; y=.671+row*.034
++            if abs(x)>.470:continue
++            a=np.arange(6)*math.pi/3
++            outer=np.c_[x+.023*np.cos(a),y+.020*np.sin(a)]
++            inner=np.c_[x+.0205*np.cos(a),y+.0175*np.sin(a)]
++            v,f=ring([np.array([[x,y,grille_z(x)-.003] for x,y in outer]),np.array([[x,y,grille_z(x)-.003] for x,y in inner]),np.array([[x,y,grille_z(x)+.009] for x,y in inner])])
++            offset=len(vertices);vertices.extend(v);faces.extend([tuple(offset+i for i in reversed(t)) for t in f])
++    emit('OpenHoneycombGrille',vertices,faces,'vent_metal')
++
++    # Continuous rear applique with rounded returns; clean twin perimeter
++    # light guides sit ahead of a smoked lens rather than polygonal red slabs.
++    rear_z=rear_surface
++    outer=rounded(.005,.854,1.585,.174,.050,8)
++    inner=rounded(.005,.854,1.567,.156,.041,8)
++    v,f=disk(inner,lambda x,y:rear_z(x,y)+.001,True)
++    emit('SmokedRearApplique',v,f,'dark')
++    v,f=ring([np.array([[x,y,rear_z(x,y)-.003] for x,y in outer]),np.array([[x,y,rear_z(x,y)+.003] for x,y in inner])])
++    emit('RearAppliqueReturn',v,f,'accent')
++    for side in [-1,1]:
++        cx=side*.475+.005;cy=.862
++        outer=rounded(cx,cy,.535,.073,.022,10)
++        v,f=disk(outer,lambda x,y:rear_z(x,y)+.004,True)
++        emit('SmokedTailLens'+str(side),v,f,'lens_red')
++        inner=rounded(cx,cy,.519,.057,.015,10)
++        v,f=ring([np.array([[x,y,rear_z(x,y)+.007] for x,y in outer]),np.array([[x,y,rear_z(x,y)+.008] for x,y in inner])])
++        emit('TailLightGuide'+str(side),v,f,'red','tail_left' if side<0 else 'tail_right')
++        path=rounded(cx+side*.125,cy,.055,.022,.007,6)
++        v,f=disk(path,lambda x,y:rear_z(x,y)+.0085,True)
++        emit('ReverseChamber'+str(side),v,f,'reverse')
++
++    # Rolled oval exhaust tips, black inside; no thin intersecting source tubes.
++    for side in [-1,1]:
++        cx=side*.520+.005;cy=.351
++        loops=[]
++        for rx,ry,z in [(.111,.039,2.145),(.113,.041,2.207),(.110,.039,2.219),(.103,.032,2.219),(.101,.030,2.145)]:
++            loops.append(np.c_[cx+rx*np.cos(theta),cy+ry*np.sin(theta),np.full(count,z)])
++        v,f=ring(loops);emit('RolledExhaustTip'+str(side),v,f,'chrome')
++        path=np.c_[cx+.102*np.cos(theta),cy+.031*np.sin(theta)]
++        v,f=disk(path,lambda x,y:2.148,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
++
++
++def vent_paths():
++    # Stock Hellcat proportions, with softly rounded ends. These are holes in
++    # the new skin, not raised scoops or black faces on top of the paint.
++    return [rounded(0,-1.73,.33,.070,.020,8),
++            rounded(-.535,-1.558,.176,.110,.025,8),
++            rounded(.535,-1.558,.176,.110,.025,8)]
++
++
++def vents(add, paths, height):
++    for index,path in enumerate(paths):
++        centre=path.mean(0)
++        inner=centre+(path-centre)*np.array([.93,.85])
++        outer=np.array([[x,height(x,z),z] for x,z in path])
++        lower=np.array([[x,height(x,z)-.007,z] for x,z in inner])
++        v,f=ring([outer,lower]);add('RecessedVentPaintReturn'+str(index),v,f,'paint','hood')
++        vertices=lower.tolist()+[[centre[0],height(*centre)-.008,centre[1]]]
++        faces=[(len(path),i,(i+1)%len(path)) for i in range(len(path))]
++        add('RecessedVentBed'+str(index),vertices,faces,'dark','hood')
++        width=np.ptp(inner[:,0])*.89
++        zmin,zmax=inner[:,1].min(),inner[:,1].max()
++        for slat,z in enumerate(np.linspace(zmin+.012,zmax-.012,3 if index==0 else 4)):
++            x=centre[0]
++            points=[[x-width/2,height(x-width/2,z)-.003,z-.0025],
++                    [x+width/2,height(x+width/2,z)-.003,z-.0025],
++                    [x+width/2,height(x+width/2,z)-.004,z+.0025],
++                    [x-width/2,height(x-width/2,z)-.004,z+.0025]]
++            add('VentVane'+str(index)+'_'+str(slat),points,[(0,1,2),(0,2,3)],'vent_metal','hood')
+diff --git a/game/tests/bake_challenger_hellcat.gd b/game/tests/bake_challenger_hellcat.gd
+--- a/game/tests/bake_challenger_hellcat.gd
++++ b/game/tests/bake_challenger_hellcat.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Native mesh resources from the offline simplified owner-supplied model.
+-const SOURCE: String = "res://../build/challenger-hellcat-2026-11-09/converted/"
++const SOURCE: String = "res://../build/challenger-quality-2026-11-12/converted-final/"
+ const DEST: String = "res://assets/vehicles/challenger_hellcat_v1/"
+ 
+ func _initialize() -> void: run.call_deferred()
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,7 @@
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-2/"
++const KEY: String = "super-rally-hellcat-3/"
+ static var meshes: Dictionary = {}
+ const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
+ static var assets: Dictionary = {}
+@@ -82,11 +82,11 @@
+ 
+ static func _paint(color: Color) -> StandardMaterial3D:
+ 	var result: StandardMaterial3D = CompactFinish.paint(color)
+-	result.roughness = 0.49
+-	result.metallic = 0.05
+-	result.metallic_specular = 0.28
+-	result.clearcoat = 0.10
+-	result.clearcoat_roughness = 0.42
++	result.roughness = 0.35
++	result.metallic = 0.10
++	result.metallic_specular = 0.34
++	result.clearcoat = 0.40
++	result.clearcoat_roughness = 0.24
+ 	return result
+ 
+ static func _materials(car: CarVisual) -> Dictionary:
+@@ -94,13 +94,21 @@
+ 	var glass := VisualGeometry.material(Color("101b20"))
+ 	glass.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+ 	glass.cull_mode = BaseMaterial3D.CULL_DISABLED # Opaque from both sides of every source pane.
+-	glass.roughness = 0.32; glass.metallic = 0.18
++	glass.roughness = 0.15; glass.metallic = 0.0; glass.metallic_specular = 0.65
++	glass.clearcoat_enabled = true; glass.clearcoat = 0.45; glass.clearcoat_roughness = 0.14
+ 	var contour := VisualGeometry.material(Color("303b40"))
+ 	contour.roughness = 0.85; contour.cull_mode = BaseMaterial3D.CULL_DISABLED
++	var led := VisualGeometry.material(Color("a3b7bf"))
++	led.roughness = 0.24; led.emission_enabled = true; led.emission = Color("73848c"); led.emission_energy_multiplier = 0.25
++	var red_lens := VisualGeometry.material(Color("301213"))
++	red_lens.roughness = 0.20; red_lens.metallic_specular = 0.55
++	var vent_metal := CompactFinish.alloy(Color("30383a"))
++	vent_metal.roughness = 0.55; vent_metal.metallic = 0.25
+ 	var result: Dictionary = {"paint":car.paint_materials.body,"accent":car.paint_materials.accent,"detail":car.paint_materials.detail,
+ 		"glass":glass,"contour":contour,"mirror":CompactFinish.alloy(Color("657578")),"dark":CompactFinish.rubber(Color("172125")),
+ 		"chrome":CompactFinish.alloy(Color("8e999a")),"rubber":CompactFinish.rubber(Color("192125")),
+-		"red":car.brake_material,"white":VisualGeometry.material(Color("b8c0b8")),"reverse":VisualGeometry.material(Color("423d3d")),"amber":VisualGeometry.material(Color("b96820"))}
++		"red":car.brake_material,"white":VisualGeometry.material(Color("354956")),"reverse":VisualGeometry.material(Color("778789")),"amber":VisualGeometry.material(Color("b96820")),
++		"led":led,"lens_red":red_lens,"vent_metal":vent_metal}
+ 	car.set_meta("hellcat_materials",result)
+ 	return result
+ 
+@@ -112,7 +120,7 @@
+ 		if not assets.has(path): assets[path] = load(path)
+ 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
+ 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
+-		if item.role == "contour" or (group == "hood" and item.role == "dark"): part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		if item.role in ["contour","led","red","white","reverse","lens_red","vent_metal","glass"] or (group == "hood" and item.role == "dark"): part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		parent.add_child(part)
+ 		if group.begins_with("tail_"): car.brake_lights.append(part)
+ 
+@@ -132,9 +140,10 @@
+ 		for axle: float in [-1.28,1.28]:
+ 			var pivot := Node3D.new(); pivot.position = Vector3(side*0.83,0.37,axle); car.add_child(pivot)
+ 			var group: String = _wheel_group(pivot.position)
+-			CompactDetail.tire(pivot,_materials(car).rubber,car.simple_model)
++			# Round close-up silhouettes are worth the small local tessellation cost.
++			CompactDetail.tire(pivot,_materials(car).rubber,false)
+ 			var frame: Node3D = car.new_kit_frame("rims",pivot) if car.editable_kits else pivot
+-			wheel(frame,side,"five" if car.customisation.rims == "stock" else str(car.customisation.rims))
++			wheel(frame,side,str(car.customisation.rims))
+ 			if axle < 0.0: car.front_wheels.append(pivot)
+ 			car.register_rolling_wheel(pivot,0.37)
+ 			CompactKits.build_caliper(pivot,side)
+@@ -147,7 +156,7 @@
+ 		for rotor: Node3D in car.rolling_wheels:
+ 			var frame: Node3D = car.new_kit_frame("rims",rotor) if car.editable_kits else rotor
+ 			var pivot: Node3D = rotor.get_parent()
+-			wheel(frame,signf(pivot.position.x),"five" if kind == "stock" else kind)
++			wheel(frame,signf(pivot.position.x),kind)
+ 		return
+ 	var root: Node3D = car.new_kit_frame(category,car.body) if car.editable_kits else Node3D.new()
+ 	if not car.editable_kits: root.name = "HellcatKit_"+category; car.body.add_child(root)
+@@ -266,32 +275,65 @@
+ 
+ 
+ static func wheel(root: Node3D, side: float, kind: String = "stock") -> void:
+-	var white: Material = CompactFinish.alloy(Color("b9bbb4" if kind == "stock" else "e5e5db" if kind == "rallydisc" else "929a9c"))
++	if kind == "stock":
++		_factory_wheel(root,side)
++		return
++	var white: Material = CompactFinish.alloy(Color("e5e5db" if kind == "rallydisc" else "929a9c"))
+ 	var dark: Material = CompactFinish.rubber(Color("192125"))
+ 	var steel: Material = CompactFinish.alloy(Color("8c9698"))
+-	# A compact closed annular rim plus six open spokes; no high-density forged
+-	# accessory mesh is needed for the factory competition wheel.
++	# Retain the existing purchased rim designs independently of the factory wheel.
+ 	var rim: Array[Vector2] = [Vector2(0.095,0.230),Vector2(0.106,0.249),Vector2(0.151,0.249),Vector2(0.158,0.239),Vector2(0.149,0.224),Vector2(0.112,0.224)]
+ 	CompactKitSurface.skin(root,KEY+"competition-rim"+str(side),func(u: float,v: float) -> Vector3:
+ 		var a: float = u*TAU
+ 		var q: Vector2 = CompactKitSurface.contour(rim,v,0.003)
+ 		return Vector3(side*q.x,sin(a)*q.y,cos(a)*q.y),white,32,16)
+-	if kind == "stock":
+-		var slots: Array[Rect2] = []
+-		for slot: int in range(5): slots.append(Rect2(slot/5.0+0.035,0.53,0.125,0.37))
+-		_patch(root,"HellcatFiveSlotRallyWheel"+str(side),func(u: float,v: float) -> Vector3:
+-			var angle: float = u*TAU; var radius: float = lerpf(0.070,0.232,v)
+-			return Vector3(side*(0.121+0.030*v*v),sin(angle)*radius,cos(angle)*radius),white,Vector3(side,0,0),60,12,slots)
+ 	var hub := CompactKits._cylinder(root,0.077,0.067,Vector3(side*0.120,0,0),white,12)
+ 	hub.rotation.z = PI*0.5
+-	var spokes: int = 0 if kind == "stock" else 5 if kind in ["five","dish"] else 3 if kind == "tri" else 10 if kind in ["ten","mesh"] else 6
++	var spokes: int = 5 if kind in ["five","dish"] else 3 if kind == "tri" else 10 if kind in ["ten","mesh"] else 6
+ 	for index: int in range(spokes):
+ 		var a: float = index*TAU/float(spokes)
+ 		var spoke := VisualGeometry.box(root,Vector3(0.032,0.046,0.182),Vector3(side*0.131,sin(a)*0.156,cos(a)*0.156),white)
+ 		spoke.rotation.x = -a
+ 		var bolt := CompactKits._cylinder(root,0.009,0.006,Vector3(side*0.157,sin(a)*0.054,cos(a)*0.054),steel,8)
+ 		bolt.rotation.z = PI*0.5
+-	if kind == "stock":
+-		var hubcap := CompactKits._cylinder(root,0.092,0.018,Vector3(side*0.158,0,0),steel,20); hubcap.rotation.z = PI*0.5
+-	var cap := CompactKits._cylinder(root,0.024 if kind == "stock" else 0.031,0.006,Vector3(side*0.170 if kind == "stock" else side*0.158,0,0),dark,12)
++	var cap := CompactKits._cylinder(root,0.031,0.006,Vector3(side*0.158,0,0),dark,12)
+ 	cap.rotation.z = PI*0.5
++
++static func _factory_wheel(root: Node3D, side: float) -> void:
++	var alloy := CompactFinish.alloy(Color("9aa4a7"))
++	alloy.roughness = 0.25
++	var barrel := CompactFinish.alloy(Color("3b4549"))
++	barrel.roughness = 0.40
++	var rotor := CompactFinish.alloy(Color("4c5659"))
++	rotor.roughness = 0.49
++	var dark := CompactFinish.rubber(Color("172025"))
++	var rim: Array[Vector2] = [Vector2(0.065,0.226),Vector2(0.069,0.248),Vector2(0.143,0.248),Vector2(0.157,0.242),Vector2(0.159,0.232),Vector2(0.150,0.224)]
++	CompactKitSurface.skin(root,KEY+"forged-barrel"+str(side),func(u: float,v: float) -> Vector3:
++		var q: Vector2 = CompactKitSurface.contour(rim,v,0.002)
++		return Vector3(side*q.x,sin(u*TAU)*q.y,cos(u*TAU)*q.y),barrel,64,8)
++	var lip: Array[Vector2] = [Vector2(0.146,0.242),Vector2(0.154,0.246),Vector2(0.160,0.240),Vector2(0.158,0.234),Vector2(0.151,0.233)]
++	CompactKitSurface.skin(root,KEY+"turned-rim-lip"+str(side),func(u: float,v: float) -> Vector3:
++		var q: Vector2 = CompactKitSurface.contour(lip,v,0.0015)
++		return Vector3(side*q.x,sin(u*TAU)*q.y,cos(u*TAU)*q.y),alloy,64,8)
++	_patch(root,"ventilated-brake-disc"+str(side),func(u: float,v: float) -> Vector3:
++		var r: float = lerpf(0.076,0.185,v)
++		return Vector3(side*0.092,sin(u*TAU)*r,cos(u*TAU)*r),rotor,Vector3(side,0,0),64,4)
++	for spoke: int in range(5):
++		for fork: float in [-1.0,1.0]:
++			var base: float = spoke*TAU/5.0
++			CompactKitSurface.solid(root,KEY+"forged-spoke"+str(side)+str(spoke)+str(fork),func(u: float,v: float) -> Vector3:
++				var r: float = lerpf(0.061,0.236,u)
++				var angle: float = base+fork*(0.055+0.095*smoothstep(0.1,1.0,u))+0.055*sin(u*PI)
++				var breadth: float = lerpf(0.012,0.009,u)
++				var x: float = lerpf(0.119,0.153,pow(u,0.72))
++				var section: Array[Vector2] = [Vector2(-breadth,-0.008),Vector2(breadth,-0.008),Vector2(breadth,0.006),Vector2(-breadth,0.006)]
++				var q: Vector2 = CompactKitSurface.contour(section,v,0.002)
++				return Vector3(side*(x+q.y),sin(angle)*r+cos(angle)*q.x,cos(angle)*r-sin(angle)*q.x),alloy,16,8)
++	var hub := CompactKits._cylinder(root,0.072,0.025,Vector3(side*0.126,0,0),alloy,32)
++	hub.rotation.z = PI*0.5
++	for bolt: int in range(5):
++		var a: float = bolt*TAU/5.0
++		var lug := CompactKits._cylinder(root,0.008,0.008,Vector3(side*0.145,sin(a)*0.050,cos(a)*0.050),barrel,8)
++		lug.rotation.z = PI*0.5
++	var cap := CompactKits._cylinder(root,0.027,0.005,Vector3(side*0.143,0,0),dark,24)
++	cap.rotation.z = PI*0.5
+diff --git a/game/tests/test_challenger_hellcat.gd b/game/tests/test_challenger_hellcat.gd
+--- a/game/tests/test_challenger_hellcat.gd
++++ b/game/tests/test_challenger_hellcat.gd
+@@ -49,7 +49,7 @@
+ 				check(surface != null and surface.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and surface.albedo_color.a == 1.0,"native windows are fully opaque")
+ 		check(glass_count == 1,"all original glazing shares one opaque native surface")
+ 		check(contours == 1 and contours_unshadowed,"door, handle and fuel outlines form one unshadowed marking surface")
+-		check(triangles < (30000 if reduced else 50000),"actual assembled car remains within its geometry budget")
++		check(triangles < (50000 if reduced else 85000),"assembled car stays below the allocated 50k/85k exterior-detail budget")
+ 		check(car.wheel_rest_positions == [Vector3(-0.83,0.37,-1.28),Vector3(-0.83,0.37,1.28),Vector3(0.83,0.37,-1.28),Vector3(0.83,0.37,1.28)],"Rally physical wheel locations remain exact")
+ 		var probe := MeshInstance3D.new(); var sphere := SphereMesh.new(); sphere.radius = 0.18; sphere.height = 0.36
+ 		probe.mesh = sphere; probe.position = Vector3(0,1.03,0.25)
+diff --git a/game/legal/challenger_hellcat_notices.txt b/game/legal/challenger_hellcat_notices.txt
+--- a/game/legal/challenger_hellcat_notices.txt
++++ b/game/legal/challenger_hellcat_notices.txt
+@@ -21,6 +21,13 @@
+ bonnet vents made flush, nose extended slightly, tiny exterior details removed
+ and glazing backing inset to remove overlapping surface artefacts.
+ 
++Exterior detail refinement (2026-11-12): authored projector optics and light
++guides, open-cell grille, smoked rear applique and rolled exhaust tips replace
++fragile source details. Shallow bonnet vents replace flat markings. New native
++split-spoke factory wheels, rounder tyres, coherent opaque glazing normals and
++revised automotive paint/glass finishes improve close views. Interior remains
++removed; door, handle and fuel-cap markings remain flush.
++
+ The source author credits a Kevin Gallant modelling tutorial:
+ https://www.youtube.com/watch?v=H8Fo0mfyab0
+ No endorsement by the artist, tutorial author or vehicle manufacturer is implied.

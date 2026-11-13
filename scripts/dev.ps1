@@ -39,6 +39,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectRoot = Join-Path $repoRoot 'game'
 $buildRoot = Join-Path $repoRoot 'build'
+# Bound disposable output before creating this command's active logs/profile.
+& (Join-Path $PSScriptRoot 'clean_build.ps1') -Apply
 $expectedVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'godot-version.txt') -Raw).Trim()
 $apkName = if ($AndroidPreset -eq 'Android ARM64') { 'circuit01-arm64.apk' } else { 'circuit01-debug.apk' }
 $apkPath = Join-Path $buildRoot ('android/' + $apkName)

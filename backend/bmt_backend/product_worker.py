@@ -7,23 +7,28 @@ import threading
 import time
 from dataclasses import replace
 
-from sqlalchemy import select
-
 from .config import Settings
 from .db import make_engine, make_session_factory
+from .observability import configure_logging, failure_site
 from .product_analytics import project_pending
-from .telemetry_models import ProductEvent
 from .telemetry_processing import actor_once, maintenance, publish, record_failure, retry_stage, shared_once
 from .telemetry_queue import PreparationSchedule, fold_one
 
 
-def pending_exists(factory):
-    with factory() as session:
-        return session.scalar(select(ProductEvent.id).where(ProductEvent.processed_at.is_(None))
-            .order_by(ProductEvent.received_at, ProductEvent.id).limit(1)) is not None
+def log_failure(event, error, stage):
+    fields = {"exception_type": type(error).__name__, "failure_site": failure_site(error)}
+    if stage in ("actor", "shared", "rollup", "maintenance", "metadata"):
+        fields["telemetry_stage"] = stage
+    identity = getattr(error, "telemetry_owner", None)
+    if isinstance(identity, tuple) and len(identity) == 2 and identity[0] in ("actor", "shared"):
+        owners = identity[1] if isinstance(identity[1], list) else [identity[1]]
+        if len(owners) <= 256 and all(type(owner) is int and 0 <= owner < 256 for owner in owners):
+            fields["telemetry_owners"] = owners
+    logging.getLogger("bmt.product").error(event, extra=fields)
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--stage", choices=("all", "actor", "shared", "rollup", "maintenance"), default="all")
@@ -62,8 +67,11 @@ def main():
                 else:
                     worked = False
             except Exception as error:  # noqa: BLE001 - retain evidence and service unrelated owners
-                record_failure(factory, error)
-                logging.getLogger("bmt.product").error("telemetry_stage_failed stage=%s error=%s", role, type(error).__name__)
+                log_failure("telemetry_stage_failed", error, role)
+                try:
+                    record_failure(factory, error)
+                except Exception as recording_error:  # noqa: BLE001 - an unavailable DB must not kill recovery
+                    log_failure("telemetry_failure_record_failed", recording_error, role)
                 worked = False
             tick = time.monotonic()
             try:
@@ -76,7 +84,7 @@ def main():
                     maintenance_at = tick + (0 if cleanup.get("more") else 60)
                     worked = worked or cleanup.get("more", False)
             except Exception as error:  # noqa: BLE001 - retry background metadata without killing healthy owners
-                logging.getLogger("bmt.product").error("telemetry_metadata_failed error=%s", type(error).__name__)
+                log_failure("telemetry_metadata_failed", error, "metadata")
                 summary_at, maintenance_at = tick + 5, tick + 5
             if args.once:
                 break

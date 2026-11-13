@@ -1,4 +1,5 @@
 extends SceneTree
+const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
 ## Offline original-model photographs and immutable authored part meshes.
 const ASSET_ROOT: String = "res://assets/vehicles/compact_kits_v1"
 func _initialize() -> void: _run.call_deferred()
@@ -10,8 +11,8 @@ func _run() -> void:
 	CompactKits.use_baked = false
 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
 	CompactKits.meshes.clear()
-	CompactKitThumbnail.use_prepared = false
-	CompactKitThumbnail.images.clear()
+	OfflineKitThumbnail.use_prepared = false
+	OfflineKitThumbnail.images.clear()
 	var aero_only: bool = "--aero-only" in OS.get_cmdline_user_args()
 	var selected: Array[String] = []
 	var selected_ids: Array[String] = []
@@ -32,7 +33,7 @@ func _run() -> void:
 		if not selected.is_empty() and category not in selected: continue
 		for option: Array in VehicleCustomisation.OPTIONS[category]:
 			if not selected_ids.is_empty() and str(option[0]) not in selected_ids: continue
-			var photo: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
+			var photo: OfflineKitThumbnail = OfflineKitThumbnail.make(category,option,false,func() -> void: pass)
 			root.add_child(photo)
 			for frame: int in range(6):
 				await process_frame

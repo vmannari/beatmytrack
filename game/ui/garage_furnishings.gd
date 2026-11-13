@@ -35,6 +35,8 @@ static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material
 		shape.bottom_radius = radius
 		shape.height = length
 		shape.radial_segments = sides
+		# Preserve every radial sample; a straight shaft needs only its end rings.
+		shape.rings = 0
 		meshes[key] = shape
 	var node: MeshInstance3D = mesh(parent,(a+b)*0.5,meshes[key],material)
 	node.quaternion = Quaternion(Vector3.UP,(b-a).normalized())

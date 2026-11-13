@@ -326,6 +326,7 @@ func _standings(parent: Control) -> void:
 	body.add_child(HSeparator.new())
 	if rating_records != null and not results.editor:
 		var rating := TrackRating.new()
+		rating.hide_when_unavailable = true
 		rating.records = rating_records
 		rating.track_id = rating_track_id
 		rating.cloud_client = cloud_client

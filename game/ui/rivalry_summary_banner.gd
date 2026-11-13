@@ -26,15 +26,8 @@ func _draw() -> void:
 				draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+24,y),Vector2(x+19,y+28),Vector2(x-5,y+28)]),faint)
 	draw_line(Vector2(103,126),Vector2(516,126),Color(MenuStyle.ACCENT,0.8),1.3,true)
 	if empty_week: return
-	draw_line(Vector2(565,17),Vector2(532,178),Color(MenuStyle.ACCENT,0.5),1,true)
-	if tier > 0: _trophy(Rect2(739,37,68,79),MenuStyle.ACCENT if tier >= 2 else Color("b8cbd5"))
-	else: draw_texture_rect(MenuIcon.texture("flag",true),Rect2(743,47,59,59),false,MenuStyle.MUTED)
-	for row: int in range(2):
-		for column: int in range(8):
-			if (row+column)%2 != 0: continue
-			var x: float = 723+column*11-row*3
-			var y: float = 128+row*11
-			draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+11,y),Vector2(x+8,y+11),Vector2(x-3,y+11)]),Color("a4bac7",0.5))
+	draw_line(Vector2(546,22),Vector2(546,173),MenuStyle.BORDER,1,true)
+	if tier > 0: _trophy(Rect2(46,52,40,47),MenuStyle.ACCENT if tier >= 2 else Color("b8cbd5"))
 
 func _trophy(rect: Rect2, color: Color) -> void:
 	draw_set_transform(rect.position,0,rect.size/Vector2(68,79))

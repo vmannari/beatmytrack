@@ -1,0 +1,79 @@
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Complete original 1970s C3-style coupe; -Z is the long nose.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-classic-c3-1/"
++const KEY: String = "super-rally-classic-c3-2/"
+ static var meshes: Dictionary = {}
+ const AERO: Dictionary = {
+ 	"lip":Vector4(0.70,0.845,2.17,0.065),"ducktail":Vector4(0.82,0.965,2.13,0.11),
+@@ -67,15 +67,16 @@
+ 		return normal*cos(v*TAU)+tangent.cross(normal).normalized()*sin(v*TAU))
+ 
+ static func width(z: float) -> float:
+-	var stations: Array[Vector2] = [Vector2(-2.65,0.68),Vector2(-2.26,0.90),Vector2(-1.28,1.005),Vector2(-0.64,0.88),Vector2(0.12,0.815),Vector2(0.80,0.965),Vector2(1.30,1.025),Vector2(1.88,0.955),Vector2(2.20,0.835)]
++	var stations: Array[Vector2] = [Vector2(-2.65,0.73),Vector2(-2.26,0.90),Vector2(-1.28,0.985),Vector2(-0.64,0.89),Vector2(0.12,0.855),Vector2(0.80,0.955),Vector2(1.30,1.005),Vector2(1.88,0.95),Vector2(2.20,0.835)]
+ 	for index: int in range(stations.size()-1):
+ 		if z <= stations[index+1].x: return lerpf(stations[index].y,stations[index+1].y,smoothstep(stations[index].x,stations[index+1].x,z))
+ 	return stations.back().y
+ 
+ static func deck_y(z: float, across: float) -> float:
+ 	var base: float = 0.675+0.125*smoothstep(-2.65,-0.74,z)
+-	var bulge: float = 0.24*exp(-pow((z+1.28)/0.62,2))+0.20*exp(-pow((z-1.30)/0.66,2))
+-	return base+bulge*exp(-pow((absf(across)-0.84)/0.27,2))-0.028*pow(absf(across),8)
++	# Broad shoulders flow into the bonnet instead of forming isolated humps.
++	var bulge: float = 0.095*exp(-pow((z+1.28)/0.94,2))+0.11*exp(-pow((z-1.30)/0.96,2))
++	return base+bulge*exp(-pow((absf(across)-0.88)/0.43,2))-0.018*pow(absf(across),8)
+ 
+ static func _bottom(z: float) -> float:
+ 	var y: float = 0.285
+@@ -89,9 +90,9 @@
+ 	return Vector3(side*(width(z)-0.11*pow(1-t,2)),y,z)
+ 
+ static func hood_point(across: float, v: float, kind: String = "stock") -> Vector3:
+-	var front: float = -2.64+0.16*across*across
++	var front: float = -2.60+0.12*across*across
+ 	var z: float = lerpf(front,-0.70,v)
+-	var power: float = 0.035 if kind == "stock" else 0.095 if kind in ["dome","vented","cowl"] else 0.055
++	var power: float = 0.009 if kind == "stock" else 0.095 if kind in ["dome","vented","cowl"] else 0.055
+ 	var rise: float = power*exp(-pow(across/0.32,4))*smoothstep(0.12,0.32,v)*(1-smoothstep(0.78,1,v))
+ 	if kind == "ribs":
+ 		for ridge: float in [-0.28,0.0,0.28]: rise += 0.018*exp(-pow((across-ridge)/0.035,4))*smoothstep(0.12,0.30,v)*(1-smoothstep(0.82,1,v))
+@@ -100,14 +101,23 @@
+ static func roof_point(across: float, v: float) -> Vector3:
+ 	return Vector3(across*(0.535+0.020*sin(v*PI)),1.285+0.022*sin(v*PI)-0.045*across*across,lerpf(-0.25,0.69,v))
+ 
++static func _paint(color: Color) -> StandardMaterial3D:
++	var result: StandardMaterial3D = CompactFinish.paint(color)
++	result.roughness = 0.49
++	result.metallic = 0.05
++	result.metallic_specular = 0.28
++	result.clearcoat = 0.10
++	result.clearcoat_roughness = 0.42
++	return result
++
+ static func build(car: CarVisual) -> void:
+ 	CompactKits.simple_parts = car.simple_model
+ 	car.body = Node3D.new(); car.body.name = "ClassicStingrayCoupe"; car.add_child(car.body)
+-	var paint: Material = CompactFinish.paint(Color("b73528"))
+-	var accent: Material = CompactFinish.paint(Color("20272a"))
++	var paint: Material = _paint(Color("b73528"))
++	var accent: Material = _paint(Color("20272a"))
+ 	var alloy: Material = CompactFinish.alloy(Color("a3aba9"))
+ 	var dark: Material = CompactFinish.rubber(Color("182125"))
+-	var glass: StandardMaterial3D = VisualGeometry.material(Color("172d38")); glass.roughness = 0.19; glass.metallic = 0.18
++	var glass: StandardMaterial3D = VisualGeometry.material(Color("14232b")); glass.roughness = 0.27; glass.metallic = 0.32
+ 	car.paint_materials = {"body":paint,"accent":accent,"detail":alloy}
+ 	car.brake_material = VisualGeometry.material(Color("802d2b"))
+ 	_patch(car.body,"C3Underbody",func(u: float,v: float) -> Vector3:
+@@ -188,7 +198,7 @@
+ 		_curve(car.body,"C3Apillar"+str(side),func(t: float) -> Vector3: return a.lerp(c,t),0.026,paint,16)
+ 		_curve(car.body,"C3WindowSill"+str(side),func(t: float) -> Vector3: return a.lerp(b,t),0.019,paint,24)
+ 		_curve(car.body,"C3WindowHeader"+str(side),func(t: float) -> Vector3: return c.lerp(d,t),0.023,paint,24)
+-		var tip := Vector3(side*0.895,0.915,1.55)
++		var tip := Vector3(side*0.895,deck_y(1.55,0.895/width(1.55))+0.005,1.55)
+ 		var sail: Callable = func(u: float,v: float) -> Vector3:
+ 			return d.lerp(tip,u).lerp(b.lerp(tip,u),v)+Vector3(side*0.012*sin(u*PI)*sin(v*PI),0.015*sin(u*PI)*(1-v),0)
+ 		_patch(car.body,"C3IntegralRearSail"+str(side),sail,paint,Vector3(side,0.2,0),28,14)

@@ -3,6 +3,7 @@ shader_type canvas_item;
 uniform vec4 side_damage = vec4(0.0); // left, right, top, bottom
 uniform float minimum_alpha = 0.18;
 uniform float maximum_alpha = 0.82;
+uniform vec4 glass_tint : source_color = vec4(1.0);
 
 void fragment() {
 	vec4 glass = texture(TEXTURE, UV);
@@ -13,5 +14,5 @@ void fragment() {
 	float reveal = max(max(left_weight * side_damage.x, right_weight * side_damage.y),
 		max(top_weight * side_damage.z, bottom_weight * side_damage.w));
 	float alpha_scale = mix(minimum_alpha, maximum_alpha, reveal);
-	COLOR = vec4(glass.rgb, glass.a * alpha_scale * smoothstep(0.0, 0.08, reveal));
+	COLOR = vec4(glass.rgb * glass_tint.rgb, glass.a * alpha_scale * smoothstep(0.0, 0.08, reveal));
 }

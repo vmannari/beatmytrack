@@ -1,6 +1,8 @@
 extends Node
-## Profile-local cosmetics. One writer, immutable packets, bounded to five cars.
-const MAX_BYTES: int = 131072
+## Profile-local cosmetics. One writer, immutable packets, bounded to known cars.
+# Current snapshots contain three 16^3 base64 masks (about 16 KiB per car).
+# Retired cars keep their condition too; allow all nine accepted IDs plus headroom.
+const MAX_BYTES: int = 262144
 static var _stores: Dictionary = {}
 var path: String
 var current: Dictionary = {}

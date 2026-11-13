@@ -48,7 +48,7 @@ func check_wash_layout(page: GaragePage) -> void:
 		check(absf(choice.size.x-(dock.size.x-20.0)/3.0) <= 1.0,"equal wash option widths")
 		var title: Label = choice.title
 		check(title.get_theme_font("font").get_string_size(GameText.message(title.text),HORIZONTAL_ALIGNMENT_LEFT,-1,title.get_theme_font_size("font_size")).x <= title.size.x+1.0,"wash caption fits "+str(choice.name))
-	check(not dock.get_node("GarageSuperWash").toggle_mode,"instant action is separate from manual-tool selection")
+	check(not dock.get_node("GarageSuperWash").toggle_mode,"automatic action is separate from manual-tool selection")
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL","")
@@ -87,6 +87,7 @@ func run() -> void:
 		check(root.get_visible_rect().encloses(button.get_global_rect()),id+" action fits")
 		var paint: Dictionary = page.showroom.livery.duplicate(true)
 		var parts: Dictionary = page.showroom.customisation.duplicate(true)
+		page.showroom.set_process(false)
 		var others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
 		others.erase(id)
 		page._toggle_wash()
@@ -96,6 +97,9 @@ func run() -> void:
 		await capture(id+"-dirty")
 		await click(button)
 		await settle()
+		check(page.showroom.weathering.dirt_amount>0.0,id+" dirt remains until the brushes pass")
+		check(page._workshop_wash_required,id+" dirty workshop remains locked at wash start")
+		page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
 		var clean: Dictionary = page.showroom.weathering.snapshot()
 		for field: String in ["dirt","snow","slow_dirt","slow_snow","mud","smudge","wetness","slow_recoat","grime_elapsed"]:
 			check(float(clean[field]) == 0.0,id+" clears "+field)
@@ -105,9 +109,10 @@ func run() -> void:
 		check(not page.showroom.weathering.installed,id+" restores clean original materials")
 		check(not page.showroom.wash_mode and not page.showroom.washing and not page.showroom.wash_pointer_valid and page.showroom.touches.is_empty(),id+" ends active wash gestures")
 		check(page.wash_button.text == "Wash",id+" manual wash can restart")
-		check(page._wash_status.text == "Shiny. For now.",id+" immediately displays top cleanliness grade")
-		check(not page._workshop_wash_required,id+" immediately permits customisation")
-		check(not button.button_pressed,id+" instant action does not remain selected")
+		page._update_wash_status()
+		check(page._wash_status.text == "Shiny. For now.",id+" completed wash displays top cleanliness grade")
+		check(not page._workshop_wash_required,id+" completed wash permits customisation")
+		check(not button.button_pressed,id+" automatic action does not remain selected")
 		check(page.showroom.livery == paint and page.showroom.customisation == parts,id+" retains paint and parts")
 		check(VehicleCondition.read(records,id) == clean,id+" persists full clean state")
 		var after_others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
@@ -117,6 +122,7 @@ func run() -> void:
 		var revision: int = AchievementProgress.read(records).revision
 		await click(button)
 		check(VehicleCondition.read(records,id) == clean and AchievementProgress.read(records).revision == revision,id+" repeated clean action is a no-op")
+		page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
 		var reopened := LocalRecords.new(records.path)
 		reopened.load_records()
 		check(VehicleCondition.read(reopened,id) == clean,id+" stays clean after local reload")
@@ -124,6 +130,8 @@ func run() -> void:
 	# being restored by the stale-page protection after the button is pressed.
 	check(VehicleCondition.save(records,page.vehicle_id,dirty) == OK,"newer race wear saved")
 	page._super_wash()
+	check(VehicleCondition.read(records,page.vehicle_id).dirt>0.0,"newer local wear remains at wash start")
+	page.showroom.super_wash_effect.advance(page.showroom.super_wash_effect.SECONDS)
 	check(VehicleCondition.read(records,page.vehicle_id).dirt == 0.0,"Super Wash includes newer local wear")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
 		root.size = dimensions

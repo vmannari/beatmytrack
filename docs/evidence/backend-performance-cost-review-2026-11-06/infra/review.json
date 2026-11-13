@@ -1,0 +1,294 @@
+{
+  "review_date": "2026-11-06",
+  "requirements": [
+    "BPC-INFRA",
+    "BPC-COST",
+    "BPC-CAPACITY"
+  ],
+  "sources_sha256": {
+    "backend/bmt_backend/load_fixtures.py": "9ee8cbf5c542076997eb1e2b32a4233ea5ce6480020f50a290b13a4bfd438901",
+    "backend/bmt_backend/loadtest.py": "df48e41b29e41c033c600a36c19aed04e42ab0490387ce8ad6788e2cefbacc2c",
+    "backend/bmt_backend/verifier.py": "62af25548c4d179ad74633d525ba3c82fabe34a0ee2afc5da60ff244baa5a24e",
+    "backend/deploy/gcp/staging.py": "210eb21225d4f9a932526a0cd795e63e4b1e71c2815ab4fdb9dbc0666a060df0",
+    "backend/bmt_backend/studio_usage_cloud.py": "aa9e67f17df70821a21e4131a65437f65c0f6b8fb9f71719f725894337d60606"
+  },
+  "cloud_evidence": [
+    "../cloud-inventory.json",
+    "../cloud-metrics.json",
+    "../cloud-details.json"
+  ],
+  "observed_inventory_captured_at_utc": "2026-11-06T21:32:22.246963+00:00",
+  "live_topology": {
+    "region": "europe-west1",
+    "api_resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "1024Mi"
+      }
+    },
+    "api_scaling": {
+      "run.googleapis.com/maxScale": "2",
+      "run.googleapis.com/minScale": "1"
+    },
+    "api_concurrency": 16,
+    "worker_resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "768Mi"
+      }
+    },
+    "worker_scaling": {
+      "run.googleapis.com/manualInstanceCount": "1"
+    },
+    "studio_resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "768Mi"
+      }
+    },
+    "studio_scaling": {
+      "run.googleapis.com/maxScale": "1"
+    },
+    "sql": {
+      "tier": "db-custom-1-3840",
+      "availabilityType": "ZONAL",
+      "dataDiskSizeGb": "10",
+      "dataDiskType": "PD_SSD",
+      "storageAutoResize": false,
+      "databaseFlags": [
+        {
+          "name": "max_connections",
+          "value": "40"
+        }
+      ],
+      "backupConfiguration": {
+        "backupRetentionSettings": {
+          "retainedBackups": 7,
+          "retentionUnit": "COUNT"
+        },
+        "backupTier": "STANDARD",
+        "enabled": true,
+        "kind": "sql#backupConfiguration",
+        "pointInTimeRecoveryEnabled": false,
+        "replicationLogArchivingEnabled": false,
+        "startTime": "02:00",
+        "transactionLogRetentionDays": 7,
+        "transactionalLogStorageState": "TRANSACTIONAL_LOG_STORAGE_STATE_UNSPECIFIED"
+      },
+      "deletionProtectionEnabled": true,
+      "inspection_error": null
+    },
+    "bucket": {
+      "location": "EUROPE-WEST1",
+      "default_storage_class": "STANDARD",
+      "soft_delete_policy": {
+        "effectiveTime": "2026-10-06T05:30:04.936000+00:00",
+        "retentionDurationSeconds": "604800"
+      },
+      "lifecycle_config": null,
+      "inspection_error": null
+    },
+    "registry_bytes": "2691637409"
+  },
+  "public_price_sources_checked": [
+    "https://cloud.google.com/run/pricing",
+    "https://docs.cloud.google.com/run/docs/configuring/workerpools/manual-scaling",
+    "https://cloud.google.com/artifact-registry/pricing",
+    "https://docs.cloud.google.com/billing/docs/how-to/export-data-bigquery-tables/detailed-usage"
+  ],
+  "price_arithmetic": {
+    "currency": "USD",
+    "period_days": 30,
+    "region": "europe-west1; official Cloud Run Tier 1",
+    "worker_cpu_per_vcpu_second": 1.1244e-05,
+    "worker_memory_per_gib_second": 1.235e-06,
+    "worker_1cpu_768mib_continuous": 31.545288,
+    "worker_768_to_512mib_saving": 0.80028,
+    "api_1cpu_1gib_minimum_idle": 12.96,
+    "api_1cpu_1gib_continuous_instance_billing": 51.84,
+    "qualification": "Illustrative list-price components, before free tier/credits/tax/discounts. Not actual charges, a EUR quote, a whole-backend estimate or capacity proof. SQL regional price was not freshly resolved, so omitted."
+  },
+  "capacity_probe": {
+    "passed_assertions": 3,
+    "packed_schema": "bmt-packed-input-v1",
+    "packed_has_race_proof": false,
+    "decoded_has_race_proof": false,
+    "current_verifier_rejection": "Race trajectory is required; update the client",
+    "native_process_started": false,
+    "qualification": "Local exact producer/unpack/acceptance-boundary check, not full HTTP throughput test. Existing load lab still cannot validate current accepted-race capacity."
+  },
+  "findings": [
+    {
+      "id": "INFRA01",
+      "priority": "P1 for capacity decisions",
+      "title": "Repair the load workload before sizing or forecasting",
+      "sources": [
+        "backend/bmt_backend/load_fixtures.py:43",
+        "backend/bmt_backend/loadtest.py:197",
+        "backend/bmt_backend/loadtest.py:211",
+        "backend/bmt_backend/verifier.py:389"
+      ],
+      "detail": "Current pack_replay drops race_proof, and real verification rejects the decoded submission. The read mix exercises legacy /v1/tracks and lacks discovery-v3 and Daily. Synthetic adapter throughput cannot establish current total acceptance or cost per accepted race."
+    },
+    {
+      "id": "INFRA02",
+      "priority": "P2",
+      "title": "Use allocated lifetime, not CPU utilization alone, to evaluate worker savings",
+      "sources": [
+        "backend/deploy/gcp/staging.py:193",
+        "backend/deploy/gcp/staging.py:206",
+        "../cloud-inventory.json"
+      ],
+      "detail": "One manual worker is continuously billed; reduced CPU at the same allocation creates headroom but no compute price reduction. Saving 256MiB gives only about USD0.80/30d before credits. Retain safe simultaneous native-operation headroom; current lower utilization alone is insufficient justification to resize."
+    },
+    {
+      "id": "INFRA03",
+      "priority": "P2 before public launch",
+      "title": "Database savings have explicit availability and recovery limits",
+      "sources": [
+        "../cloud-inventory.json"
+      ],
+      "detail": "Live SQL remains zonal, PITR disabled, 10GiB disk with automatic growth disabled and seven enabled daily backups. Sampled disk occupancy is low, so this is not a current disk emergency. Set recovery objectives and test restoration; do not represent this small floor as an HA capacity design."
+    }
+  ],
+  "cost_visibility": {
+    "sources": [
+      "backend/bmt_backend/studio_usage_cloud.py:236",
+      "backend/bmt_backend/studio_usage_cloud.py:253",
+      "backend/bmt_backend/studio_usage_cloud.py:255"
+    ],
+    "detail": "Existing project-filtered detailed export query preserves NUMERIC charges, credits and currencies and limits scans to 100MB/2000 groups. Coverage and asynchronous-query limits are explicit. Current parent-collected aggregate export contains real charges; the previous October empty-export limitation no longer applies."
+  },
+  "actual_exported_costs": {
+    "source": "../cloud-usage.json",
+    "captured_at_utc": "2026-11-06T21:33:37.353905+00:00",
+    "bytes_processed": "3715352",
+    "source_groups": "78",
+    "recent_complete_utc_dates": {
+      "first_utc_day": "2026-11-01",
+      "last_utc_day_inclusive": "2026-11-05",
+      "days": 5,
+      "currency": "EUR",
+      "gross": "14.341054",
+      "credits": "-14.341160",
+      "net": "-0.000106",
+      "gross_daily_average": "2.8682108",
+      "gross_30day_linear_run_rate": "86.0463240",
+      "services": {
+        "Artifact Registry": {
+          "gross": "0.002393",
+          "credits": "-0.002393",
+          "net": "0.000000",
+          "gross_percent": "0.01668636070961032571246158058"
+        },
+        "BigQuery": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        },
+        "Cloud Logging": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        },
+        "Cloud Run": {
+          "gross": "6.775977",
+          "credits": "-6.775988",
+          "net": "-0.000011",
+          "gross_percent": "47.24880751442676389057596464"
+        },
+        "Cloud SQL": {
+          "gross": "7.561680",
+          "credits": "-7.561775",
+          "net": "-0.000095",
+          "gross_percent": "52.72750524473305797467884857"
+        },
+        "Cloud Storage": {
+          "gross": "0.001004",
+          "credits": "-0.001004",
+          "net": "0.000000",
+          "gross_percent": "0.007000880130567809032725209737"
+        },
+        "Secret Manager": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        }
+      }
+    },
+    "all_complete_utc_dates": {
+      "first_utc_day": "2026-10-27",
+      "last_utc_day_inclusive": "2026-11-05",
+      "days": 10,
+      "currency": "EUR",
+      "gross": "28.447820",
+      "credits": "-28.448306",
+      "net": "-0.000486",
+      "gross_daily_average": "2.844782",
+      "gross_30day_linear_run_rate": "85.343460",
+      "services": {
+        "Artifact Registry": {
+          "gross": "0.038307",
+          "credits": "-0.038307",
+          "net": "0.000000",
+          "gross_percent": "0.1346570668683927274567963380"
+        },
+        "Cloud Logging": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        },
+        "Cloud Monitoring": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        },
+        "Cloud Run": {
+          "gross": "13.438757",
+          "credits": "-13.438933",
+          "net": "-0.000176",
+          "gross_percent": "47.24002401589998811859748831"
+        },
+        "Cloud SQL": {
+          "gross": "14.967664",
+          "credits": "-14.967974",
+          "net": "-0.000310",
+          "gross_percent": "52.61444989457891676761171858"
+        },
+        "Cloud Storage": {
+          "gross": "0.003092",
+          "credits": "-0.003092",
+          "net": "0.000000",
+          "gross_percent": "0.01086902265270238633399677023"
+        },
+        "Secret Manager": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        },
+        "BigQuery": {
+          "gross": "0",
+          "credits": "0",
+          "net": "0",
+          "gross_percent": "0E+6"
+        }
+      }
+    },
+    "partial_2026_11_06_excluded": true,
+    "qualification": "Actual exported project usage-date gross charges and credits at query time. Complete calendar dates do not prove final provider delivery; export can lag/restatement can occur. Tiny negative net is retained exactly, not claimed as an owner refund. Thirty-day multiplication is a current-workload run rate, not an invoice, post-credit guaranteed bill or future-player forecast. Other projects/account-only charges excluded; credits may expire."
+  },
+  "limits": [
+    "No runtime changes or deployments",
+    "No cloud requests by this script",
+    "No phone/device test",
+    "No claimed million-DAU capacity",
+    "No registry cleanup recommendation without active/recovery image inventory",
+    "Current source review distinguished from exact live image provenance"
+  ]
+}

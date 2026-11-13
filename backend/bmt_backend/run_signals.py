@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from sqlalchemy import event, inspect
 from sqlalchemy.orm import Session
 
+from .publication_models import PublicationIntent
 from .track_models import Run
 
 logger = logging.getLogger("bmt.run_signals")
@@ -242,6 +243,10 @@ def collect_run_signals(session, _context):
         return
     signals = session.info.setdefault("run_signals", {"work": False, "done": set()})
     for run in session.new.union(session.dirty):
+        if isinstance(run, PublicationIntent):
+            if (run in session.new or inspect(run).attrs.status.history.has_changes()) and run.status == "queued":
+                signals["work"] = True
+            continue
         if not isinstance(run, Run):
             continue
         changed = run in session.new or inspect(run).attrs.status.history.has_changes()

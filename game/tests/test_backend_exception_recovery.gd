@@ -119,7 +119,7 @@ func run() -> void:
 
 	var malformed: API = api("malformed")
 	var cloud: Node = cloud_for(malformed,"malformed")
-	check(cloud.queue_run({"ticket_id":TICKET},[[0,255,0]],""),"fixture recording is durable")
+	check((await cloud.queue_run_async({"ticket_id":TICKET},[[0,255,0]],"")),"fixture recording is durable")
 	await cloud.flush_outbox()
 	var job: Dictionary = cloud.upload_job(TICKET)
 	check(not cloud.flushing and not job.has("failure") and not job.has("run_id"),"bad success releases latch and retains retryable recording")
@@ -133,7 +133,7 @@ func run() -> void:
 
 	var missing: API = api("missing")
 	cloud = cloud_for(missing,"missing")
-	cloud.queue_run({"ticket_id":TICKET,"_submit_key":"restore-original-key"},[[0,255,0]],"")
+	(await cloud.queue_run_async({"ticket_id":TICKET,"_submit_key":"restore-original-key"},[[0,255,0]],""))
 	job = cloud.upload_job(TICKET)
 	var path: String = str(job._path)
 	job.erase("_path")

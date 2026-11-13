@@ -30,6 +30,7 @@ func _ready() -> void:
 	showroom_viewport.add_child(world)
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
+	car.simple_model = simple_model
 	car.garage_template = true
 	car.editable_kits = VehicleCustomisation.supported(vehicle_id)
 	car.livery = livery

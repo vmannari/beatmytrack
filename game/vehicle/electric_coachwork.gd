@@ -312,7 +312,6 @@ static func canopy_point(u: float,v: float) -> Vector3:
 	if v<=0.68: return raw_canopy_point(u,v)
 	if v<=REAR_WINDOW_END: return rear_window_point(u,(v-0.68)/(REAR_WINDOW_END-0.68))
 	return rear_apron_point(u,(v-REAR_WINDOW_END)/(1-REAR_WINDOW_END))
-static func canopy_width(v: float) -> float: return canopy_point(1,v).x
 static func roof_point(u: float,v: float) -> Vector3: return canopy_point(u,lerpf(0.27,0.68,v))
 static func screen_point(rear_face: bool,u: float,v: float) -> Vector3: return rear_window_point(u,v) if rear_face else canopy_point(u,lerpf(0,0.27,v))
 static func cabin_section(side: float,u: float,v: float) -> Vector3:

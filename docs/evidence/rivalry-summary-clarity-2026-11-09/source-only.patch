@@ -1,0 +1,901 @@
+--- a/game/ui/rivalry_summary_dialog.gd
++++ b/game/ui/rivalry_summary_dialog.gd
+@@ -22,6 +22,7 @@
+ var perfect: Label
+ var position_label: Label
+ var rank_label: Label
++var field_label: Label
+ var no_results_label: Label
+ var driver_label: Label
+ var player_points: Label
+@@ -103,40 +104,47 @@
+ 	ornament.empty_week = summary.rank == null and int(summary.completed) == 0
+ 	hero.add_child(ornament)
+ 	MenuStyle.fill(ornament)
+-	position_label = _summary_label(hero,_place_caption(),22,MenuStyle.ACCENT,Rect2(103,14,420,28))
++	position_label = _summary_label(hero,"FINAL POSITION",20,MenuStyle.MUTED,Rect2(566,14,250,28))
+ 	position_label.name = "WeeklySummaryPlace"
++	position_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	var titles: Dictionary = {"WEEKLY CHAMPION":"Weekly Champion","PODIUM FINISH":"PODIUM\nFINISH","WEEK COMPLETE":"Week complete"}
+ 	var title_source: String = titles.get(str(summary.title),str(summary.title))
+-	heading = _summary_label(hero,GameText.message(title_source).replace("\n"," ").to_upper(),72,MenuStyle.ACCENT if int(summary.tier) > 0 else MenuStyle.TEXT,Rect2(103,35,420,90))
++	heading = _summary_label(hero,GameText.message(title_source).replace("\n"," ").to_upper(),60,MenuStyle.ACCENT if int(summary.tier) > 0 else MenuStyle.TEXT,Rect2(103,28,420,90))
+ 	heading.name = "WeeklySummaryAward"
+ 	var bold := FontVariation.new()
+ 	bold.base_font = _font_for(heading.text)
+ 	bold.variation_embolden = 0.3
+ 	bold.variation_transform = Transform2D(Vector2(0.92,0),Vector2(0,1),Vector2.ZERO)
+-	bold.spacing_glyph = -7
++	bold.spacing_glyph = -2
+ 	bold.spacing_top = -10
+ 	bold.spacing_bottom = -10
+ 	heading.add_theme_font_override("font",bold)
+-	driver_label = _summary_label(hero,player_name.to_upper(),46,MenuStyle.TEXT,Rect2(103,128,420,57))
++	driver_label = _summary_label(hero,player_name.to_upper(),36,MenuStyle.TEXT,Rect2(103,128,420,57))
+ 	driver_label.name = "WeeklySummaryDriver"
+ 	GameText.user_text(driver_label)
+ 	perfect = _summary_label(hero,"PERFECT WEEK",18,MenuStyle.ACCENT,Rect2(329,151,192,25))
+ 	perfect.name = "WeeklySummaryPerfect"
+ 	perfect.visible = bool(summary.perfect)
+ 	if perfect.visible: driver_label.size.x = 215
+-	var rank_text: String = "—" if summary.rank == null else "%02d" % int(summary.rank)
+-	rank_label = _summary_label(hero,rank_text,178,MenuStyle.ACCENT if summary.rank != null else MenuStyle.MUTED,Rect2(564,-3,159,191))
++	var rank_text: String = "—" if summary.rank == null else str(int(summary.rank))
++	rank_label = _summary_label(hero,rank_text,120,MenuStyle.ACCENT if summary.rank != null else MenuStyle.MUTED,Rect2(566,38,250,113))
+ 	rank_label.name = "WeeklySummaryRank"
++	rank_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	rank_label.visible = not ornament.empty_week
+ 	var italic := FontVariation.new()
+ 	italic.base_font = display_face
+ 	italic.variation_embolden = 0.3
+-	italic.variation_transform = Transform2D(Vector2(0.9,0),Vector2(-0.18,1),Vector2.ZERO)
+-	italic.spacing_glyph = -12
++	italic.variation_transform = Transform2D.IDENTITY
++	italic.spacing_glyph = -2
+ 	italic.spacing_top = -15
+ 	italic.spacing_bottom = -15
+ 	rank_label.add_theme_font_override("font",italic)
+-	no_results_label = _summary_label(hero,GameText.message("No races completed").to_upper(),30,MenuStyle.MUTED,Rect2(594,55,214,84))
++	field_label = _summary_label(hero,GameText.message("OF %d DRIVERS") % int(summary.drivers),20,MenuStyle.MUTED,Rect2(566,154,250,29))
++	field_label.name = "WeeklySummaryField"
++	field_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	field_label.visible = summary.rank != null
++	position_label.visible = summary.rank != null
++	no_results_label = _summary_label(hero,GameText.message("No races completed").to_upper(),30,MenuStyle.MUTED,Rect2(566,55,250,84))
+ 	no_results_label.name = "WeeklySummaryNoResults"
+ 	no_results_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	no_results_label.text_overrun_behavior = TextServer.OVERRUN_NO_TRIMMING
+@@ -152,22 +160,16 @@
+ 	canvas.add_child(vehicle)
+ 	_place(vehicle,Rect2(47,287,87,56))
+ 	ProfileCar.apply_presentation(vehicle)
+-	var own_name: Label = _summary_label(canvas,player_name.to_upper(),21,MenuStyle.MUTED,Rect2(167,282,141,28))
+-	GameText.user_text(own_name)
+-	player_points = _summary_label(canvas,_points(int(summary.points)),39,MenuStyle.ACCENT,Rect2(167,305,141,45))
++	_summary_label(canvas,"YOUR POINTS",21,MenuStyle.MUTED,Rect2(145,282,163,28))
++	player_points = _summary_label(canvas,_points(int(summary.points)),39,MenuStyle.ACCENT,Rect2(145,305,163,45))
+ 	player_points.name = "WeeklySummaryPlayerPoints"
+-	var opponent: Label = _summary_label(canvas,"CO-LEADER" if bool(summary.champion) and int(summary.get("lead",0)) == 0 else "RUNNER-UP" if bool(summary.champion) else "LEADER",21,MenuStyle.MUTED,Rect2(572,282,262,28))
++	var opponent: Label = _summary_label(canvas,"CO-LEADER" if bool(summary.champion) and int(summary.get("lead",0)) == 0 else "RUNNER-UP" if bool(summary.champion) else "TOP SCORE",21,MenuStyle.MUTED,Rect2(572,282,262,28))
+ 	opponent.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	opponent_points = _summary_label(canvas,"—" if summary.get("opponent_points") == null else _points(int(summary.opponent_points)),35,MenuStyle.MUTED,Rect2(572,305,262,43))
+ 	opponent_points.name = "WeeklySummaryOpponentPoints"
+ 	opponent_points.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	var comparison := Banner.new()
+-	comparison.kind = "comparison"
+-	canvas.add_child(comparison)
+-	_place(comparison,Rect2(330,296,220,38))
+-	var lead: String = "UNRANKED" if summary.rank == null else "TIED FOR LEAD" if int(summary.get("lead",0)) == 0 else GameText.message("+%d POINT LEAD") % int(summary.lead) if bool(summary.champion) else GameText.message("%d PTS TO LEAD") % absi(int(summary.get("lead",0)))
+-	if summary.get("opponent_points") == null: lead = "WEEK COMPLETE"
+-	lead_label = _summary_label(canvas,lead,21,MenuStyle.POSITIVE,Rect2(362,299,156,30))
++	var lead: String = "" if summary.rank == null or summary.get("opponent_points") == null else "TIED FOR LEAD" if int(summary.get("lead",0)) == 0 else GameText.message("+%d POINT LEAD") % int(summary.lead) if bool(summary.champion) else GameText.message("%d PTS BEHIND") % absi(int(summary.get("lead",0)))
++	lead_label = _summary_label(canvas,lead,22,MenuStyle.MUTED,Rect2(330,299,220,30))
+ 	lead_label.name = "WeeklySummaryLead"
+ 	lead_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 
+@@ -176,7 +178,7 @@
+ 	metrics.name = "WeeklySummaryMetrics"
+ 	canvas.add_child(metrics)
+ 	_place(metrics,Rect2(34,370,812,76))
+-	var facts: Array = [["FINAL POSITION","—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"flag"],["TRACK VICTORIES","%d / 5" % int(summary.wins),"trophy"],["PERSONAL BESTS","%d / 5" % int(summary.get("personal_bests",0)),"clock"]]
++	var facts: Array = [["TRACKS COMPLETED","%d / %d" % [int(summary.completed),summary.results.size()],"flag"],["TRACK VICTORIES",str(int(summary.wins)),"trophy"],["PERSONAL BESTS",str(int(summary.get("personal_bests",0))),"clock"]]
+ 	for index: int in range(3):
+ 		var card: Control = _card(metrics,Rect2(index*275,0,262,76))
+ 		var number: Label = _summary_label(card,str(facts[index][1]),37,MenuStyle.ACCENT,Rect2(16,3,196,46))
+@@ -192,7 +194,7 @@
+ 		_place(icon,Rect2(210,22,32,32))
+ 
+ func _build_actions() -> void:
+-	confirm_button = MenuStyle.button("VIEW RESULTS",_confirm)
++	confirm_button = MenuStyle.button("VIEW STANDINGS",_confirm)
+ 	confirm_button.name = "WeeklySummaryViewResults"
+ 	var outline: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
+ 	outline.border_color = MenuStyle.ACCENT
+@@ -250,12 +252,6 @@
+ func _points(value: int) -> String:
+ 	return "%d %s" % [value,GameText.message("PTS")]
+ 
+-func _place_caption() -> String:
+-	if summary.rank == null: return GameText.message("UNRANKED")
+-	var rank: int = int(summary.rank)
+-	var suffix: String = "TH" if rank%100 in [11,12,13] else "ST" if rank%10 == 1 else "ND" if rank%10 == 2 else "RD" if rank%10 == 3 else "TH"
+-	return "%d%s PLACE" % [rank,suffix] if TranslationServer.get_locale().begins_with("en") else GameText.message("FINAL POSITION")+" #"+str(rank)
+-
+ func present() -> void:
+ 	popup_centered(_target_size())
+ 	_layout.call_deferred()
+@@ -286,9 +282,11 @@
+ 		if not child.has_meta("summary_position"): child.set_meta("summary_position",child.position)
+ 		child.position = Vector2(child.get_meta("summary_position"))*scale_factor
+ 		child.scale = Vector2.ONE*scale_factor
+-	_fit_label(heading,82,34)
+-	_fit_label(driver_label,46,24)
+-	_fit_label(rank_label,200,84)
++	_fit_label(heading,64,28)
++	_fit_label(driver_label,36,24)
++	_fit_label(rank_label,130,60)
++	_fit_label(position_label,20,13)
++	_fit_label(field_label,20,13)
+ 	_fit_label(player_points,39,25)
+ 	_fit_label(lead_label,21,15)
+ 	for button: Button in [confirm_button,continue_button]:
+--- a/game/ui/rivalry_summary_banner.gd
++++ b/game/ui/rivalry_summary_banner.gd
+@@ -26,15 +26,8 @@
+ 				draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+24,y),Vector2(x+19,y+28),Vector2(x-5,y+28)]),faint)
+ 	draw_line(Vector2(103,126),Vector2(516,126),Color(MenuStyle.ACCENT,0.8),1.3,true)
+ 	if empty_week: return
+-	draw_line(Vector2(565,17),Vector2(532,178),Color(MenuStyle.ACCENT,0.5),1,true)
+-	if tier > 0: _trophy(Rect2(739,37,68,79),MenuStyle.ACCENT if tier >= 2 else Color("b8cbd5"))
+-	else: draw_texture_rect(MenuIcon.texture("flag",true),Rect2(743,47,59,59),false,MenuStyle.MUTED)
+-	for row: int in range(2):
+-		for column: int in range(8):
+-			if (row+column)%2 != 0: continue
+-			var x: float = 723+column*11-row*3
+-			var y: float = 128+row*11
+-			draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+11,y),Vector2(x+8,y+11),Vector2(x-3,y+11)]),Color("a4bac7",0.5))
++	draw_line(Vector2(546,22),Vector2(546,173),MenuStyle.BORDER,1,true)
++	if tier > 0: _trophy(Rect2(46,52,40,47),MenuStyle.ACCENT if tier >= 2 else Color("b8cbd5"))
+ 
+ func _trophy(rect: Rect2, color: Color) -> void:
+ 	draw_set_transform(rect.position,0,rect.size/Vector2(68,79))
+--- a/game/tests/test_rivalry_summary_popup.gd
++++ b/game/tests/test_rivalry_summary_popup.gd
+@@ -44,6 +44,11 @@
+ 		check(app.content.find_child("RivalryNextWeek",true,false) != null,"original results screen retains Continue")
+ 		await finish()
+ 		return
++	if "--flow-only" in OS.get_cmdline_user_args():
++		await lifecycle()
++		await continue_flow()
++		await finish()
++		return
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720),Vector2i(1938,1282)]:
+ 		root.size = dimensions
+ 		for kind: String in ["champion","perfect","podium","middle","unranked","tied"]:
+@@ -52,13 +57,16 @@
+ 			check(dialog != null and dialog.visible,kind+" automatically presents the completed weekly summary")
+ 			if dialog == null: continue
+ 			var summary: Dictionary = app.rivalry.model.finale_summary()
+-			var values: Array[String] = ["—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"%d / 5" % int(summary.wins),"%d / 5" % app.rivalry.model.personal_best_slots.size()]
++			var values: Array[String] = ["%d / %d" % [int(summary.completed),summary.results.size()],str(int(summary.wins)),str(app.rivalry.model.personal_best_slots.size())]
+ 			for index: int in range(3): check(dialog.metric_labels[index].text == values[index],kind+" metric uses actual final facts")
+ 			check(dialog.ornament.tier == summary.tier,kind+" decorations match the earned achievement")
+ 			check(dialog.perfect.visible == (kind == "perfect"),"Perfect Week requires the actual five outright victories")
+ 			check(dialog.continue_button.is_visible_in_tree() and not dialog.continue_button.disabled,"reference sheet includes the explicit Continue action")
+ 			check(dialog.player_points.text == "%d PTS" % int(summary.points),"points comparison uses the actual player's score")
+-			check(dialog.rank_label.text == ("—" if summary.rank == null else "%02d" % int(summary.rank)),"oversized position is the actual earned rank")
++			check(dialog.rank_label.text == ("—" if summary.rank == null else str(int(summary.rank))),"oversized position is the actual earned rank")
++			check(dialog.field_label.text == GameText.message("OF %d DRIVERS") % int(summary.drivers),"final position identifies the actual field size")
++			if summary.rank != null and not summary.champion:
++				check(dialog.lead_label.text == GameText.message("%d PTS BEHIND") % absi(int(dialog.summary.lead)),"completed-week gap describes the final deficit")
+ 			var empty_week: bool = summary.rank == null and int(summary.completed) == 0
+ 			check(dialog.rank_label.visible == (not empty_week),"an empty week hides the oversized missing-rank dash")
+ 			check(dialog.ornament.empty_week == empty_week,"an empty week omits the rank divider and finish decorations")
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rallys agiles, gutmütiges Fahrverhalten mit stärkerer Beschleunigung und höherer Höchstgeschwindigkeit."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "VON %d FAHRERN"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "DEINE PUNKTE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "HÖCHSTE PUNKTZAHL"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PKT RÜCKSTAND"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "ABSOLVIERTE STRECKEN"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "TABELLE ANSEHEN"
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11752,3 +11752,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "OF %d DRIVERS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "YOUR POINTS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "TOP SCORE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PTS BEHIND"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "TRACKS COMPLETED"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VIEW STANDINGS"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "La conducción ágil y dócil de Rally, con más aceleración y mayor velocidad máxima."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "DE %d PILOTOS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "TUS PUNTOS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "PUNTUACIÓN MÁXIMA"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "A %d PTS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "CIRCUITOS COMPLETADOS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VER CLASIFICACIÓN"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rallyn ketterä ja anteeksiantava ajettavuus, tehokkaampi kiihtyvyys ja suurempi huippunopeus."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "%d KULJETTAJASTA"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "OMAT PISTEET"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "KÄRKIPISTEET"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PISTETTÄ JÄLJESSÄ"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "AJETUT RADAT"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "NÄYTÄ SIJOITUKSET"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "La conduite agile et tolérante de Rally, avec des accélérations plus fortes et une vitesse maximale supérieure."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "SUR %d PILOTES"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "VOS POINTS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "MEILLEUR SCORE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PTS DE RETARD"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "CIRCUITS TERMINÉS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VOIR LE CLASSEMENT"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "La guida agile e permissiva di Rally, con maggiore accelerazione e velocità massima."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "SU %d PILOTI"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "I TUOI PUNTI"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "PUNTEGGIO PIÙ ALTO"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PT DI DISTACCO"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "CIRCUITI COMPLETATI"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VEDI CLASSIFICA"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11607,3 +11607,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rallyの軽快で扱いやすい走りに、力強い加速と高い最高速度をプラス。"
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "%d人中"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "あなたのポイント"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "最高ポイント"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%dポイント差"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "完走コース"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "順位表を見る"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11607,3 +11607,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rally의 민첩하고 다루기 쉬운 주행 감각에 더 강한 가속력과 높은 최고 속도를 더했습니다."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "총 %d명"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "내 점수"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "최고 점수"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d점 뒤짐"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "완주한 트랙"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "순위 보기"
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11449,3 +11449,32 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr ""
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr ""
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr ""
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr ""
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr ""
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr ""
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr ""
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rallys smidige og tilgivende kjøreegenskaper med sterkere akselerasjon og høyere toppfart."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "AV %d FØRERE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "DINE POENG"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "HØYESTE POENGSUM"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d POENG BAK"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "FULLFØRTE BANER"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VIS SAMMENLAGT"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Het wendbare, vergevingsgezinde rijgedrag van Rally, met sterkere acceleratie en een hogere topsnelheid."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "VAN %d COUREURS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "JOUW PUNTEN"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "HOOGSTE SCORE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PNT ACHTER"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "VOLTOOIDE CIRCUITS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "BEKIJK KLASSEMENT"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "A condução ágil e fácil do Rally, com mais aceleração e maior velocidade máxima."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "DE %d PILOTOS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "SEUS PONTOS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "MAIOR PONTUAÇÃO"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d PTS ATRÁS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "PISTAS CONCLUÍDAS"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VER CLASSIFICAÇÃO"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11638,3 +11638,32 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+ msgstr "Rallys smidiga och förlåtande köregenskaper med starkare acceleration och högre toppfart."
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "OF %d DRIVERS"
++msgstr "AV %d FÖRARE"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "YOUR POINTS"
++msgstr "DINA POÄNG"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TOP SCORE"
++msgstr "HÖGSTA POÄNG"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "%d PTS BEHIND"
++msgstr "%d POÄNG EFTER"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "TRACKS COMPLETED"
++msgstr "KLARA BANOR"
++
++
++#: game/ui/rivalry_summary_dialog.gd
++msgid "VIEW STANDINGS"
++msgstr "VISA STÄLLNING"
+--- /dev/null
++++ b/game/tests/test_rivalry_summary_clarity.gd
+@@ -0,0 +1,65 @@
++extends "res://tests/test_rivalry_awards.gd"
++## Offline rendering of final facts, partial participation and translated layout.
++const Sheet = preload("res://ui/rivalry_summary_dialog.gd")
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-summary-clarity-2026-11-09/ui")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	var before: bool = "--clarity-before" in OS.get_cmdline_user_args()
++	if before:
++		for source: String in ["rivalry_summary_banner.gd","rivalry_summary_dialog.gd"]:
++			var original: GDScript = load("res://ui/"+source)
++			original.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-summary-clarity-2026-11-09/before/"+source)
++			check(original.reload() == OK,"before source loads only in this test process")
++	for locale: String in ["en","fi","de","fr","es","it","pt_BR","nl","sv","nb","ja","ko"]:
++		TranslationServer.set_locale(locale)
++		for kind: String in ["partial","perfect","champion","podium","middle","unranked","tied","solo"]:
++			if before and (locale != "en" or kind != "partial"): continue
++			var model := WeeklyRivalry.new()
++			model.apply_snapshot(awarded_snapshot("perfect" if kind == "solo" else "middle" if kind == "partial" else kind))
++			var facts: Dictionary = model.finale_summary()
++			facts.personal_bests = model.personal_best_slots.size()
++			var opponent: Dictionary = {}
++			for driver: Dictionary in model.standing():
++				if driver.id != WeeklyRivalry.SELF:
++					opponent = driver
++					break
++			facts.opponent_points = opponent.get("points")
++			facts.lead = int(facts.points)-int(opponent.get("points",0))
++			if kind == "partial":
++				# The owner's screenshot: final place and only one of five tracks raced.
++				facts.merge({"rank":14,"drivers":14,"points":30,"opponent_points":126,"lead":-96,"completed":1,"wins":1,"personal_bests":1},true)
++			if kind == "solo": facts.opponent_points = null
++			for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++				root.size = dimensions
++				var dialog: AcceptDialog = Sheet.new()
++				dialog.summary = facts
++				dialog.week = 45
++				dialog.player_name = "VILLE"
++				root.add_child(dialog)
++				dialog.present()
++				await settle()
++				if not before:
++					check(dialog.rank_label.text == ("—" if facts.rank == null else str(int(facts.rank))),"actual final rank")
++					check(dialog.metric_labels[0].text == "%d / 5" % int(facts.completed),"participation stays separate from final placing")
++					check(dialog.metric_labels[1].text == str(int(facts.wins)),"victories are a count")
++					check(dialog.metric_labels[2].text == str(int(facts.personal_bests)),"personal bests are a count")
++					check(dialog.lead_label.text.is_empty() if facts.rank == null or facts.opponent_points == null else true,"missing rank or opponent has no misleading gap")
++					if kind == "partial": check(dialog.lead_label.text == GameText.message("%d PTS BEHIND") % 96,"final gap uses completed-week language")
++					for label: Label in dialog.surface.find_children("*","Label",true,false):
++						if not label.is_visible_in_tree(): continue
++						var font: Font = label.get_theme_font("font")
++						var font_size: int = label.get_theme_font_size("font_size")
++						check(Rect2(Vector2.ZERO,Vector2(dialog.size)).grow(1).encloses(label.get_global_rect()),locale+" "+kind+" label inside popup: "+label.text)
++						if label.autowrap_mode == TextServer.AUTOWRAP_OFF:
++							check(font.get_string_size(label.text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x <= label.size.x+1,locale+" "+kind+" text fits: "+label.text)
++				if DisplayServer.get_name() != "headless" and dimensions.x == 1280 and ((locale == "en" and kind in ["partial","perfect","unranked","tied"]) or (locale in ["fi","de","ja"] and kind == "partial")):
++					await RenderingServer.frame_post_draw
++					var shot: Image = dialog.get_texture().get_image()
++					shot.save_png(evidence.path_join(("before-" if before else "after-")+locale+"-"+kind+"-"+RenderingServer.get_current_rendering_method()+".png"))
++				dialog.hide()
++				dialog.queue_free()
++				await process_frame
++	TranslationServer.set_locale("en")
++	print("RIVALRY_SUMMARY_CLARITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/probe_rivalry_summary_clarity_control.gd
+@@ -0,0 +1,8 @@
++extends "res://../docs/evidence/rivalry-summary-clarity-2026-11-09/before/test_rivalry_summary_popup.gd"
++## Execute the untouched original suite against task-start UI in process memory.
++func run() -> void:
++	for source: String in ["rivalry_summary_banner.gd","rivalry_summary_dialog.gd"]:
++		var original: GDScript = load("res://ui/"+source)
++		original.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-summary-clarity-2026-11-09/before/"+source)
++		check(original.reload() == OK,"task-start UI loads only in this control process")
++	await super.run()
+--- /dev/null
++++ b/scripts/run_rivalry_summary_clarity.py
+@@ -0,0 +1,58 @@
++"""Pinned, offline UI checks with workspace profiles and retained receipts.
++
++Use after dev.ps1, whose strict stderr gate rejects this machine's existing
++Windows certificate-store diagnostic. Only that exact diagnostic is exempted.
++"""
++from pathlib import Path
++import json
++import os
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++ENGINE = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
++
++
++def main():
++    name, script, *arguments = sys.argv[1:]
++    version = subprocess.check_output([str(ENGINE), "--version"], text=True).strip()
++    assert version == (ROOT / "godot-version.txt").read_text().strip(), version
++    evidence = ROOT / "docs/evidence/rivalry-summary-clarity-2026-11-09"
++    evidence.mkdir(parents=True, exist_ok=True)
++    env = os.environ.copy()
++    for key in ("APPDATA", "LOCALAPPDATA"):
++        folder = ROOT / "build/rivalry-summary-clarity" / name / key.lower()
++        folder.mkdir(parents=True, exist_ok=True)
++        env[key] = str(folder)
++    env["BMT_API_URL"] = ""
++    command = [sys.executable, "scripts/run_no_crash_dialog.py", "--", str(ENGINE),
++               "--path", "game", "--audio-driver", "Dummy", "--position", "20000,20000",
++               "--script", script, *arguments]
++    started = time.monotonic()
++    with (evidence / f"{name}.log").open("w", encoding="utf-8") as log:
++        log.write(subprocess.list2cmdline(command) + "\n")
++        log.flush()
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
++                                   stderr=subprocess.STDOUT)
++        try:
++            status = process.wait(timeout=300)
++        except subprocess.TimeoutExpired:
++            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                           stdout=log, stderr=subprocess.STDOUT)
++            status = 124
++        log.write(f"\nEXIT_STATUS {status}\n")
++    content = (evidence / f"{name}.log").read_text(encoding="utf-8")
++    errors = [line for line in content.splitlines() if
++              ("SCRIPT ERROR:" in line or "ERROR:" in line) and
++              "Failed to read the root certificate store" not in line]
++    (evidence / f"{name}.json").write_text(json.dumps({
++        "command": command, "engine": version, "owned_pid": process.pid,
++        "exit_status": status, "seconds": round(time.monotonic()-started, 2),
++        "errors": errors}, indent=2)+"\n", encoding="utf-8")
++    print(content[-10000:])
++    return status or bool(errors)
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+--- /dev/null
++++ b/scripts/translations/rivalry_summary_clarity.tsv
+@@ -0,0 +1,6 @@
++OF %d DRIVERS|SUR %d PILOTES|DE %d PILOTOS|VON %d FAHRERN|DE %d PILOTOS|%d人中|총 %d명|VAN %d COUREURS|SU %d PILOTI|%d KULJETTAJASTA|AV %d FÖRARE|AV %d FØRERE
++YOUR POINTS|VOS POINTS|TUS PUNTOS|DEINE PUNKTE|SEUS PONTOS|あなたのポイント|내 점수|JOUW PUNTEN|I TUOI PUNTI|OMAT PISTEET|DINA POÄNG|DINE POENG
++TOP SCORE|MEILLEUR SCORE|PUNTUACIÓN MÁXIMA|HÖCHSTE PUNKTZAHL|MAIOR PONTUAÇÃO|最高ポイント|최고 점수|HOOGSTE SCORE|PUNTEGGIO PIÙ ALTO|KÄRKIPISTEET|HÖGSTA POÄNG|HØYESTE POENGSUM
++%d PTS BEHIND|%d PTS DE RETARD|A %d PTS|%d PKT RÜCKSTAND|%d PTS ATRÁS|%dポイント差|%d점 뒤짐|%d PNT ACHTER|%d PT DI DISTACCO|%d PISTETTÄ JÄLJESSÄ|%d POÄNG EFTER|%d POENG BAK
++TRACKS COMPLETED|CIRCUITS TERMINÉS|CIRCUITOS COMPLETADOS|ABSOLVIERTE STRECKEN|PISTAS CONCLUÍDAS|完走コース|완주한 트랙|VOLTOOIDE CIRCUITS|CIRCUITI COMPLETATI|AJETUT RADAT|KLARA BANOR|FULLFØRTE BANER
++VIEW STANDINGS|VOIR LE CLASSEMENT|VER CLASIFICACIÓN|TABELLE ANSEHEN|VER CLASSIFICAÇÃO|順位表を見る|순위 보기|BEKIJK KLASSEMENT|VEDI CLASSIFICA|NÄYTÄ SIJOITUKSET|VISA STÄLLNING|VIS SAMMENLAGT
+--- /dev/null
++++ b/docs/RIVALRY_SUMMARY_CLARITY_2026_11_09.md
+@@ -0,0 +1,100 @@
++# Weekly Rivalry summary clarity — 2026-11-09
++
++The owner supplied the completed Week 45 popup and described it as confusing.
++The implementation keeps the existing results and rollover behaviour while
++clarifying what each number describes.
++
++| Requirement | Delivered behaviour |
++| --- | --- |
++| RSC01 | Final position appears once, with the actual number of drivers immediately beneath it. Remove the repeated ordinal and position card. Keep earned champion, shared champion, podium and Perfect Week states. |
++| RSC02 | Replace the repeated position card with tracks completed out of the five pinned tracks. Victories and personal bests are counts, without misleading `/ 5` fractions. An ended week can therefore clearly show partial participation. |
++| RSC03 | Label the two scores Your points and Top score (or the existing runner-up/co-leader state). Replace the green future target `PTS TO LEAD` with neutral `PTS BEHIND`. Unranked or missing-opponent summaries have no gap claim. |
++| RSC04 | View standings dismisses the summary onto the existing results overview; Continue to next week retains the original explicit rollover action. Six new messages have directly authored translations in all twelve supported languages. |
++
++Production changes are in `game/ui/rivalry_summary_dialog.gd`,
++`game/ui/rivalry_summary_banner.gd`, the twelve localization catalogues and their
++source template. Authored copy is in
++`scripts/translations/rivalry_summary_clarity.tsv`. No scoring or membership
++contract changes.
++
++## Preview
++
++These are native Compatibility captures of the actual popup component using an
++offline fixture with the owner's shown final facts: position 14 of 14, 30 points,
++top score 126, one completed track, one victory and one personal best. They do
++not represent a live service response. Vehicle art uses the fixture's Compact.
++
++![Original](evidence/rivalry-summary-clarity-2026-11-09/ui/before-en-partial-gl_compatibility.png)
++
++![Revised](evidence/rivalry-summary-clarity-2026-11-09/ui/after-en-partial-gl_compatibility.png)
++
++[Finnish preview](evidence/rivalry-summary-clarity-2026-11-09/ui/after-fi-partial-gl_compatibility.png).
++The evidence folder also retains champion, shared champion, empty-week and
++German/Japanese previews from both desktop renderers.
++
++## Actual verification
++
++Pinned standard engine: `4.7.2.stable.official.ed1daf0bf` at
++`C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe`.
++
++Initial `scripts/dev.ps1` attempts encountered the shell execution policy, then
++the default profile log access restriction and the machine's existing Windows
++certificate-store diagnostic. Completed checks use
++`scripts/run_rivalry_summary_clarity.py`, which verifies that exact engine,
++launches through the existing crash-dialog helper, sets private workspace
++APPDATA/LOCALAPPDATA, disables the backend URL, selects Dummy audio and retains
++bounded process receipts and complete logs. The existing certificate-store
++diagnostic is retained and is the only diagnostic exempted by this runner.
++
++Run from the repository root:
++
++```powershell
++python scripts/run_rivalry_summary_clarity.py headless res://tests/test_rivalry_summary_clarity.gd --headless
++python scripts/run_rivalry_summary_clarity.py compatibility res://tests/test_rivalry_summary_clarity.gd --rendering-method gl_compatibility
++python scripts/run_rivalry_summary_clarity.py mobile res://tests/test_rivalry_summary_clarity.gd --rendering-method mobile
++python scripts/run_rivalry_summary_clarity.py before-compatibility res://tests/test_rivalry_summary_clarity.gd --rendering-method gl_compatibility -- --clarity-before
++python scripts/run_rivalry_summary_clarity.py popup-headless res://tests/test_rivalry_summary_popup.gd --headless
++python scripts/run_rivalry_summary_clarity.py popup-control res://tests/probe_rivalry_summary_clarity_control.gd --headless
++python scripts/run_rivalry_summary_clarity.py popup-flow res://tests/test_rivalry_summary_popup.gd --headless -- --flow-only
++python scripts/run_rivalry_summary_clarity.py popup-flow-compatibility res://tests/test_rivalry_summary_popup.gd --rendering-method gl_compatibility -- --flow-only
++```
++
++| Check | Actual outcome |
++| --- | --- |
++| Focused popup matrix, headless | 7,872 checks, zero failures |
++| Focused popup matrix, Compatibility | 7,872 checks, zero failures |
++| Focused popup matrix, desktop Vulkan Mobile | 7,872 checks, zero failures |
++| New messages in all catalogues, exact authored text and placeholders | 72 checks, zero failures |
++| Task-start popup loaded only into the before-capture process | 2 checks, zero failures |
++| Actual App lifecycle and rollover, headless | 128 checks, zero failures |
++| Actual App lifecycle and rollover, native Compatibility | 128 checks, zero failures |
++| Actual App full summary suite, revised UI | 1,344 checks, 80 failures |
++| Untouched task-start suite and task-start UI control | 1,291 checks, the same 80 failures |
++
++The focused matrix covers twelve languages, two viewport sizes and eight
++states: partial participation, perfect/champion/podium/middle/shared finishes,
++unranked and missing opponent. It checks real label geometry and text widths,
++data-derived counts and absent-value behaviour. The isolated App lifecycle
++slice retains the existing assertions for dismissal, stale accounts,
++authoritative refresh, invalidation, blocked background input, keyboard actions,
++single scoped Continue, failure/retry idempotency and successful enrollment.
++
++The full suite is **not passing**. Its 80 failure messages and multiplicities
++match the task-start control exactly: 72 minimum displayed button-height
++assertions under the App's scaled viewport, four Perfect Week badge-gap checks
++and four legacy empty-week automatic-popup expectations. None of those failing
++assertions was weakened or removed. See
++[failure comparison](evidence/rivalry-summary-clarity-2026-11-09/failure-comparison.txt)
++and the original/current raw logs. This slice does not claim to resolve them.
++
++## Checkpoint and limits
++
++The [task-only source patch](evidence/rivalry-summary-clarity-2026-11-09/source-only.patch)
++is relative to captured task-start files, including already-dirty catalogues.
++Original sources and hashes are retained with the command receipts. The shared
++Git index was not written; unrelated concurrent work is preserved.
++
++No physical-device test, APK/export, owner save edit or process restart,
++live backend request or deployment was performed. Desktop Vulkan Mobile is a
++desktop renderer check, not Android qualification. Owner visual acceptance,
++fresh application reload and device appearance/touch acceptance remain.

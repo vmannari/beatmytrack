@@ -20,6 +20,7 @@ from .identity_models import Identity, Player, SessionFamily
 from .middleware import ParsedJSONRoute
 from .migrate import SCHEMA_HEAD
 from .operations import competition_health
+from .publication_models import PublicationIntent
 from .resume_models import ResumeGrant, ResumeWallet
 from .studio_paging import identifier, page
 from .track_models import Board, PersonalBest, QueueCapacity, Run, Track, TrackVersion, digest, now
@@ -113,9 +114,17 @@ def overview(request: Request, role: Access, window: Window, days: int = Query(7
             Run.status.in_(("verified", "skipped", "failed", "rejected")),
             Run.finished_at >= stamp - 300, Run.finished_at <= stamp).group_by(Run.status)).all())
         queue = db.get(QueueCapacity, 1)
+        publications = {}
+        for key, statuses in (("pending", ("queued", "verifying")), ("failed", ("failed",))):
+            candidates = select(PublicationIntent.id).where(PublicationIntent.status.in_(statuses)).limit(5001)
+            publications[key] = db.scalar(select(func.count()).select_from(candidates.subquery()))
+        publications["failed_count_capped"] = publications["failed"] > 5000
+        publications["pending_count_capped"] = publications["pending"] > 5000
+        publications["failed"] = min(5000, publications["failed"])
+        publications["pending"] = min(5000, publications["pending"])
         return {"role": role, "environment": request.app.state.settings.environment,
             "as_of": stamp, "days": days, "since": window[0], "until": window[1],
-            "pending": queue.pending if queue else 0, "states": states,
+            "pending": queue.pending if queue else 0, "states": states, "publications": publications,
             "pulse_since": stamp - 300, "pulse_until": stamp,
             "database": "reachable", "schema": SCHEMA_HEAD,
             "coverage": "Current shared verification queue and terminal results in the last five minutes; all player types. Lifetime account/content totals and raw submission-history charts are retired."}

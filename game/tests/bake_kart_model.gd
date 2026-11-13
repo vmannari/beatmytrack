@@ -50,7 +50,7 @@ func run() -> void:
 		var file: String = key.sha256_text().left(24)+".res"
 		assert(ResourceSaver.save(G.meshes[key],G.ROOT.path_join(file),ResourceSaver.FLAG_COMPRESS) == OK)
 		entries.append({"key":key,"file":file,"triangles":G.meshes[key].get_faces().size()/3})
-	FileAccess.open(G.ROOT+"/manifest.json",FileAccess.WRITE).store_string(JSON.stringify({"provenance":"Original authored unbranded Beat my track kart; shared CompactFinish materials. No external or generated model.","geometry_sha256":FileAccess.get_sha256("res://vehicle/kart_geometry.gd"),"model_sha256":FileAccess.get_sha256("res://vehicle/kart_model.gd"),"helmet_sha256":FileAccess.get_sha256("res://vehicle/kart_helmet.gd"),"driver_sha256":FileAccess.get_sha256("res://vehicle/kart_driver.gd"),"shadows":shadows,"meshes":entries},"\t"))
+	FileAccess.open(G.ROOT+"/manifest.json",FileAccess.WRITE).store_string(JSON.stringify({"provenance":"Original Beat my track kart and seat; driver adapted from Race Car Driver - Low Poly by tomkart (CC-BY-4.0). See legal/kart_driver_notices.txt. Driver pose baked offline; suit/glove/helmet branding removed.","geometry_sha256":FileAccess.get_sha256("res://vehicle/kart_geometry.gd"),"model_sha256":FileAccess.get_sha256("res://vehicle/kart_model.gd"),"helmet_sha256":FileAccess.get_sha256("res://vehicle/kart_helmet.gd"),"driver_sha256":FileAccess.get_sha256("res://vehicle/kart_driver.gd"),"shadows":shadows,"meshes":entries},"\t"))
 	var manifest_path: String = G.ROOT+"/manifest.json"
 	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
 	manifest["detail_sha256"] = FileAccess.get_sha256("res://vehicle/kart_detail.gd")

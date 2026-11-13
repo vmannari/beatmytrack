@@ -4,12 +4,16 @@ extends Node3D
 
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
+var model_id: String:
+	get: return VehicleCatalog.model_id(vehicle_id)
+var chassis_id: String:
+	get: return VehicleCatalog.chassis_id(vehicle_id)
 var livery: Dictionary = {}
 var customisation: Dictionary = {}
 var paint_materials: Dictionary = {}
 var paint_variants: Array[Dictionary] = []
 var accent_roof: StandardMaterial3D
-var simple_model: bool = false
+var simple_model: bool = true # Production default; false is retained for offline references.
 var editable_kits: bool = false
 var kit_frames: Dictionary = {}
 var graphics := LiveryGraphics.new()
@@ -64,7 +68,7 @@ func set_night_headlights(enabled: bool) -> void:
 	headlights.name = "NightHeadlights"
 	body.add_child(headlights)
 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
-	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+	var mount: Vector3 = {"super_rally":Vector3(0.63,0.68,-2.30),"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
 	var beam := SpotLight3D.new()
 	beam.name = "SharedHeadlightBeam"
 	# Keep the entire hood behind the cone. A higher, wider short-range beam
@@ -86,6 +90,9 @@ func set_night_headlights(enabled: bool) -> void:
 	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	lens.albedo_color = Color("fff0d2")
 	for side: float in [-1.0,1.0]:
+		if vehicle_id == "super_rally":
+			if side < 0.0: SuperRallyModel.night_lens(headlights,lens,paint_materials.body)
+			continue
 		if vehicle_id == "hovercraft":
 			if side < 0.0: preload("res://vehicle/hovercraft_model.gd").night_lens(headlights,lens)
 			continue
@@ -94,7 +101,7 @@ func set_night_headlights(enabled: bool) -> void:
 				lens.albedo_color = Color("e8f7ff")
 				preload("res://vehicle/electric_car_model.gd").night_lens(headlights,lens)
 			continue
-		if vehicle_id == "compact":
+		if chassis_id == "compact":
 			var x: float = side*CompactFrontLamps.OFFSET
 			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
 			round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
@@ -120,6 +127,8 @@ func set_headlight_bridge_occlusion(enabled: bool) -> void:
 		if road_headlight.light_cull_mask != mask: road_headlight.light_cull_mask = mask
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
+var kart_steering_wheel: Node3D
+var kart_steering_driver: MeshInstance3D
 var rear_wheels: Array[Node3D] = []
 var rear_steering_config: HandlingConfig
 var rolling_wheels: Array[Node3D] = []
@@ -233,6 +242,7 @@ func _ready() -> void:
 	_model_slice_started = Time.get_ticks_usec() if cooperative_build else 0
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
+	if livery.is_empty() and vehicle_id == "super_rally": livery = VehicleLivery.defaults(vehicle_id)
 	if not VehicleCustomisation.valid(customisation,vehicle_id): customisation = VehicleCustomisation.defaults()
 	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
 		# Older stock forklift templates predate editable kit frames.
@@ -265,7 +275,14 @@ func _ready() -> void:
 		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
 		model_ready = true
 		return
-	if vehicle_id != "compact":
+	if vehicle_id == "super_rally":
+		SuperRallyModel.build(self)
+		apply_livery(livery)
+		_update_rear_lights()
+		await _finish_render_model()
+		model_ready = true
+		return
+	if chassis_id != "compact":
 		VehicleModels.build(self, vehicle_id)
 		if not livery.is_empty(): apply_livery(livery)
 		_update_rear_lights()
@@ -326,9 +343,8 @@ func _restore_modular_model() -> bool:
 	var wanted: Dictionary = customisation.duplicate(true)
 	if not VehicleCustomisation.valid(wanted,vehicle_id): return false
 	var fitted: bool = wanted != VehicleCustomisation.defaults()
-	# Simple cars use stock-only shadow proxies; a fitted car must retain
-	# its own casters until modular shadow geometry has been prepared and tested.
-	if fitted and simple_model: return false
+	# Editable reduced bases and fitted modules retain their actual casters.
+	# Stock-only shadow proxies belong exclusively to fixed stock assemblies.
 	var original_editable: bool = editable_kits
 	var original_children: Array[Node] = get_children()
 	if fitted: editable_kits = true
@@ -404,19 +420,28 @@ func change_kit_parts(value: Dictionary) -> void:
 			frame.get_parent().remove_child(frame)
 			frame.queue_free()
 		kit_frames[category] = []
+		if vehicle_id == "super_rally":
+			SuperRallyModel.kit(self,category)
+			_reduce_changed_kit(category)
+			if batch_parts:
+				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+			continue
 		if vehicle_id=="electric":
 			preload("res://vehicle/electric_kits.gd").build(self,category)
+			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="forklift":
 			preload("res://vehicle/forklift_kits.gd").build(self,category)
+			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="hovercraft":
 			if category=="rims": preload("res://vehicle/hovercraft_sport_drive.gd").rebuild_fans(self)
 			else: preload("res://vehicle/hovercraft_kits.gd").build(self,category)
+			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
@@ -428,8 +453,7 @@ func change_kit_parts(value: Dictionary) -> void:
 				"body": kart.build_pods(self)
 				"rims":
 					for rotor: Node3D in rolling_wheels: kart.build_rims(self,rotor,signf((rotor.get_parent() as Node3D).position.x))
-			if simple_model:
-				for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame)
+			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
@@ -444,7 +468,7 @@ func change_kit_parts(value: Dictionary) -> void:
 				for rotor: Node3D in rolling_wheels:
 					var side: float = signf((rotor.get_parent() as Node3D).position.x)
 					var frame: Node3D = new_kit_frame("rims",rotor)
-					if value.rims=="stock":
+					if CompactKits.choice(self,"rims")=="stock":
 						var hub := VisualGeometry.cylinder(frame,0.228,0.16,Vector3.ZERO,trim,true)
 						hub.rotation.z = PI*0.5
 						for spoke: int in range(8):
@@ -453,10 +477,17 @@ func change_kit_parts(value: Dictionary) -> void:
 						CompactDetail.rim_detail(frame,side,alloy,trim,bright)
 					else: CompactKits.build_wheel(self,frame,side)
 					var brake: Node3D = new_kit_frame("rims",rotor.get_parent())
-					if value.rims!="stock": CompactKits.build_caliper(brake,side)
+					if CompactKits.choice(self,"rims")!="stock": CompactKits.build_caliper(brake,side)
+		_reduce_changed_kit(category)
 		for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 	graphics = LiveryGraphics.new()
 	graphics.configure(self)
+
+func _reduce_changed_kit(category: String) -> void:
+	# Match construction-time reduction before batching newly fitted primitives.
+	# Offline modules and a direct fitted build must describe the same model.
+	if simple_model:
+		for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame)
 
 
 func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:
@@ -471,6 +502,11 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 	wheel_last_tick = state.tick
 	position = VisualGeometry.world(point)
 	rotation.y = -angle
+	if vehicle_id == "kart":
+		if not is_instance_valid(kart_steering_wheel):
+			kart_steering_wheel = body.find_child("SteeringAssembly",true,false)
+			kart_steering_driver = body.find_child("TomkartDriver",true,false)
+		preload("res://vehicle/kart_steering.gd").present(kart_steering_wheel,kart_steering_driver,state.steering)
 	if vehicle_id == "hovercraft":
 		var fan: Node3D = body.get_node_or_null("FanRotor")
 		if fan != null:
@@ -670,7 +706,7 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 	var roll: float = state.roll_direction * TAU * turn
 	var low: float = INF
 	var outline: Array[Vector2] = ROLL_OUTLINE
-	if vehicle_id=="compact" and customisation != VehicleCustomisation.defaults():
+	if chassis_id=="compact" and customisation != VehicleCustomisation.defaults():
 		outline = ROLL_OUTLINE.duplicate()
 		if customisation.body in ["rally","club"] or customisation.body in CompactKitVariants.BODIES:
 			if customisation.body in CompactKitVariants.BODIES:
@@ -685,7 +721,12 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 				half = extent.x
 				height = extent.y
 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
-	if vehicle_id != "compact":
+	if vehicle_id == "super_rally":
+		outline = [Vector2(-1.08,0.27),Vector2(1.08,0.27),Vector2(-1.08,0.98),Vector2(1.08,0.98),Vector2(-0.58,1.42),Vector2(0.58,1.42)]
+		if customisation.aero != "stock":
+			var extent: Vector2 = SuperRallyModel.aero_extent(customisation.aero)
+			outline.append_array([Vector2(-extent.x,extent.y),Vector2(extent.x,extent.y)])
+	if chassis_id != "compact":
 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
 		var height: float = 2.89 if vehicle_id == "forklift" else 1.96 if vehicle_id == "pickup" else 0.91 if vehicle_id == "formula" else 1.36
 		outline = [Vector2(-half_width,0),Vector2(half_width,0),Vector2(-half_width,0.75),Vector2(half_width,0.75),Vector2(-0.76,height),Vector2(0.76,height)]

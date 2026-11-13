@@ -205,6 +205,7 @@ static func _attach(root: Node3D, key: String, material: Material) -> void:
 	root.add_child(part)
 
 static func _plate(root: Node3D, key: String, center: Vector3, polygon: Array[Vector2], thickness: float, material: Material) -> void:
+	key += "/plate2"
 	if CompactKits.simple_parts: key += "/simple"
 	CompactKits._load_prepared(key)
 	if not CompactKits.meshes.has(key):
@@ -219,20 +220,25 @@ static func _plate(root: Node3D, key: String, center: Vector3, polygon: Array[Ve
 				contour.append(a.lerp(p,t).lerp(p.lerp(b,t),t))
 		var tool := SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		# Outlines are relative to center but need not surround (0, 0).
+		# Diffuser fins and splitter fences use body-space y/z coordinates;
+		# fanning their faces to the origin creates sheets across the underbody.
+		var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(PackedVector2Array(contour))
+		var clockwise: bool = Geometry2D.is_polygon_clockwise(PackedVector2Array(contour))
 		for side: float in [-1,1]:
 			var origin: Vector3 = center+Vector3(side*thickness*0.5,0,0)
-			for index: int in range(contour.size()):
-				var a: Vector2 = contour[index]
-				var b: Vector2 = contour[(index+1)%contour.size()]
-				_triangle(tool,origin,origin+Vector3(0,a.x,a.y),origin+Vector3(0,b.x,b.y),Vector3(side,0,0))
+			for index: int in range(0,triangles.size(),3):
+				var a: Vector2 = contour[triangles[index]]
+				var b: Vector2 = contour[triangles[index+1]]
+				var c: Vector2 = contour[triangles[index+2]]
+				_triangle(tool,origin+Vector3(0,a.x,a.y),origin+Vector3(0,b.x,b.y),origin+Vector3(0,c.x,c.y),Vector3(side,0,0))
 		for index: int in range(contour.size()):
 			var a: Vector2 = contour[index]
 			var b: Vector2 = contour[(index+1)%contour.size()]
 			var points: Array[Vector3] = [center+Vector3(-thickness*0.5,a.x,a.y),center+Vector3(thickness*0.5,a.x,a.y),center+Vector3(thickness*0.5,b.x,b.y),center+Vector3(-thickness*0.5,b.x,b.y)]
-			var midpoint: Vector2 = (a+b)*0.5
 			var delta: Vector2 = b-a
 			var normal: Vector3 = Vector3(0,delta.y,-delta.x).normalized()
-			if normal.dot(Vector3(0,midpoint.x,midpoint.y))<0: normal = -normal
+			if clockwise: normal = -normal
 			_triangle(tool,points[0],points[1],points[2],normal)
 			_triangle(tool,points[0],points[2],points[3],normal)
 		tool.index()

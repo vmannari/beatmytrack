@@ -1,0 +1,45 @@
+--- qualified-before-cleanup
++++ current-combined-source
+@@ -111,7 +111,6 @@
+ const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+ const ROAD_CACHE_MAX_ENTRIES: int = 8
+ static var _road_mesh_cache: Array[Dictionary] = []
+-static var _pending_road_bakes: Dictionary = {}
+ 
+ static func race_roads_need_preparation(track: NativeTrack) -> bool:
+ 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return false
+@@ -1220,29 +1219,12 @@
+ 		if has_meta(name): metadata[name] = get_meta(name)
+ 	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes,"geometry_key":geometry_key}
+ 	_admit_road_entry(entry)
+-	var id: String = ROAD_DISK_CACHE.identity(key)
+-	if persist_road_meshes and ((not _menu_slices and not editor_preview) or _pending_road_bakes.has(id)):
++	if persist_road_meshes and not _menu_slices and not editor_preview:
+ 		ROAD_DISK_CACHE.write_entry(entry)
+-		_pending_road_bakes.erase(id)
+-
+-
+-static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree = null) -> void:
+-	if owner_tree != null:
+-		preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
+-		return
+-	# Synchronous legacy helper retained for offline tools and cache fixtures.
+-	# Saving can reuse the completed editor road, or its pending sliced build.
+-	# Never rebuild scenery synchronously in the Save handler.
+-	if track == null or ROAD_DISK_CACHE.directory.is_empty(): return
+-	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+-	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
+-	for entry: Dictionary in _road_mesh_cache:
+-		if entry.key == key:
+-			ROAD_DISK_CACHE.write_entry(entry)
+-			_pending_road_bakes.erase(ROAD_DISK_CACHE.identity(key))
+-			return
+-	if _pending_road_bakes.size() >= 8: _pending_road_bakes.erase(_pending_road_bakes.keys()[0])
+-	_pending_road_bakes[ROAD_DISK_CACHE.identity(key)] = true
++
++
++static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree) -> void:
++	preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
+ 
+ 
+ static func _admit_road_entry(entry: Dictionary) -> void:

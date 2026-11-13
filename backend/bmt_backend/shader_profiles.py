@@ -34,7 +34,7 @@ def validate(value):
     check(digest(value["context"]))
     check(isinstance(value["biome"], str) and value["biome"] in {"pine", "winter", "desert", "storm", "night_city", "unknown"})
     check(value["renderer"] == "gl_compatibility" and value["status"] in ("matched", "unprofiled"))
-    check(value["car"] in ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "unknown"))
+    check(value["car"] in ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally", "unknown"))
     check(type(value["simple"]) is bool)
     settings = value["graphics"]
     check(isinstance(settings, dict) and set(settings) == {"shadow_quality", "render_resolution", "anti_aliasing"})

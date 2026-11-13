@@ -58,9 +58,20 @@ func run() -> void:
 		if chosen.size()/3 <= 1200: break
 		var candidate: PackedInt32Array = importer.get_surface_lod_indices(0,lod)
 		if candidate.size() < chosen.size(): chosen = candidate
-	arrays[Mesh.ARRAY_INDEX] = chosen
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var compact := PackedVector3Array()
+	var mapped := PackedInt32Array()
+	var remap: Dictionary = {}
+	for vertex: int in chosen:
+		if not remap.has(vertex):
+			remap[vertex] = compact.size()
+			compact.append(vertices[vertex])
+		mapped.append(remap[vertex])
+	arrays[Mesh.ARRAY_VERTEX] = compact
+	arrays[Mesh.ARRAY_INDEX] = mapped
 	var shadow := ArrayMesh.new()
 	shadow.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	shadow.custom_aabb = source.get_aabb()
 	assert(ResourceSaver.save(shadow,RacingCarModels.ASSET_ROOT.path_join("hovercraft_shadow_0.res"),ResourceSaver.FLAG_COMPRESS) == OK)
 	print("HOVERCRAFT_ART: illustration, header, Garage; shadow triangles=",chosen.size()/3)
 	car.free()

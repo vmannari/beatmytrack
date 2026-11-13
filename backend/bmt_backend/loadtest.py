@@ -34,7 +34,7 @@ from sqlalchemy import create_engine, event, select, text
 from .app import create_app
 from .config import Settings
 from .db import make_engine
-from .load_fixtures import SyntheticVerifier, golden_fixture, pack_replay, seed
+from .load_fixtures import SyntheticVerifier, load_fixture, pack_replay, seed
 from .migrate import upgrade
 from .track_models import QueueCapacity, Run, now
 from .verifier import GodotVerifier
@@ -119,7 +119,7 @@ class SQLMetrics:
 def app_for(config):
     settings = Settings(**config["settings"])
     engine = make_engine(settings.database_url,settings,schema=config["schema"])
-    verifier = GodotVerifier(settings) if config["canonical"] else SyntheticVerifier(golden_fixture())
+    verifier = GodotVerifier(settings) if config["canonical"] else SyntheticVerifier(load_fixture())
     return create_app(settings,engine=engine,verifier=verifier)
 
 
@@ -207,15 +207,21 @@ async def exercise(origins, data, args):
             actor = index%data["actors"]
             origin = origins[index%len(origins)]
             headers = {"Authorization":"Bearer "+data["access"][actor],"Accept-Encoding":"gzip"}
-            kind = ("discovery","top","around","histogram","rivalry","current")[index%6]
-            path = {"discovery":"/v1/tracks?limit=20","top":f"/v1/boards/{data['boards'][0]}?limit=20",
+            kinds = ("discovery","top","around","histogram","rivalry","current","daily","daily_limits","daily_laps")
+            kind = kinds[index%len(kinds)]
+            daily = f"day={now()//86400}&version_id={data['versions'][0]}&vehicle_id=compact"
+            path = {"discovery":"/v1/discovery/v3/tracks","top":f"/v1/boards/{data['boards'][0]}?limit=20",
                 "around":f"/v1/boards/{data['boards'][0]}/around-me","histogram":f"/v1/boards/{data['boards'][0]}/histogram",
                 "rivalry":f"/v1/rivalry/{data['groups'][actor//20]}" if data["groups"] else "/v1/rivalry/current?vehicle_id=compact",
-                "current":"/v1/rivalry/current?vehicle_id=compact"}[kind]
+                "current":"/v1/rivalry/current?vehicle_id=compact", "daily":"/v1/track-of-the-day",
+                "daily_limits":"/v1/track-of-the-day/limits?"+daily,
+                "daily_laps":"/v1/track-of-the-day/lap-standings?"+daily}[kind]
             if args.ghosts and data["groups"] and index%12==6:
                 kind="ghost"
                 path=f"/v1/rivalry/{data['groups'][actor//20]}/tracks/0/ghosts/{data['players'][actor]}"
             body,method = None,"GET"
+            if kind == "discovery":
+                body,method = {"query":{}},"POST"
             # Actor locks below prevent two clients from replacing one outbox job.
             if args.scenario=="mixed" and random.Random(42+index).randrange(100)<15:
                 if actor not in tickets:
@@ -386,6 +392,11 @@ def main():
         app=app_for(config)
         try:
             upgrade(app.state.engine)
+            if args.canonical:
+                fixture = load_fixture()
+                verified = app.state.verifier.verify_run(fixture["document"], fixture["replay"], "compact")
+                if verified["time_ticks"] != fixture["time_ticks"]:
+                    raise ValueError("Load trajectory does not match the current verifier")
             print(f"Seeding {args.players} synthetic players / {args.tracks} versions in disposable {'PostgreSQL schema' if url else 'SQLite file'}",flush=True)
             data=seed(app,players=args.players,tracks=args.tracks,actors=args.actors,tie_every=args.tie_every,memberships=args.scenario!="joins")
             # Seed preparation is outside request timing, like PB construction.
@@ -456,7 +467,7 @@ def main():
                     "admin":1,"total_max":args.replicas*4+args.workers*2+4+1},
                 "limits":"Loopback laboratory; excludes proxy/TLS/mobile/NAS. Response bytes are compressed bodies, excluding HTTP/TLS overhead."})
             report["host"]={"platform":platform.platform(),"python":platform.python_version(),"logical_cpus":os.cpu_count()}
-            errors=sum(count for code,count in report["status_codes"].items() if int(code) in (0,429) or int(code)>=500)
+            errors=sum(count for code,count in report["status_codes"].items() if int(code)==0 or int(code)>=400)
             violations=[]
             if errors/max(1,report["requests"])>args.max_error_fraction or report["invalid_success_responses"]:
                 violations.append("server/transport error fraction")
@@ -468,6 +479,8 @@ def main():
                 violations.append("load generator concurrency saturated")
             if args.require_drained and queue_end:
                 violations.append("verification queue did not drain")
+            if outcomes.get("rejected",0) or outcomes.get("failed",0):
+                violations.append("accepted-race verification failures")
             if args.queue_age_budget_seconds and max((row.get("oldest_age_seconds",0) for row in monitoring),default=0)>args.queue_age_budget_seconds:
                 violations.append("verification queue age budget")
             report["budget_violations"]=violations

@@ -87,7 +87,7 @@ func run() -> void:
 	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0.0,0.0,0.0,0.0,0.0,0,0.0],[3,1.0,2.0,0.2,1.0,2.0,0,0.0]]}
 	var receipt: Array = [{"receipt_id":"11111111-1111-4111-8111-111111111111","input_offset":2,"from_tick":2,"to_tick":0}]
 	var ticket: Dictionary = {"ticket_id":"new-count-journal","_submit_key":"count-key","_race_proof":proof,"_race_ghost":{"ticks":3},"_wire_options":{"path":0,"incidents":false}}
-	check(cloud.queue_run(ticket,exact_controls,"",receipt),"new count journal saves with actual proof and rewind")
+	check((await cloud.queue_run_async(ticket,exact_controls,"",receipt)),"new count journal saves with actual proof and rewind")
 	var count_job: Dictionary = cloud.upload_job(ticket.ticket_id)
 	var count_path: String = str(count_job._path); count_job.erase("_path")
 	var result: Dictionary = await cloud._submit_saved(count_job,count_path)

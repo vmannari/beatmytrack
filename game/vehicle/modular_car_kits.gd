@@ -18,23 +18,23 @@ static func geometry_sources(id: String) -> Dictionary:
 	return sources
 
 static func key_for(car: CarVisual, category: String, option: String) -> Array:
-	var config: HandlingConfig = VehicleCatalog.config(car.vehicle_id)
-	var key: Array = [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.vehicle_id)]
+	var config: HandlingConfig = VehicleCatalog.config(car.model_id)
+	var key: Array = [SCHEMA,car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.model_id)]
 	# Superseded Rally modules cannot be reused in packaged builds, where
 	# source-file hash validation is unavailable.
-	if car.vehicle_id == "compact" and category == "body": key.append("rally-body-2")
-	if car.vehicle_id == "compact" and category == "aero": key.append("rally-aero-2")
-	if car.vehicle_id == "electric": key.append("volt-visible-kits-2")
-	if car.vehicle_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
-	if car.vehicle_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
+	if car.model_id == "compact" and category == "body": key.append("rally-body-2")
+	if car.model_id == "compact" and category == "aero": key.append("rally-aero-2")
+	if car.model_id == "electric": key.append("volt-visible-kits-2")
+	if car.model_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
+	if car.model_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
 	return key
 
 static func path_for(car: CarVisual, category: String, option: String) -> String:
-	return DIRECTORY.path_join(car.vehicle_id).path_join("simple" if car.simple_model else "full").path_join(category).path_join(option+".scn")
+	return DIRECTORY.path_join(car.model_id).path_join("simple" if car.simple_model else "full").path_join(category).path_join(option+".scn")
 
 static func _valid_option(car: CarVisual, category: String, option: String) -> bool:
-	if not VehicleCustomisation.supported(car.vehicle_id) or category not in VehicleCustomisation.CATEGORIES: return false
-	for item: Array in VehicleCustomisation.options(category,car.vehicle_id):
+	if not VehicleCustomisation.supported(car.model_id) or category not in VehicleCustomisation.CATEGORIES: return false
+	for item: Array in VehicleCustomisation.options(category,car.model_id):
 		if item[0] == option: return true
 	return false
 
@@ -73,7 +73,7 @@ static func _bind(node: Node, bindings: Dictionary) -> void:
 
 static func _open(car: CarVisual, category: String, option: String) -> Dictionary:
 	if not enabled or not car.editable_kits or not car.batch_parts or option == "stock" or not _valid_option(car,category,option): return {}
-	var revision: String = Base.build_revision(car.vehicle_id)
+	var revision: String = Base.build_revision(car.model_id)
 	if revision.length() != 64 or not revision.is_valid_hex_number(): return {}
 	var path: String = path_for(car,category,option)
 	if not ResourceLoader.exists(path): return {}
@@ -88,11 +88,11 @@ static func _open(car: CarVisual, category: String, option: String) -> Dictionar
 	if data.get("key",[]) != key_for(car,category,option): holder.free(); return {}
 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
-		if not source_hashes.has(car.vehicle_id):
-			var current: Dictionary=validation.runtime_hashes(car.vehicle_id)
+		if not source_hashes.has(car.model_id):
+			var current: Dictionary=validation.runtime_hashes(car.model_id)
 			current["vehicle/modular_car_kits.gd"]=FileAccess.get_sha256("res://vehicle/modular_car_kits.gd")
-			source_hashes[car.vehicle_id]=current
-		if validation.runtime_projection(data.get("sources",{})) != source_hashes[car.vehicle_id]: holder.free(); return {}
+			source_hashes[car.model_id]=current
+		if validation.runtime_projection(data.get("sources",{})) != source_hashes[car.model_id]: holder.free(); return {}
 	var bindings: Dictionary = {}
 	var has_body: bool = false
 	for role: Dictionary in data.get("roles",[]):
@@ -116,20 +116,20 @@ static func _open(car: CarVisual, category: String, option: String) -> Dictionar
 		if frame.get_parent() != holder or seen.has(frame) or str(entry.get("name","")).is_empty(): holder.free(); return {}
 		seen[frame] = true
 		if not bool(entry.get("kit",true)):
-			if category != "rims" or car.vehicle_id != "hovercraft" or str(entry.name) != "FanRotor" or car.get_node(entry.parent) != car.body: holder.free(); return {}
+			if category != "rims" or car.model_id != "hovercraft" or str(entry.name) != "FanRotor" or car.get_node(entry.parent) != car.body: holder.free(); return {}
 			auxiliary += 1
 		else: kit_count += 1
 		for old: Node3D in car.kit_frames.get(category,[]):
 			var parent: Node = car.get_node(entry.parent)
 			if parent == old or old.is_ancestor_of(parent): holder.free(); return {}
-	if category == "rims" and car.vehicle_id == "hovercraft" and car.body.get_node_or_null("FanRotor") == null:
+	if category == "rims" and car.model_id == "hovercraft" and car.body.get_node_or_null("FanRotor") == null:
 		holder.free(); return {}
 	if kit_count == 0: holder.free(); return {}
-	if category == "rims" and car.vehicle_id == "hovercraft" and auxiliary != 1: holder.free(); return {}
+	if category == "rims" and car.model_id == "hovercraft" and auxiliary != 1: holder.free(); return {}
 	return {"holder":holder,"data":data,"bindings":bindings}
 
 static func available(car: CarVisual, parts: Dictionary) -> bool:
-	if not enabled or not VehicleCustomisation.valid(parts,car.vehicle_id): return false
+	if not enabled or not VehicleCustomisation.valid(parts,car.model_id): return false
 	for category: String in VehicleCustomisation.CATEGORIES:
 		var option: String = parts[category]
 		if option == "stock": continue
@@ -154,7 +154,7 @@ static func apply(car: CarVisual, category: String, option: String) -> bool:
 		frame.get_parent().remove_child(frame)
 		frame.queue_free()
 	car.kit_frames[category] = []
-	if category == "rims" and car.vehicle_id == "hovercraft":
+	if category == "rims" and car.model_id == "hovercraft":
 		var previous: Node = car.body.get_node("FanRotor")
 		car.body.remove_child(previous)
 		previous.queue_free()
@@ -172,12 +172,12 @@ static func apply(car: CarVisual, category: String, option: String) -> bool:
 
 static func bake(car: CarVisual, category: String, option: String) -> Error:
 	if not car.editable_kits or not car.batch_parts or option == "stock" or not _valid_option(car,category,option) or car.customisation.get(category) != option: return ERR_INVALID_PARAMETER
-	var revision: String = Base.build_revision(car.vehicle_id)
+	var revision: String = Base.build_revision(car.model_id)
 	if revision.length() != 64 or not revision.is_valid_hex_number(): return ERR_INVALID_DATA
 	var source_frames: Array = car.kit_frames.get(category,[]).duplicate()
 	if source_frames.is_empty(): return ERR_CANT_CREATE
 	var kit_count: int = source_frames.size()
-	if category == "rims" and car.vehicle_id == "hovercraft":
+	if category == "rims" and car.model_id == "hovercraft":
 		var rotor: Node = car.body.get_node_or_null("FanRotor")
 		if rotor == null: return ERR_CANT_CREATE
 		source_frames.append(rotor)
@@ -196,7 +196,7 @@ static func bake(car: CarVisual, category: String, option: String) -> Error:
 				saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,mesh_node.mesh.surface_get_arrays(surface))
 				saved.surface_set_material(surface,mesh_node.mesh.surface_get_material(surface))
 			mesh_node.mesh = saved
-	holder.set_meta("modular_kit",{"key":key_for(car,category,option),"sources":geometry_sources(car.vehicle_id),"roles":_roles(car),"frames":declarations})
+	holder.set_meta("modular_kit",{"key":key_for(car,category,option),"sources":geometry_sources(car.model_id),"roles":_roles(car),"frames":declarations})
 	for child: Node in holder.get_children(): Cache._own(child,holder)
 	var packed := PackedScene.new()
 	var error: Error = packed.pack(holder)

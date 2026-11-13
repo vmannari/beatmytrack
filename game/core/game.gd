@@ -255,7 +255,9 @@ func _ready() -> void:
 	car = CarVisual.new()
 	car.cooperative_build = cooperative_preparation
 	car.vehicle_id = vehicle_id
-	car.simple_model = preference_records != null and bool(preference_records.settings.get("simple_car_models",false))
+	# The stronger model reduction is a local, next-race graphics preference.
+	# The retired preference remains ignored; existing profiles default to standard.
+	car.simple_model = true
 	if preference_records != null:
 		car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
 		car.customisation = VehicleCustomisation.for_car(preference_records.settings, vehicle_id)
@@ -334,6 +336,7 @@ func _ready() -> void:
 		hud.direction_button.text = "R" if driver.reverse_selected else "D")
 	impact_cracks = ImpactCracksEffect.new()
 	add_child(impact_cracks)
+	impact_cracks.configure(str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine")
 	hud.restart_requested.connect(func() -> void:
 		if production_mode and not editor_test: retry_requested.emit()
 		else: restart())
@@ -1007,14 +1010,6 @@ func set_ghost_mode(value: String) -> Error:
 	return preference_records.save_records()
 
 
-func ghost_description() -> String:
-	var index: int = PersonalGhostRun.MODES.find(ghost_mode)
-	var description: String = PersonalGhostRun.DESCRIPTIONS[index]
-	if ghost_mode != "off" and not ghost_bests.has(ghost_mode):
-		description += " No recording yet. Match or improve your best in a completed race."
-	return description
-
-
 func _present_personal_ghost(weight: float) -> void:
 	if personal_ghost == null: return
 	if countdown_ticks > 0 or finish_sim != null or is_instance_valid(rewind_panel) or ghost_mode == "off":
@@ -1232,6 +1227,7 @@ func _update_weather() -> void:
 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
 	biome_light.shadow_enabled = _graphics.get("shadow_quality","auto") != "off"
 	var weather_theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+	if impact_cracks != null: impact_cracks.configure(weather_theme)
 	if car != null: electric_glass_lighting.configure(car, weather_theme)
 	if car != null and car_weathering.theme != weather_theme:
 		car_weathering.configure(car, weather_theme, handling)

@@ -5,6 +5,7 @@ proof and slot consumption appear atomically only after the pinned lap passes.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Annotated, Literal
 
@@ -42,6 +43,7 @@ from .trajectory_verifier import validate_envelope
 from .verifier import MAX_TRACK_BYTES, VerificationError, VerifierStopping
 from .worker_lifecycle import aborting, stopping
 
+logger = logging.getLogger("bmt.publications")
 router = APIRouter(route_class=ParsedJSONRoute, tags=["publication"])
 admin_router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
 DB = Annotated[Session, Depends(get_session)]
@@ -309,6 +311,20 @@ def process_one(app):
                 or result.get("lap_ticks") != [result["time_ticks"]]
                 or result["time_ticks"] != replay["input_count"]):
             raise VerificationError("Creator trajectory does not complete the exact recorded lap")
+        from .verifier import GodotVerifier
+        if isinstance(app.state.verifier, GodotVerifier):
+            from .trajectory_verifier import prepared_geometry
+            try:
+                # The accepted creator lap has already built this exact native
+                # descriptor. Persist it before publication, outside its locks,
+                # so the first race needs no cold engine/geometry preparation.
+                prepared_geometry(app, snapshot["content_hash"], document=document)
+            except VerifierStopping:
+                raise
+            except (OSError, RuntimeError, ValueError, SQLAlchemyError):
+                # This is an optimization. Valid creator evidence can still
+                # publish when its optional derived-cache write is unavailable.
+                logger.warning("publication_geometry_cache_unavailable")
     except VerifierStopping:
         return True
     except PublicationFailure as exc:

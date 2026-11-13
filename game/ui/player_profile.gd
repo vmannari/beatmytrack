@@ -117,7 +117,7 @@ func _ready() -> void:
 	car_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	car_column.size_flags_stretch_ratio = 0.85
 	car_column.add_child(MenuStyle.label("RIVALRY CAR",14,true))
-	preview = preload("res://ui/rivalry_victory_car.gd").new()
+	preview = load("res://ui/rivalry_victory_car.gd").new()
 	preview.name = "PlayerProfileCar"
 	preview.vehicle_id = vehicle_id
 	preview.simple_model = true

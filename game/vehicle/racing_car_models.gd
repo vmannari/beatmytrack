@@ -9,14 +9,14 @@ static var shadow_material: ShaderMaterial
 static func prepare(car: CarVisual) -> void:
 	_reduce_primitives(car)
 	# Editable assemblies retain their own casters through later part replacements.
-	if car.vehicle_id in ["kart","forklift"] and car.editable_kits: return
+	if car.editable_kits: return
 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
-	if VehicleCustomisation.supported(car.vehicle_id) and car.customisation != VehicleCustomisation.defaults(): return
+	if VehicleCustomisation.supported(car.model_id) and car.customisation != VehicleCustomisation.defaults(): return
 	var frames: Array[Node3D] = [car.body]
 	frames.append_array(car.rolling_wheels)
 	var meshes: Array[ArrayMesh] = []
 	for index: int in range(frames.size()):
-		var path: String = ASSET_ROOT.path_join(car.vehicle_id+"_shadow_"+str(index)+".res")
+		var path: String = ASSET_ROOT.path_join(car.model_id+"_shadow_"+str(index)+".res")
 		if not shadow_meshes.has(path) and ResourceLoader.exists(path): shadow_meshes[path] = load(path)
 		if not shadow_meshes.has(path): return # Offline bake still owns the ordinary casters.
 		meshes.append(shadow_meshes[path])
@@ -28,7 +28,7 @@ static func prepare(car: CarVisual) -> void:
 	for index: int in range(frames.size()):
 		# Fitted parts can change the actual silhouette. Their already reduced
 		# geometry keeps its own casters instead of using a stock-only proxy.
-		if VehicleCustomisation.supported(car.vehicle_id):
+		if VehicleCustomisation.supported(car.model_id):
 			var fitted: bool = false
 			for category: String in (["hood","aero","body"] if index == 0 else ["rims"]):
 				if str(car.customisation.get(category,"stock")) != "stock": fitted = true
@@ -43,6 +43,7 @@ static func prepare(car: CarVisual) -> void:
 
 static func _disable_casters(parent: Node3D) -> void:
 	for child: Node in parent.get_children():
+		if str(child.name) == "SteeringAssembly" or (child is MeshInstance3D and child.mesh is ArrayMesh and child.mesh.get_blend_shape_count() > 0): continue
 		if child is MeshInstance3D: child.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		if child is Node3D: _disable_casters(child)
 
@@ -73,6 +74,14 @@ static func shadow_source(frame: Node3D) -> ArrayMesh:
 	var inverse: Transform3D = frame.global_transform.affine_inverse()
 	for node: Node in frame.find_children("*","MeshInstance3D",true,false):
 		if not node.is_visible_in_tree() or node.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
+		# Articulated cockpit parts cast their live silhouettes separately.
+		if node.mesh is ArrayMesh and node.mesh.get_blend_shape_count() > 0: continue
+		var ancestor: Node = node.get_parent()
+		var articulated: bool = false
+		while ancestor != frame:
+			if str(ancestor.name) == "SteeringAssembly" or (ancestor is MeshInstance3D and ancestor.mesh is ArrayMesh and ancestor.mesh.get_blend_shape_count()>0): articulated = true
+			ancestor = ancestor.get_parent()
+		if articulated: continue
 		for surface: int in range(node.mesh.get_surface_count()):
 			var source: Array = node.mesh.surface_get_arrays(surface)
 			var arrays: Array = []

@@ -229,9 +229,6 @@ func delete_wip(id: String) -> Error:
 	if error == OK: revision += 1
 	return error
 
-func list_wips() -> Array[Dictionary]:
-	return TrackLibrary.new(directory.path_join("wip")).list_documents()
-
 func editable_entries(summaries: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
 	# Saved originals and editor autosaves are versions of the same local draft.
 	var by_id: Dictionary = {}

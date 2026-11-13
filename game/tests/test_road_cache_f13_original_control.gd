@@ -35,7 +35,7 @@ func signature(node: Node) -> Array:
 func run() -> void:
 	frozen_visual = GDScript.new()
 	var text: String = FileAccess.get_file_as_string("res://../docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/before/game__track__native_track_visual.gd").replace("\r\n","\n")
-	frozen_visual.source_code = "extends NativeTrackVisual\n"
+	frozen_visual.source_code = "extends NativeTrackVisual\nstatic var _pending_road_bakes: Dictionary = {}\n"
 	for method: String in ["_build_creator_roads","_remember_road_meshes","request_saved_road_bake"]:
 		var begin: int = text.find("func "+method+"(")
 		if method == "request_saved_road_bake": begin -= 7

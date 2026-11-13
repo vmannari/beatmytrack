@@ -1,0 +1,1367 @@
+--- a/backend/bmt_backend/achievements.py
++++ b/backend/bmt_backend/achievements.py
+@@ -27,7 +27,7 @@
+ FAMILIES = CATALOG["families"]
+ IDS = {f["id"] for f in FAMILIES if f["scope"] != "local"}
+ BIOMES = ("pine", "desert", "winter", "storm", "night_city")
+-CARS = ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft")
++CARS = ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally")
+ MAX_VALUE = 2**53 - 1
+ 
+ 
+--- a/backend/bmt_backend/appearance_authorization.py
++++ b/backend/bmt_backend/appearance_authorization.py
+@@ -12,11 +12,12 @@
+     pattern = value["livery"]["pattern"]
+     if pattern != "plain":
+         items.add("livery/" + pattern)
+-    if value["vehicle_id"] in ("compact", "kart", "hovercraft", "forklift", "electric"):
++    vehicle = "compact" if value["vehicle_id"] == "super_rally" else value["vehicle_id"]
++    if vehicle in ("compact", "kart", "hovercraft", "forklift", "electric"):
+         for category in ("hood", "aero", "rims", "body"):
+             option = value["customisation"][category]
+             if option != "stock":
+-                items.add("kit/" + value["vehicle_id"] + "/" + category + "/" + option)
++                items.add("kit/" + vehicle + "/" + category + "/" + option)
+     return items
+ 
+ 
+--- a/backend/bmt_backend/profile_statistics.py
++++ b/backend/bmt_backend/profile_statistics.py
+@@ -6,7 +6,7 @@
+ from .identity_models import Player
+ from .track_models import Board, Run, TrackVersion
+ 
+-CARS = ("compact", "kart", "forklift", "electric", "hovercraft")
++CARS = ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")
+ 
+ 
+ def ordinary(manifest):
+--- a/backend/bmt_backend/shader_profiles.py
++++ b/backend/bmt_backend/shader_profiles.py
+@@ -34,7 +34,7 @@
+     check(digest(value["context"]))
+     check(isinstance(value["biome"], str) and value["biome"] in {"pine", "winter", "desert", "storm", "night_city", "unknown"})
+     check(value["renderer"] == "gl_compatibility" and value["status"] in ("matched", "unprofiled"))
+-    check(value["car"] in ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "unknown"))
++    check(value["car"] in ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally", "unknown"))
+     check(type(value["simple"]) is bool)
+     settings = value["graphics"]
+     check(isinstance(settings, dict) and set(settings) == {"shadow_quality", "render_resolution", "anti_aliasing"})
+--- a/backend/bmt_backend/telemetry.py
++++ b/backend/bmt_backend/telemetry.py
+@@ -24,7 +24,7 @@
+ SCHEMA = "bmt-product-events-v1"
+ MAX_EVENTS, MAX_BYTES = 50, 65536
+ MAX_AGE, FUTURE_ALLOWANCE = 7 * 86400, 300
+-CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"}
++CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally"}
+ BIOMES = {"pine", "desert", "night_city", "winter", "storm"}
+ PRODUCTS = {"creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"}
+ SERVER_NAMES = {"race_accepted", "creator_validated", "track_published", "challenge_created", "challenge_joined"}
+--- a/backend/bmt_backend/vehicle_appearance.py
++++ b/backend/bmt_backend/vehicle_appearance.py
+@@ -83,13 +83,13 @@
+ 
+ 
+ class Appearance(Cosmetic):
+-    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"]
++    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally"]
+     livery: Livery
+     customisation: Parts
+ 
+     @model_validator(mode="after")
+     def fitted_parts(self):
+-        catalog = CATALOG["parts"] if self.vehicle_id == "compact" else CATALOG["kart_parts"] if self.vehicle_id == "kart" else CATALOG["hovercraft_parts"] if self.vehicle_id == "hovercraft" else CATALOG["forklift_parts"] if self.vehicle_id == "forklift" else CATALOG["electric_parts"] if self.vehicle_id == "electric" else {}
++        catalog = CATALOG["parts"] if self.vehicle_id in ("compact", "super_rally") else CATALOG["kart_parts"] if self.vehicle_id == "kart" else CATALOG["hovercraft_parts"] if self.vehicle_id == "hovercraft" else CATALOG["forklift_parts"] if self.vehicle_id == "forklift" else CATALOG["electric_parts"] if self.vehicle_id == "electric" else {}
+         for category, option in self.customisation.model_dump().items():
+             if category != "version" and option not in catalog.get(category, ["stock"]):
+                 raise ValueError("Part is not fitted to this vehicle")
+--- a/backend/bmt_backend/world_ranking_car_rules.py
++++ b/backend/bmt_backend/world_ranking_car_rules.py
+@@ -7,8 +7,8 @@
+ 
+ POLICY = "multi-car-circuit-v2"
+ # Append only; compact archive kinds retain these identities across releases.
+-CARS = ("compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft")
+-PLAYABLE_CARS = ("compact", "kart", "forklift", "electric", "hovercraft")
++CARS = ("compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft", "super_rally")
++PLAYABLE_CARS = ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")
+ CONTRIBUTIONS = (100, 40, 15)
+ MAX_AWARD = 1500
+ MAX_CAR_TOTAL = 12 * MAX_AWARD
+--- /dev/null
++++ b/backend/tests/test_super_rally.py
+@@ -0,0 +1,38 @@
++"""Super rally stays distinct in competition/saves and shares Rally cosmetic authority."""
++import pytest
++from pydantic import ValidationError
++from test_appearance_sync import domain, put, read  # noqa: F401
++from test_rivalry_appearance import appearance
++
++from bmt_backend.appearance_authorization import required_items
++from bmt_backend.economy_models import CosmeticUnlock
++from bmt_backend.vehicle_appearance import Appearance
++from bmt_backend.world_ranking_car_rules import CARS, PLAYABLE_CARS
++
++
++def test_new_identity_and_shared_rally_parts():
++    value = appearance("super_rally")
++    value["customisation"].update(hood="scoop", body="wide")
++    model = Appearance.model_validate(value)
++    assert model.vehicle_id == "super_rally"
++    assert required_items(model) == {"kit/compact/hood/scoop", "kit/compact/body/wide"}
++    value["customisation"]["hood"] = "fork_dome"
++    with pytest.raises(ValidationError):
++        Appearance.model_validate(value)
++    assert CARS[-1] == PLAYABLE_CARS[-1] == "super_rally"
++    assert len(CARS) == len(set(CARS))
++
++
++def test_independent_saved_appearances_and_existing_kit_ownership(domain):  # noqa: F811
++    rally = appearance("compact")
++    sport = appearance("super_rally")
++    sport["livery"]["colors"]["body"] = "b73528"
++    sport["customisation"]["hood"] = "scoop"
++    assert put(domain, rally).status_code == 200
++    assert put(domain, sport).status_code == 403
++    with domain.factory() as session:
++        session.add(CosmeticUnlock(player_id=domain.players["Alice"],
++                                   item_id="kit/compact/hood/scoop", price=0))
++        session.commit()
++    assert put(domain, sport).status_code == 200
++    assert read(domain).json() == {"appearances": {"compact": rally, "super_rally": sport}}
+--- a/game/backend/world_ranking_client.gd
++++ b/game/backend/world_ranking_client.gd
+@@ -7,7 +7,7 @@
+ var _pending: Dictionary = {}
+ var _generation: int = 0
+ var circuit_vehicle: String = ""
+-const CAR_IDS: Array[String] = ["compact","pickup","classic","formula","kart","electric","forklift","hovercraft"]
++const CAR_IDS: Array[String] = ["compact","pickup","classic","formula","kart","electric","forklift","hovercraft", "super_rally"]
+ 
+ static func multi_supported(adapter: Node) -> bool:
+ 	return supported(adapter) and int(adapter.get("_capabilities").get("world_ranking_version",0)) >= 2
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Der Spieldienst ist vor?bergehend nicht verf?gbar. Versuche es erneut oder spiele als Gast weiter."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rallys agiles, gutmütiges Fahrverhalten mit stärkerer Beschleunigung und höherer Höchstgeschwindigkeit."
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11744,3 +11744,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "The game service is temporarily unavailable. Please retry, or continue as Guest."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "El servicio del juego no est? disponible temporalmente. Vuelve a intentarlo o contin?a como invitado."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "La conducción ágil y dócil de Rally, con más aceleración y mayor velocidad máxima."
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Pelipalvelu on tilap?isesti poissa k?yt?st?. Yrit? uudelleen tai jatka vieraana."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rallyn ketterä ja anteeksiantava ajettavuus, tehokkaampi kiihtyvyys ja suurempi huippunopeus."
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Le service de jeu est temporairement indisponible. R?essayez ou continuez en tant qu?invit?."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "La conduite agile et tolérante de Rally, avec des accélérations plus fortes et une vitesse maximale supérieure."
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Il servizio di gioco ? temporaneamente non disponibile. Riprova o continua come ospite."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "La guida agile e permissiva di Rally, con maggiore accelerazione e velocità massima."
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11599,3 +11599,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "?????????????????????????????????????????"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rallyの軽快で扱いやすい走りに、力強い加速と高い最高速度をプラス。"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11599,3 +11599,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "?? ???? ????? ??? ? ????. ?? ????? ???? ?????."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rally의 민첩하고 다루기 쉬운 주행 감각에 더 강한 가속력과 높은 최고 속도를 더했습니다."
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Spilltjenesten er midlertidig utilgjengelig. Pr?v igjen eller fortsett som gjest."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rallys smidige og tilgivende kjøreegenskaper med sterkere akselerasjon og høyere toppfart."
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "De speldienst is tijdelijk niet beschikbaar. Probeer het opnieuw of ga verder als gast."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Het wendbare, vergevingsgezinde rijgedrag van Rally, met sterkere acceleratie en een hogere topsnelheid."
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "O servi?o do jogo est? temporariamente indispon?vel. Tente novamente ou continue como visitante."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "A condução ágil e fácil do Rally, com mais aceleração e maior velocidade máxima."
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11630,3 +11630,11 @@
+ #: game/backend/account_controller.gd game/ui/account_panel.gd
+ msgid "The game service is temporarily unavailable. Please retry, or continue as Guest."
+ msgstr "Speltj?nsten ?r tillf?lligt otillg?nglig. F?rs?k igen eller forts?tt som g?st."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Super rally"
++msgstr "Super rally"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++msgstr "Rallys smidiga och förlåtande köregenskaper med starkare acceleration och högre toppfart."
+--- a/game/persistence/cosmetic_catalog.gd
++++ b/game/persistence/cosmetic_catalog.gd
+@@ -51,5 +51,5 @@
+ 	for car: String in VehicleCustomisation.KIT_CARS:
+ 		var kits: Dictionary = VehicleCustomisation.for_car(settings,car)
+ 		for category: String in VehicleCustomisation.CATEGORIES:
+-			if kits[category] != "stock": result.append("kit/"+car+"/"+category+"/"+str(kits[category]))
++			if kits[category] != "stock": result.append("kit/"+VehicleCatalog.model_id(car)+"/"+category+"/"+str(kits[category]))
+ 	return result
+--- /dev/null
++++ b/game/resources/cars/super_rally.tres
+@@ -0,0 +1,44 @@
++[gd_resource type="Resource" script_class="HandlingConfig" load_steps=2 format=3]
++[ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
++[resource]
++script = ExtResource("1")
++vehicle_id = "super_rally"
++progressive_handling = false
++braking_force = 18000.0
++collision_energy_loss = 0.35
++collision_radius = 1.364
++collision_turn_strength = 0.45
++corner_energy_retention = 0.5
++countersteer_assistance = 0.0
++dirty_tire_grip_loss = 0.25
++drag = 0.65
++engine_force = 19800.0
++front_grip = 1.0
++grip_recovery = 5.0
++high_speed_steering_reduction = 0.65
++lateral_grip = 54.0
++lateral_response = 14.0
++longitudinal_grip = 25.0
++slide_power_recovery = 0.75
++mass = 1050.0
++maximum_speed = 55.0
++maximum_yaw_rate = 2.7
++profile_name = "Super rally"
++rear_grip = 1.0
++restitution = 0.3
++reverse_delay = 0.35
++reverse_speed = 7.0
++rolling_resistance = 180.0
++rotational_inertia = 500.0
++sliding_grip = 0.92
++slip_threshold = 0.26
++steering_angle = 0.65
++steering_rate = 30.0
++throttle_grip_loss = 0.0
++throttle_rotation = 0.0
++tire_clean_distance = 80.0
++tire_pickup_distance = 20.0
++version = "super-rally-1"
++wall_alignment_rate = 2.4
++wall_slide_speed = 2.0
++wheelbase = 2.244
+--- a/game/tests/bake_garage_cars.gd
++++ b/game/tests/bake_garage_cars.gd
+@@ -11,6 +11,7 @@
+ 		if argument.begins_with("--vehicle="): only_vehicle=argument.trim_prefix("--vehicle=")
+ 	assert(only_vehicle.is_empty() or only_vehicle in VehicleCatalog.IDS)
+ 	for id: String in VehicleCatalog.IDS:
++		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
+ 		if not only_vehicle.is_empty() and id!=only_vehicle: continue
+ 		preload("res://vehicle/prepared_car_cache.gd").enabled=false
+ 		var car:=CarVisual.new()
+--- a/game/tests/bake_modular_car_bases.gd
++++ b/game/tests/bake_modular_car_bases.gd
+@@ -20,6 +20,7 @@
+ 	PREPARED.enabled = false
+ 	preload("res://ui/garage_car_cache.gd").enabled = false
+ 	for id: String in VehicleCatalog.IDS:
++		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
+ 		if not only.is_empty() and only != id: continue
+ 		for simple: bool in [false,true]:
+ 			var edit_modes: Array[bool] = [false]
+--- /dev/null
++++ b/game/tests/bake_super_rally_art.gd
+@@ -0,0 +1,35 @@
++extends SceneTree
++## Original native photographs of the shipped chassis and its variant factory paint.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	assert(DisplayServer.get_name() != "headless")
++	var canvas := SubViewport.new()
++	canvas.size = Vector2i(640,400)
++	canvas.disable_3d = true
++	canvas.transparent_bg = true
++	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(canvas)
++	var profile = preload("res://ui/profile_car.gd")
++	var preview: Control = profile.make_preview("super_rally",VehicleLivery.defaults("super_rally"),VehicleCustomisation.defaults())
++	preview.size = Vector2(canvas.size)
++	canvas.add_child(preview)
++	profile.apply_presentation(preview)
++	for frame: int in range(12):
++		await process_frame
++		await RenderingServer.frame_post_draw
++	var pixels: Image = canvas.get_texture().get_image()
++	pixels.convert(Image.FORMAT_RGBA8)
++	for y: int in range(pixels.get_height()):
++		for x: int in range(pixels.get_width()):
++			var color: Color = pixels.get_pixel(x,y)
++			if color.a > 0.0 and color.a < 1.0:
++				pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++	assert(pixels.save_png("res://assets/menu/super_rally_illustration_v1.png") == OK)
++	assert(pixels.save_png("res://assets/news/vehicles/super_rally.png") == OK)
++	pixels.resize(176,112,Image.INTERPOLATE_LANCZOS)
++	assert(pixels.save_png("res://assets/menu/header_cars_v1/super_rally.png") == OK)
++	preview.free()
++	canvas.free()
++	print("SUPER_RALLY_ART: three native pictures saved")
++	quit()
+--- /dev/null
++++ b/game/tests/bake_super_rally_art.gd.uid
+@@ -0,0 +1 @@
++uid://cmjf4kacitdxy
+--- a/game/tests/check_prepared_assets.gd
++++ b/game/tests/check_prepared_assets.gd
+@@ -44,7 +44,7 @@
+ 				car.free()
+ 		var car:=CarVisual.new()
+ 		car.vehicle_id=id;car.simple_model=false;car.editable_kits=VehicleCustomisation.supported(id)
+-		inspect(Garage.DIRECTORY+id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
++		inspect(Garage.DIRECTORY+car.model_id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
+ 		car.free()
+ 	var car:=CarVisual.new()
+ 	car.simple_model=true
+--- a/game/tests/test_cars.gd
++++ b/game/tests/test_cars.gd
+@@ -37,6 +37,13 @@
+ 	return triangles
+ 
+ func _run() -> void:
++	var only_vehicle: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--car="): only_vehicle = argument.trim_prefix("--car=")
++	if not only_vehicle.is_empty() and only_vehicle not in VehicleCatalog.IDS:
++		check(false,"known vehicle filter")
++		quit(1)
++		return
+ 	var soil: NativeTrack = _soil()
+ 	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
+ 	var keys: Array[String] = []
+@@ -153,7 +160,7 @@
+ 	# Existing conservative route driver: completion/replay evidence, not optimal lap balance.
+ 	for track_id: String in ["arto4", "hiekka", "ovaali3"]:
+ 		for id: String in VehicleCatalog.IDS:
+-			if "--car=kart" in OS.get_cmdline_user_args() and id != "kart": continue
++			if not only_vehicle.is_empty() and id != only_vehicle: continue
+ 			await _laps(id,track_id)
+ 	print("CAR_METRICS ",JSON.stringify(metrics))
+ 	print("CAR_TESTS: %d checks, %d failures" % [checks,failures])
+--- /dev/null
++++ b/game/tests/test_super_rally.gd
+@@ -0,0 +1,138 @@
++extends SceneTree
++## New-car identity, matched-speed Rally controls, power, exact replay and saves.
++var checks: int = 0
++var failures: int = 0
++var metrics: Dictionary = {}
++const OUTPUT: String = "res://../docs/evidence/super-rally-2026-11-08"
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var rally: HandlingConfig = VehicleCatalog.config("compact")
++	var sport: HandlingConfig = VehicleCatalog.config("super_rally")
++	check(sport.vehicle_id == "super_rally" and sport.version == "super-rally-1","separate canonical identity")
++	check(VehicleCatalog.IDS.back() == "super_rally" and VehicleCatalog.ALL_IDS.back() == "super_rally","append-only selection and achievement identities")
++	check(VehicleCatalog.IDS.size() == VehicleCatalog.NAMES.size() and VehicleCatalog.IDS.size() == VehicleCatalog.CLASSES.size() and VehicleCatalog.IDS.size() == VehicleCatalog.DESCRIPTIONS.size(),"catalogue arrays agree")
++	var original: Dictionary = rally.snapshot()
++	var variant: Dictionary = sport.snapshot()
++	for field: String in ["vehicle_id","version","profile_name","engine_force","maximum_speed"]:
++		original.erase(field)
++		variant.erase(field)
++	check(original == variant,"every steering, grip, mass, brake and surface setting matches Rally")
++	check(is_equal_approx(sport.engine_force,rally.engine_force*1.2) and sport.maximum_speed == 55.0,"20 percent more power and 198 km/h speed cap")
++	# Matched-speed coast, braking and handbrake maneuvers must remain bit exact.
++	for speed: float in [3.0,15.0,28.0,44.0]:
++		for steer: float in [-1.0,-0.4,0.4,1.0]:
++			for pedals: Vector2 in [Vector2.ZERO,Vector2(0.6,0),Vector2(0,0.7)]:
++				var a := VehicleSimulation.new(rally)
++				var b := VehicleSimulation.new(sport)
++				a.state.velocity = Vector2(0,speed)
++				b.state.velocity = a.state.velocity
++				for tick: int in range(120):
++					var input := DriveFrame.sample(steer,0,pedals.x,pedals.y)
++					a.step(input)
++					b.step(input)
++					if a.state.velocity.length() < 0.15: break # Stop before held brake engages powered reverse.
++				check(a.state.snapshot() == b.state.snapshot(),"matched-speed coast/brake/handbrake %s/%s/%s" % [speed,steer,pedals])
++	var launch: Dictionary = {}
++	for id: String in ["compact","super_rally"]:
++		var sim := VehicleSimulation.new(VehicleCatalog.config(id))
++		var hundred: int = 0
++		var five_seconds: float = 0.0
++		for tick: int in range(3600):
++			sim.step(DriveFrame.sample(0,1,0))
++			if hundred == 0 and sim.state.velocity.length() >= 100.0/3.6: hundred = tick+1
++			if tick == 599: five_seconds = sim.state.position.y
++		launch[id] = {"zero_to_100_seconds":hundred*VehicleSimulation.STEP,"five_second_metres":five_seconds,"top_kph":sim.state.velocity.length()*3.6}
++	check(launch.super_rally.zero_to_100_seconds < launch.compact.zero_to_100_seconds,"quicker actual 0 to 100")
++	check(launch.super_rally.five_second_metres > launch.compact.five_second_metres,"more distance in actual five-second launch")
++	check(launch.super_rally.top_kph > launch.compact.top_kph*1.19 and launch.super_rally.top_kph <= sport.maximum_speed*3.6+0.0001,"higher actual top speed within cap")
++	metrics.launch = launch
++	var frames: Array[Array] = []
++	var sim := VehicleSimulation.new(sport)
++	var saved: Dictionary = {}
++	for tick: int in range(3600):
++		var frame := DriveFrame.sample(sin(tick*0.012)*0.65,1.0 if tick%600<430 else 0.0,0.65 if tick%600>=500 else 0.0,0.4 if tick%600 in range(460,480) else 0.0)
++		frames.append(frame.packed())
++		sim.step(frame)
++		check(sim.state.velocity.is_finite() and sim.state.velocity.length() <= sport.maximum_speed+0.000001,"bounded mixed-input state")
++		if tick == 1799: saved = RewindHistory.pack_state(sim.state)
++	var replay := VehicleSimulation.new(sport)
++	var resumed := VehicleSimulation.new(sport)
++	RewindHistory.restore(resumed.state,saved)
++	var decoded: Array = JSON.parse_string(JSON.stringify(frames))
++	for tick: int in range(decoded.size()):
++		var frame := DriveFrame.sample(float(decoded[tick][0])/127,float(decoded[tick][1])/255,float(decoded[tick][2])/255,float(decoded[tick][3])/255 if decoded[tick].size()>3 else 0.0)
++		replay.step(frame)
++		if tick >= 1800: resumed.step(frame)
++	check(sim.state.snapshot() == replay.state.snapshot(),"serialized mixed-input replay is exact")
++	check(sim.state.snapshot() == resumed.state.snapshot(),"restored midpoint replay is exact")
++	DirAccess.make_dir_recursive_absolute("user://super-rally-tests")
++	var records := LocalRecords.new("user://super-rally-tests/records.json")
++	records.load_records()
++	var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
++	check(records.key_for(track,rally) != records.key_for(track,sport),"personal records have separate rules")
++	check(records.record(track,sport,100.0,[20.0,20.0,20.0,20.0,20.0]) == OK,"new car PB saves")
++	check(records.best_for(track,rally) == 0.0,"new car PB cannot replace Rally PB")
++	records.settings.selected_car = "super_rally"
++	var parts: Dictionary = VehicleCustomisation.defaults()
++	parts.hood = "scoop"
++	records.settings.vehicle_customisation = {}
++	for id: String in VehicleCatalog.IDS: records.settings.vehicle_customisation[id] = parts.duplicate() if id in ["compact","super_rally"] else VehicleCustomisation.defaults()
++	records.settings.vehicle_liveries = {"super_rally":VehicleLivery.defaults("super_rally"),"compact":VehicleLivery.defaults("compact")}
++	check(VehicleCustomisation.valid_collection(records.settings.vehicle_customisation),"all six car designs fit the saved collection")
++	check(records.save_records() == OK,"new car selection and designs save")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(reopened.settings.selected_car == "super_rally" and VehicleCustomisation.for_car(reopened.settings,"super_rally").hood == "scoop","new selection and fitted parts survive reload")
++	check(VehicleLivery.for_car(reopened.settings,"compact") != VehicleLivery.for_car(reopened.settings,"super_rally"),"separate paint survives reload")
++	check(LiveryCatalog.projection("super_rally") == LiveryCatalog.projection("compact") and LiveryCatalog.has_roof("super_rally"),"complete Rally livery projection and roof")
++	var bases = preload("res://vehicle/modular_car_base.gd")
++	var kits = preload("res://vehicle/modular_car_kits.gd")
++	var base_hits: int = bases.hits
++	var kit_hits: int = kits.hits
++	for editable: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "super_rally"
++		car.editable_kits = editable
++		car.livery = VehicleLivery.defaults("super_rally")
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		check(car.model_id == "compact" and car.vehicle_id == "super_rally" and car.rolling_wheels.size() == 4 and car.front_wheels.size() == 2,"complete Rally chassis retains variant identity")
++		check(car.paint_materials.body.albedo_color == Color(VehicleLivery.defaults("super_rally").colors.body),"new factory paint on actual model")
++		car.set_night_headlights(true)
++		check(car.headlights != null,"Rally night lamps work")
++		if editable:
++			car.change_kit_parts(parts)
++			check(car.customisation.hood == "scoop" and not car.kit_frames.hood.is_empty(),"Rally fitted hood replaces on variant")
++		car.free()
++	if "--prepared" in OS.get_cmdline_user_args():
++		check(bases.hits >= base_hits+2 and kits.hits > kit_hits,"variant restores both prepared stock bases and the fitted Rally module")
++	var cars: Array[CarVisual] = []
++	for id: String in ["compact","super_rally"]:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		car.livery = VehicleLivery.defaults(id)
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		cars.append(car)
++	check(cars[0].wheel_rest_positions == cars[1].wheel_rest_positions and cars[0].wheel_radii == cars[1].wheel_radii,"both variants retain identical physical wheel placement")
++	check(cars[0].paint_materials.body != cars[1].paint_materials.body,"shared chassis owns separate mutable paint")
++	var old_paint: Color = cars[0].paint_materials.body.albedo_color
++	var paint: Dictionary = VehicleLivery.defaults("super_rally")
++	paint.colors.body = "446688"
++	cars[1].apply_livery(paint)
++	check(cars[0].paint_materials.body.albedo_color == old_paint,"painting Super rally cannot repaint Rally")
++	for car: CarVisual in cars: car.free()
++	var report := FileAccess.open(OUTPUT.path_join("acceptance.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	report.close()
++	print("SUPER_RALLY: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(metrics)])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_super_rally.gd.uid
+@@ -0,0 +1 @@
++uid://bseqsgyvlby5u
+--- /dev/null
++++ b/game/tests/test_super_rally_ui.gd
+@@ -0,0 +1,78 @@
++extends SceneTree
++## Actual isolated App, header selection, Garage and a local five-lap race.
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func settle(count: int = 12) -> void:
++	for frame: int in range(count):
++		await process_frame
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() != "headless":
++		check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = "res://../docs/evidence/super-rally-2026-11-08/"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280,720)
++	var directory: String = ProjectSettings.globalize_path("user://super-rally-ui/"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	records.load_records()
++	records.settings.selected_car = "compact"
++	check(records.save_records() == OK,"private initial Rally selection")
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = records
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	await settle()
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	check(page != null,"actual App opens Garage")
++	while not page.showroom.showroom_ready or (page.progressive_entry and page.showroom.get("preparing")): await process_frame
++	page.open_car(VehicleCatalog.IDS.find("super_rally"))
++	await settle(40)
++	while not page.showroom.showroom_ready or (page.progressive_entry and page.showroom.get("preparing")): await process_frame
++	check(VehicleCatalog.selected == "super_rally" and page.showroom.car.vehicle_id == "super_rally","Garage selects actual new car")
++	check(page.showroom.car.model_id == "compact" and page.showroom.car.simple_model,"Garage uses approved reduced Rally chassis")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(reopened.settings.selected_car == "super_rally","selection survives reload")
++	check(VehicleCatalog.artwork("super_rally") != null and preload("res://ui/header_car_icons.gd").texture("super_rally") != null,"new catalogue and header pictures load")
++	page._show_section("cars")
++	await settle(20)
++	capture("catalogue")
++	page._show_section("customise")
++	await settle(20)
++	capture("garage")
++	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
++	await app._start_race(track,true,true)
++	while not app.game.preparation_complete: await process_frame
++	var game: Node = app.game
++	game.set_physics_process(false)
++	if game.paused: game.toggle_pause(false)
++	check(game.handling.vehicle_id == "super_rally" and game.handling.version == "super-rally-1","actual race loads new performance profile")
++	check(game.car.vehicle_id == "super_rally" and game.car.model_id == "compact" and game.car.simple_model,"actual race retains separate car identity and reduced chassis")
++	check(game.handling.handbrake_enabled and not game.handling.rear_wheel_drive,"Rally handbrake and drive layout retained")
++	check(game.track_session.target_laps == 5,"ordinary race retains five laps")
++	game.countdown_ticks = 0
++	game.countdown_label.hide()
++	await settle(20)
++	capture("race")
++	var file := FileAccess.open(output.path_join("acceptance.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures},"\t"))
++	file.close()
++	app.queue_free()
++	await settle(2)
++	print("SUPER_RALLY_UI: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_super_rally_ui.gd.uid
+@@ -0,0 +1 @@
++uid://375bttqnpqli
+--- a/game/tests/test_world_ranking_cars.gd
++++ b/game/tests/test_world_ranking_cars.gd
+@@ -24,13 +24,13 @@
+ 			return {"ok":true,"data":{"state":"not_joined","week":44,"ends_at":1793577600,"server_now":1792972800}}
+ 		var data: Dictionary = {"policy":"multi-car-circuit-v2","car":car,"state":"published",
+ 			"snapshot_id":1,"week_start":1792972800,"published_at":1793577600,"ranked_count":12000,
+-			"circuit_cars":VehicleCatalog.IDS.duplicate(),"circuit_weights":{"compact":12000,"electric":11500,"kart":10800,"forklift":10000,"hovercraft":10000}}
+-		var totals: Dictionary = {"compact":18000,"electric":17000,"kart":16000,"forklift":15000,"hovercraft":14000}
++			"circuit_cars":VehicleCatalog.IDS.duplicate(),"circuit_weights":{"compact":12000,"electric":11500,"kart":10800,"forklift":10000,"hovercraft":10000,"super_rally":10000}}
++		var totals: Dictionary = {"compact":18000,"electric":17000,"kart":16000,"forklift":15000,"hovercraft":14000,"super_rally":13000}
+ 		if path.begins_with("/ranking/me") or path.begins_with("/ranking/players/"):
+ 			data.merge({"world_rank":7,"country_rank":3,"points":27200 if car == "overall" else totals[car],
+ 				"movement":2,"earned":1500,"net_change":200,"points_at_risk":50,"season_points":5000,"season_rank":8,
+ 				"participation_bps":11500,"results":[],"career":{},"cars":[]})
+-			for id: String in ["compact","electric","kart","forklift","hovercraft"]:
++			for id: String in ["compact","electric","kart","forklift","hovercraft","super_rally"]:
+ 				var weight: int = 100 if id == "compact" else 40 if id == "electric" else 15 if id == "kart" else 0
+ 				data.cars.append({"vehicle_id":id,"points":totals[id],"world_rank":3,"counting_weight":weight,
+ 					"contribution_hundredths":int(totals[id])*weight})
+@@ -95,14 +95,14 @@
+ 	root.add_child(host)
+ 	var popup: Node = preload("res://ui/world_ranking.gd").open(host,client)
+ 	await frames()
+-	check(popup.car_selector.visible and popup.car_selector.item_count == 6,"overall and exactly five playable cars offered")
++	check(popup.car_selector.visible and popup.car_selector.item_count == VehicleCatalog.IDS.size()+1,"overall and every playable car offered")
+ 	check("27200" in popup.summary.text and popup.list.get_child_count() == 50,"overall summary and bounded page displayed")
+ 	check(popup.size.x <= root.size.x and popup.size.y <= root.size.y,"overall dialog fits viewport")
+ 	await capture("overall-1280x720")
+ 	popup.selector.select(4)
+ 	popup.selector.item_selected.emit(4)
+ 	await frames()
+-	check(popup.list.get_child_count() == 5,"overall results explain all car contributions")
++	check(popup.list.get_child_count() == VehicleCatalog.IDS.size(),"overall results explain all car contributions")
+ 	await capture("contributions-1280x720")
+ 	popup.car_selector.select(4)
+ 	popup.car_selector.item_selected.emit(4)
+@@ -111,13 +111,18 @@
+ 	check("participation bonus" in popup.detail.text and "15.0%" in popup.detail.text,"announced current-week bonus shown")
+ 	check(popup.list.get_child_count() == 12,"selected-car history remains bounded")
+ 	await capture("volt-results-1280x720")
++	popup.car_selector.select(6)
++	popup.car_selector.item_selected.emit(6)
++	await frames()
++	check(popup.vehicle_id == "super_rally" and "13000" in popup.summary.text,"new car has a distinct selectable circuit and summary")
++	await capture("super-rally-results-1280x720")
+ 	var original_car: String = VehicleCatalog.selected
+ 	VehicleCatalog.selected = "kart"
+ 	var requested: Array = []
+ 	adapter.circuit_requested.connect(func() -> void: requested.append(adapter.circuit_vehicle))
+ 	popup.circuit_button.pressed.emit()
+ 	await frames()
+-	check(requested == ["electric"] and VehicleCatalog.selected == "kart","selected car Circuit preserves Garage selection")
++	check(requested == ["super_rally"] and VehicleCatalog.selected == "kart","selected Super rally Circuit preserves Garage selection")
+ 	var rivalry: Node = preload("res://backend/weekly_rivalry_client.gd").new()
+ 	rivalry.client = client
+ 	root.add_child(rivalry)
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -304,7 +304,7 @@
+ 
+ func _orbit() -> void:
+ 	if wash_effect != null: wash_effect.reset()
+-	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
++	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if VehicleCatalog.model_id(vehicle_id) == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+ 	if garage_mode:
+ 		distance = (8.5 if read_only else 5.5 * 1.48) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+ 		if garage_distance == 0.0: garage_distance = distance
+--- a/game/ui/garage_car_cache.gd
++++ b/game/ui/garage_car_cache.gd
+@@ -8,8 +8,8 @@
+ static var source_hashes: Dictionary={}
+ 
+ static func geometry_key(car: CarVisual) -> Array:
+-	var config: HandlingConfig=VehicleCatalog.config(car.vehicle_id)
+-	return [SCHEMA,Engine.get_version_info().string,preload("res://vehicle/modular_car_base.gd").build_revision(car.vehicle_id),car.vehicle_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
++	var config: HandlingConfig=VehicleCatalog.config(car.model_id)
++	return [SCHEMA,Engine.get_version_info().string,preload("res://vehicle/modular_car_base.gd").build_revision(car.model_id),car.model_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+ 
+ static func geometry_sources(id: String="compact") -> Dictionary:
+ 	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes(id)
+@@ -18,15 +18,15 @@
+ 
+ static func restore(car: CarVisual) -> bool:
+ 	if not enabled or car.simple_model or car.customisation!=VehicleCustomisation.defaults(): return false
+-	var path: String=DIRECTORY+car.vehicle_id+".scn"
++	var path: String=DIRECTORY+car.model_id+".scn"
+ 	if not ResourceLoader.exists(path): return false
+ 	var scene: PackedScene=load(path)
+ 	var holder: Node3D=scene.instantiate()
+ 	var data: Dictionary=holder.get_meta("garage_rest",{})
+ 	if OS.has_feature("editor") and FileAccess.file_exists("res://vehicle/car_visual.gd"):
+ 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+-		if not source_hashes.has(car.vehicle_id): source_hashes[car.vehicle_id]=validation.runtime_hashes(car.vehicle_id)
+-		if validation.runtime_projection(data.get("sources",{}))!=source_hashes[car.vehicle_id]:
++		if not source_hashes.has(car.model_id): source_hashes[car.model_id]=validation.runtime_hashes(car.model_id)
++		if validation.runtime_projection(data.get("sources",{}))!=source_hashes[car.model_id]:
+ 			holder.free()
+ 			return false
+ 	if data.get("key",[])!=geometry_key(car):
+@@ -73,7 +73,7 @@
+ 			saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(index))
+ 			saved.surface_set_material(index,node.mesh.surface_get_material(index))
+ 		node.mesh=saved
+-	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(car.vehicle_id),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
++	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(car.model_id),"key":geometry_key(car),"vehicle":car.model_id,"editable":car.editable_kits,
+ 		"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,
+ 		"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
+ 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field]=entry[field]
+@@ -89,6 +89,6 @@
+ 	var error: Error=scene.pack(holder)
+ 	if error==OK:
+ 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
+-		error=ResourceSaver.save(scene,DIRECTORY+car.vehicle_id+".scn",ResourceSaver.FLAG_COMPRESS)
++		error=ResourceSaver.save(scene,DIRECTORY+car.model_id+".scn",ResourceSaver.FLAG_COMPRESS)
+ 	holder.free()
+ 	return error
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1245,7 +1245,7 @@
+ 	var title: String = option.capitalize()
+ 	for item: Array in VehicleCustomisation.options(category,vehicle_id):
+ 		if item[0] == option: title = str(item[1])
+-	if not _require_owned("kit/"+vehicle_id+"/"+category+"/"+option,title,_select_kit.bind(category,option)): return
++	if not _require_owned("kit/"+VehicleCatalog.model_id(vehicle_id)+"/"+category+"/"+option,title,_select_kit.bind(category,option)): return
+ 	_save_kits(next)
+ 
+ func _preview_kit(category: String, option: String) -> void:
+@@ -1273,7 +1273,7 @@
+ 	for index: int in range(kit_cards.get_child_count()):
+ 		var card: Button = kit_cards.get_child(index)
+ 		var option: Array = VehicleCustomisation.options(kit_category,vehicle_id)[index]
+-		var item: String = "kit/"+vehicle_id+"/"+kit_category+"/"+str(option[0])
++		var item: String = "kit/"+VehicleCatalog.model_id(vehicle_id)+"/"+kit_category+"/"+str(option[0])
+ 		var equipped: bool = str(option[0])==str(kit_draft[kit_category])
+ 		var owned: bool = equipped or economy==null or economy.owns(item)
+ 		var cost: int = 0 if economy==null else economy.price(item)
+@@ -1348,7 +1348,7 @@
+ 	var id: String
+ 	var title: String
+ 	if value.kind == "kit":
+-		id = "kit/"+vehicle_id+"/"+str(value.category)+"/"+str(value.option)
++		id = "kit/"+VehicleCatalog.model_id(vehicle_id)+"/"+str(value.category)+"/"+str(value.option)
+ 		title = kit_shelf.selected_title
+ 	else:
+ 		id = "livery/"+str(_preset_value(int(value.index)).pattern)
+--- a/game/ui/header_simple_cache.gd
++++ b/game/ui/header_simple_cache.gd
+@@ -16,8 +16,8 @@
+ 	return data.get("schema","")==SCHEMA and data.get("revision","")==revision and data.get("engine",[])==engine_key() and data.get("key",[])==geometry_key(car)
+ 
+ static func geometry_key(car: CarVisual) -> Array:
+-	var config: HandlingConfig=VehicleCatalog.config(car.vehicle_id)
+-	return [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
++	var config: HandlingConfig=VehicleCatalog.config(car.model_id)
++	return [SCHEMA,car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+ 
+ static func geometry_sources() -> Dictionary:
+ 	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes("compact")
+@@ -28,10 +28,10 @@
+ 	return preload("res://vehicle/modular_car_base.gd").build_revision("compact")
+ 
+ static func restore(car: CarVisual) -> bool:
+-	if not enabled or not car.simple_model or car.vehicle_id!="compact" or car.customisation!=VehicleCustomisation.defaults(): return false
++	if not enabled or not car.simple_model or car.model_id!="compact" or car.customisation!=VehicleCustomisation.defaults(): return false
+ 	var revision: String = geometry_revision()
+ 	if revision.length()!=64 or not revision.is_valid_hex_number(): return false
+-	var path: String=DIRECTORY+car.vehicle_id+".scn"
++	var path: String=DIRECTORY+car.model_id+".scn"
+ 	if not ResourceLoader.exists(path): return false
+ 	var scene: PackedScene=load(path) as PackedScene
+ 	if scene==null: return false
+@@ -76,7 +76,7 @@
+ 	return true
+ 
+ static func bake(car: CarVisual, revision: String) -> Error:
+-	if car.vehicle_id!="compact" or not car.simple_model or car.customisation!=VehicleCustomisation.defaults() or revision.length()!=64 or not revision.is_valid_hex_number(): return ERR_INVALID_PARAMETER
++	if car.model_id!="compact" or not car.simple_model or car.customisation!=VehicleCustomisation.defaults() or revision.length()!=64 or not revision.is_valid_hex_number(): return ERR_INVALID_PARAMETER
+ 	var entry: Dictionary={}
+ 	for candidate: Dictionary in Cache.entries:
+ 		if candidate.key==Cache.key_for(car): entry=candidate;break
+@@ -92,7 +92,7 @@
+ 			saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(index))
+ 			saved.surface_set_material(index,node.mesh.surface_get_material(index))
+ 		node.mesh=saved
+-	var data: Dictionary={"schema":SCHEMA,"revision":revision,"engine":engine_key(),"sources":geometry_sources(),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
++	var data: Dictionary={"schema":SCHEMA,"revision":revision,"engine":engine_key(),"sources":geometry_sources(),"key":geometry_key(car),"vehicle":car.model_id,"editable":car.editable_kits,
+ 		"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,
+ 		"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
+ 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field]=entry[field]
+@@ -108,6 +108,6 @@
+ 	var error: Error=scene.pack(holder)
+ 	if error==OK:
+ 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
+-		error=ResourceSaver.save(scene,DIRECTORY+car.vehicle_id+".scn",ResourceSaver.FLAG_COMPRESS)
++		error=ResourceSaver.save(scene,DIRECTORY+car.model_id+".scn",ResourceSaver.FLAG_COMPRESS)
+ 	holder.free()
+ 	return error
+--- a/game/ui/profile_car_renderer.gd
++++ b/game/ui/profile_car_renderer.gd
+@@ -73,5 +73,5 @@
+ 	# Icon batches retain geometry, camera, lights and radiance. Only paint changes.
+ 	view.livery = paint.duplicate(true)
+ 	view.car.apply_livery(paint)
+-	if view.car.vehicle_id!="compact":
++	if view.car.model_id!="compact":
+ 		preload("res://ui/rivalry_podium_studio.gd")._garage_paint(view.car)
+--- a/game/ui/rivalry_podium_studio.gd
++++ b/game/ui/rivalry_podium_studio.gd
+@@ -5,7 +5,7 @@
+ 	environment.name = "PodiumReflectionEnvironment"
+ 	# Other chassis still use the original nonreflective toon paint. Give their
+ 	# podium-only paint copies the Compact's existing Garage automotive finish.
+-	if car.vehicle_id != "compact": _garage_paint(car)
++	if car.model_id != "compact": _garage_paint(car)
+ 	ShowroomStudio._studio_glass(car,{})
+ 	ShowroomStudio._contact(world,Vector3(0,0.004,0),Vector2(2.4,4.7)*HandlingConfig.BODY_SCALE,0.40)
+ 	for wheel: Vector3 in car.wheel_rest_positions:
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -4,6 +4,8 @@
+ 
+ var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
+ var vehicle_id: String = "compact"
++var model_id: String:
++	get: return VehicleCatalog.model_id(vehicle_id)
+ var livery: Dictionary = {}
+ var customisation: Dictionary = {}
+ var paint_materials: Dictionary = {}
+@@ -94,7 +96,7 @@
+ 				lens.albedo_color = Color("e8f7ff")
+ 				preload("res://vehicle/electric_car_model.gd").night_lens(headlights,lens)
+ 			continue
+-		if vehicle_id == "compact":
++		if model_id == "compact":
+ 			var x: float = side*CompactFrontLamps.OFFSET
+ 			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
+ 			round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+@@ -233,6 +235,7 @@
+ 	_model_slice_started = Time.get_ticks_usec() if cooperative_build else 0
+ 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+ 	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
++	if livery.is_empty() and vehicle_id == "super_rally": livery = VehicleLivery.defaults(vehicle_id)
+ 	if not VehicleCustomisation.valid(customisation,vehicle_id): customisation = VehicleCustomisation.defaults()
+ 	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
+ 		# Older stock forklift templates predate editable kit frames.
+@@ -265,7 +268,7 @@
+ 		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+ 		model_ready = true
+ 		return
+-	if vehicle_id != "compact":
++	if model_id != "compact":
+ 		VehicleModels.build(self, vehicle_id)
+ 		if not livery.is_empty(): apply_livery(livery)
+ 		_update_rear_lights()
+@@ -678,7 +681,7 @@
+ 	var roll: float = state.roll_direction * TAU * turn
+ 	var low: float = INF
+ 	var outline: Array[Vector2] = ROLL_OUTLINE
+-	if vehicle_id=="compact" and customisation != VehicleCustomisation.defaults():
++	if model_id=="compact" and customisation != VehicleCustomisation.defaults():
+ 		outline = ROLL_OUTLINE.duplicate()
+ 		if customisation.body in ["rally","club"] or customisation.body in CompactKitVariants.BODIES:
+ 			if customisation.body in CompactKitVariants.BODIES:
+@@ -693,7 +696,7 @@
+ 				half = extent.x
+ 				height = extent.y
+ 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
+-	if vehicle_id != "compact":
++	if model_id != "compact":
+ 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
+ 		var height: float = 2.89 if vehicle_id == "forklift" else 1.96 if vehicle_id == "pickup" else 0.91 if vehicle_id == "formula" else 1.36
+ 		outline = [Vector2(-half_width,0),Vector2(half_width,0),Vector2(-half_width,0.75),Vector2(half_width,0.75),Vector2(-0.76,height),Vector2(0.76,height)]
+--- a/game/vehicle/livery_catalog.gd
++++ b/game/vehicle/livery_catalog.gd
+@@ -26,12 +26,13 @@
+ 	return textures[file]
+ 
+ static func has_roof(id: String) -> bool:
+-	return id in ["compact", "pickup", "classic", "electric", "hovercraft"]
++	return VehicleCatalog.model_id(id) in ["compact", "pickup", "classic", "electric", "hovercraft"]
+ 
+ static func sticker_label(id: String, panel: String) -> String:
+ 	return "Rear" if id == "forklift" and panel == "hood" else panel.capitalize()
+ 
+ static func projection(id: String) -> Dictionary:
++	id = VehicleCatalog.model_id(id)
+ 	return {
+ 		"hovercraft": {"bounds":Vector3(2.32,1.42,4.26), "hood":Vector4(-0.36,-1.78,0.72,0.60), "roof":Vector4(-0.17,-0.25,0.34,0.68), "levels":Vector2(0.75,1.03)},
+ 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
+--- a/game/vehicle/modular_car_base.gd
++++ b/game/vehicle/modular_car_base.gd
+@@ -9,23 +9,24 @@
+ static var _sources: Dictionary = {}
+ 
+ static func build_revision(id: String) -> String:
++	id = VehicleCatalog.model_id(id)
+ 	var identity: GDScript = load("res://core/build_identity.gd")
+ 	var revisions: Dictionary = identity.get_script_constant_map().get("MODULAR_CAR_SHA256",{})
+ 	return str(revisions.get(id,""))
+ 
+ static func path_for(car: CarVisual) -> String:
+-	return DIRECTORY.path_join("%s_%s_%s.scn" % [car.vehicle_id,"simple" if car.simple_model else "full","editable" if car.editable_kits else "fixed"])
++	return DIRECTORY.path_join("%s_%s_%s.scn" % [car.model_id,"simple" if car.simple_model else "full","editable" if car.editable_kits else "fixed"])
+ 
+ static func key_for(car: CarVisual) -> Array:
+-	var config: HandlingConfig = VehicleCatalog.config(car.vehicle_id)
+-	return [SCHEMA,Engine.get_version_info().string,build_revision(car.vehicle_id),car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
++	var config: HandlingConfig = VehicleCatalog.config(car.model_id)
++	return [SCHEMA,Engine.get_version_info().string,build_revision(car.model_id),car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+ 
+ static func source_hashes(id: String) -> Dictionary:
+ 	return preload("res://vehicle/prepared_asset_sources.gd").hashes(id)
+ 
+ static func _eligible(car: CarVisual) -> bool:
+-	var revision: String = build_revision(car.vehicle_id)
+-	return enabled and car.vehicle_id in VehicleCatalog.IDS and revision.length() == 64 and revision.is_valid_hex_number(false) and car.batch_parts and (not car.editable_kits or VehicleCustomisation.supported(car.vehicle_id))
++	var revision: String = build_revision(car.model_id)
++	return enabled and car.model_id in VehicleCatalog.IDS and revision.length() == 64 and revision.is_valid_hex_number(false) and car.batch_parts and (not car.editable_kits or VehicleCustomisation.supported(car.model_id))
+ 
+ static func restore(car: CarVisual) -> bool:
+ 	if not _eligible(car): return false
+@@ -43,8 +44,8 @@
+ 	# In a source checkout, reject any stale scene before touching the car.
+ 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
+ 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+-		if not _sources.has(car.vehicle_id): _sources[car.vehicle_id] = validation.runtime_hashes(car.vehicle_id)
+-		if validation.runtime_projection(data.get("sources",{})) != _sources[car.vehicle_id]:
++		if not _sources.has(car.model_id): _sources[car.model_id] = validation.runtime_hashes(car.model_id)
++		if validation.runtime_projection(data.get("sources",{})) != _sources[car.model_id]:
+ 			holder.free()
+ 			return false
+ 	# Validate every stored path before mutating the live car. A corrupt or
+@@ -127,7 +128,7 @@
+ 			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(surface))
+ 			mesh.surface_set_material(surface,node.mesh.surface_get_material(surface))
+ 		node.mesh = mesh
+-	var data: Dictionary = {"key":key_for(car),"sources":source_hashes(car.vehicle_id),"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
++	var data: Dictionary = {"key":key_for(car),"sources":source_hashes(car.model_id),"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
+ 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field] = entry[field]
+ 	for field: String in ["brake_material","accent_roof","underside_material"]: data[field] = SNAPSHOT._material(entry[field],copies)
+ 	for slot: String in entry.paint_materials: data.paint_materials[slot] = SNAPSHOT._material(entry.paint_materials[slot],copies)
+--- a/game/vehicle/modular_car_kits.gd
++++ b/game/vehicle/modular_car_kits.gd
+@@ -18,23 +18,23 @@
+ 	return sources
+ 
+ static func key_for(car: CarVisual, category: String, option: String) -> Array:
+-	var config: HandlingConfig = VehicleCatalog.config(car.vehicle_id)
+-	var key: Array = [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.vehicle_id)]
++	var config: HandlingConfig = VehicleCatalog.config(car.model_id)
++	var key: Array = [SCHEMA,car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.model_id)]
+ 	# Superseded Rally modules cannot be reused in packaged builds, where
+ 	# source-file hash validation is unavailable.
+-	if car.vehicle_id == "compact" and category == "body": key.append("rally-body-2")
+-	if car.vehicle_id == "compact" and category == "aero": key.append("rally-aero-2")
+-	if car.vehicle_id == "electric": key.append("volt-visible-kits-2")
+-	if car.vehicle_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
+-	if car.vehicle_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
++	if car.model_id == "compact" and category == "body": key.append("rally-body-2")
++	if car.model_id == "compact" and category == "aero": key.append("rally-aero-2")
++	if car.model_id == "electric": key.append("volt-visible-kits-2")
++	if car.model_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
++	if car.model_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
+ 	return key
+ 
+ static func path_for(car: CarVisual, category: String, option: String) -> String:
+-	return DIRECTORY.path_join(car.vehicle_id).path_join("simple" if car.simple_model else "full").path_join(category).path_join(option+".scn")
++	return DIRECTORY.path_join(car.model_id).path_join("simple" if car.simple_model else "full").path_join(category).path_join(option+".scn")
+ 
+ static func _valid_option(car: CarVisual, category: String, option: String) -> bool:
+-	if not VehicleCustomisation.supported(car.vehicle_id) or category not in VehicleCustomisation.CATEGORIES: return false
+-	for item: Array in VehicleCustomisation.options(category,car.vehicle_id):
++	if not VehicleCustomisation.supported(car.model_id) or category not in VehicleCustomisation.CATEGORIES: return false
++	for item: Array in VehicleCustomisation.options(category,car.model_id):
+ 		if item[0] == option: return true
+ 	return false
+ 
+@@ -73,7 +73,7 @@
+ 
+ static func _open(car: CarVisual, category: String, option: String) -> Dictionary:
+ 	if not enabled or not car.editable_kits or not car.batch_parts or option == "stock" or not _valid_option(car,category,option): return {}
+-	var revision: String = Base.build_revision(car.vehicle_id)
++	var revision: String = Base.build_revision(car.model_id)
+ 	if revision.length() != 64 or not revision.is_valid_hex_number(): return {}
+ 	var path: String = path_for(car,category,option)
+ 	if not ResourceLoader.exists(path): return {}
+@@ -88,11 +88,11 @@
+ 	if data.get("key",[]) != key_for(car,category,option): holder.free(); return {}
+ 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
+ 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+-		if not source_hashes.has(car.vehicle_id):
+-			var current: Dictionary=validation.runtime_hashes(car.vehicle_id)
++		if not source_hashes.has(car.model_id):
++			var current: Dictionary=validation.runtime_hashes(car.model_id)
+ 			current["vehicle/modular_car_kits.gd"]=FileAccess.get_sha256("res://vehicle/modular_car_kits.gd")
+-			source_hashes[car.vehicle_id]=current
+-		if validation.runtime_projection(data.get("sources",{})) != source_hashes[car.vehicle_id]: holder.free(); return {}
++			source_hashes[car.model_id]=current
++		if validation.runtime_projection(data.get("sources",{})) != source_hashes[car.model_id]: holder.free(); return {}
+ 	var bindings: Dictionary = {}
+ 	var has_body: bool = false
+ 	for role: Dictionary in data.get("roles",[]):
+@@ -116,20 +116,20 @@
+ 		if frame.get_parent() != holder or seen.has(frame) or str(entry.get("name","")).is_empty(): holder.free(); return {}
+ 		seen[frame] = true
+ 		if not bool(entry.get("kit",true)):
+-			if category != "rims" or car.vehicle_id != "hovercraft" or str(entry.name) != "FanRotor" or car.get_node(entry.parent) != car.body: holder.free(); return {}
++			if category != "rims" or car.model_id != "hovercraft" or str(entry.name) != "FanRotor" or car.get_node(entry.parent) != car.body: holder.free(); return {}
+ 			auxiliary += 1
+ 		else: kit_count += 1
+ 		for old: Node3D in car.kit_frames.get(category,[]):
+ 			var parent: Node = car.get_node(entry.parent)
+ 			if parent == old or old.is_ancestor_of(parent): holder.free(); return {}
+-	if category == "rims" and car.vehicle_id == "hovercraft" and car.body.get_node_or_null("FanRotor") == null:
++	if category == "rims" and car.model_id == "hovercraft" and car.body.get_node_or_null("FanRotor") == null:
+ 		holder.free(); return {}
+ 	if kit_count == 0: holder.free(); return {}
+-	if category == "rims" and car.vehicle_id == "hovercraft" and auxiliary != 1: holder.free(); return {}
++	if category == "rims" and car.model_id == "hovercraft" and auxiliary != 1: holder.free(); return {}
+ 	return {"holder":holder,"data":data,"bindings":bindings}
+ 
+ static func available(car: CarVisual, parts: Dictionary) -> bool:
+-	if not enabled or not VehicleCustomisation.valid(parts,car.vehicle_id): return false
++	if not enabled or not VehicleCustomisation.valid(parts,car.model_id): return false
+ 	for category: String in VehicleCustomisation.CATEGORIES:
+ 		var option: String = parts[category]
+ 		if option == "stock": continue
+@@ -154,7 +154,7 @@
+ 		frame.get_parent().remove_child(frame)
+ 		frame.queue_free()
+ 	car.kit_frames[category] = []
+-	if category == "rims" and car.vehicle_id == "hovercraft":
++	if category == "rims" and car.model_id == "hovercraft":
+ 		var previous: Node = car.body.get_node("FanRotor")
+ 		car.body.remove_child(previous)
+ 		previous.queue_free()
+@@ -172,12 +172,12 @@
+ 
+ static func bake(car: CarVisual, category: String, option: String) -> Error:
+ 	if not car.editable_kits or not car.batch_parts or option == "stock" or not _valid_option(car,category,option) or car.customisation.get(category) != option: return ERR_INVALID_PARAMETER
+-	var revision: String = Base.build_revision(car.vehicle_id)
++	var revision: String = Base.build_revision(car.model_id)
+ 	if revision.length() != 64 or not revision.is_valid_hex_number(): return ERR_INVALID_DATA
+ 	var source_frames: Array = car.kit_frames.get(category,[]).duplicate()
+ 	if source_frames.is_empty(): return ERR_CANT_CREATE
+ 	var kit_count: int = source_frames.size()
+-	if category == "rims" and car.vehicle_id == "hovercraft":
++	if category == "rims" and car.model_id == "hovercraft":
+ 		var rotor: Node = car.body.get_node_or_null("FanRotor")
+ 		if rotor == null: return ERR_CANT_CREATE
+ 		source_frames.append(rotor)
+@@ -196,7 +196,7 @@
+ 				saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,mesh_node.mesh.surface_get_arrays(surface))
+ 				saved.surface_set_material(surface,mesh_node.mesh.surface_get_material(surface))
+ 			mesh_node.mesh = saved
+-	holder.set_meta("modular_kit",{"key":key_for(car,category,option),"sources":geometry_sources(car.vehicle_id),"roles":_roles(car),"frames":declarations})
++	holder.set_meta("modular_kit",{"key":key_for(car,category,option),"sources":geometry_sources(car.model_id),"roles":_roles(car),"frames":declarations})
+ 	for child: Node in holder.get_children(): Cache._own(child,holder)
+ 	var packed := PackedScene.new()
+ 	var error: Error = packed.pack(holder)
+--- a/game/vehicle/prepared_asset_sources.gd
++++ b/game/vehicle/prepared_asset_sources.gd
+@@ -34,6 +34,7 @@
+ 		if not child.begins_with("."): _files(directory.path_join(child),result)
+ 
+ static func hashes(id: String) -> Dictionary:
++	id = VehicleCatalog.model_id(id)
+ 	if _snapshots.has(id): return _snapshots[id].duplicate()
+ 	var files: Array[String] = []
+ 	# Only declared consumed mesh roots need source-checkout binary validation.
+@@ -79,6 +80,7 @@
+ 	return result
+ 
+ static func runtime_hashes(id: String) -> Dictionary:
++	id = VehicleCatalog.model_id(id)
+ 	if _runtime_snapshots.has(id): return _runtime_snapshots[id].duplicate()
+ 	var files: Array[String]=[]
+ 	_files("res://vehicle",files)
+--- a/game/vehicle/prepared_car_cache.gd
++++ b/game/vehicle/prepared_car_cache.gd
+@@ -16,8 +16,8 @@
+ 	return null
+ 
+ static func key_for(car: CarVisual) -> Array:
+-	var key: Array = ["prepared-car-2",car.vehicle_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
+-	if VehicleCustomisation.supported(car.vehicle_id):
++	var key: Array = ["prepared-car-2",car.model_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
++	if VehicleCustomisation.supported(car.model_id):
+ 		for category: String in VehicleCustomisation.CATEGORIES: key.append(car.customisation[category])
+ 	return key
+ 
+@@ -25,7 +25,7 @@
+ 	# Simple fitted cars retain their exact completed procedural geometry, including
+ 	# original shadow casters. They must not use the stock modular shadow proxies.
+ 	var fitted_simple: bool = car.simple_model and car.customisation != VehicleCustomisation.defaults()
+-	var stock_compact: bool = not car.simple_model and car.vehicle_id == "compact" and car.customisation == VehicleCustomisation.defaults()
++	var stock_compact: bool = not car.simple_model and car.model_id == "compact" and car.customisation == VehicleCustomisation.defaults()
+ 	if not enabled or car.editable_kits or not (fitted_simple or stock_compact): return false
+ 	var key: Array = key_for(car)
+ 	for index: int in range(entries.size()):
+--- a/game/vehicle/racing_car_models.gd
++++ b/game/vehicle/racing_car_models.gd
+@@ -11,12 +11,12 @@
+ 	# Editable assemblies retain their own casters through later part replacements.
+ 	if car.editable_kits: return
+ 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
+-	if VehicleCustomisation.supported(car.vehicle_id) and car.customisation != VehicleCustomisation.defaults(): return
++	if VehicleCustomisation.supported(car.model_id) and car.customisation != VehicleCustomisation.defaults(): return
+ 	var frames: Array[Node3D] = [car.body]
+ 	frames.append_array(car.rolling_wheels)
+ 	var meshes: Array[ArrayMesh] = []
+ 	for index: int in range(frames.size()):
+-		var path: String = ASSET_ROOT.path_join(car.vehicle_id+"_shadow_"+str(index)+".res")
++		var path: String = ASSET_ROOT.path_join(car.model_id+"_shadow_"+str(index)+".res")
+ 		if not shadow_meshes.has(path) and ResourceLoader.exists(path): shadow_meshes[path] = load(path)
+ 		if not shadow_meshes.has(path): return # Offline bake still owns the ordinary casters.
+ 		meshes.append(shadow_meshes[path])
+@@ -28,7 +28,7 @@
+ 	for index: int in range(frames.size()):
+ 		# Fitted parts can change the actual silhouette. Their already reduced
+ 		# geometry keeps its own casters instead of using a stock-only proxy.
+-		if VehicleCustomisation.supported(car.vehicle_id):
++		if VehicleCustomisation.supported(car.model_id):
+ 			var fitted: bool = false
+ 			for category: String in (["hood","aero","body"] if index == 0 else ["rims"]):
+ 				if str(car.customisation.get(category,"stock")) != "stock": fitted = true
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -137,7 +137,7 @@
+ 	if car!=null: visible_contact.configure(car,car is CarVisual)
+ 	else: visible_contact.outline = PackedVector2Array()
+ 	# Only the selected vehicle's six engine loops are retained by this race.
+-	var bank_id: String = "pickup" if model.vehicle_id == "forklift" else model.vehicle_id
++	var bank_id: String = "pickup" if model.vehicle_id == "forklift" else VehicleCatalog.model_id(model.vehicle_id)
+ 	for i: int in range(3):
+ 		engine_load[i].stream = _stream(bank_id+"_%d_load"%i,true)
+ 		engine_coast[i].stream = _stream(bank_id+"_%d_coast"%i,true)
+--- a/game/vehicle/vehicle_catalog.gd
++++ b/game/vehicle/vehicle_catalog.gd
+@@ -1,21 +1,27 @@
+ class_name VehicleCatalog
+ extends RefCounted
+ ## Authored local cars; no unlocks or purchases. IDs pin handling and artwork.
+-const IDS: Array[String] = ["compact", "kart", "forklift", "electric", "hovercraft"]
++const IDS: Array[String] = ["compact", "kart", "forklift", "electric", "hovercraft", "super_rally"]
+ # Append only: persistence and achievement bits keep their historical identities.
+-const ALL_IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]
+-const NAMES: Array[String] = ["RALLY", "KART", "FORKLIFT", "VOLT", "HOVER"]
+-const CLASSES: Array[String] = ["Rally", "Go-kart", "Forklift", "Electric", "Hovercraft"]
++const ALL_IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft", "super_rally"]
++const MODEL_ALIASES: Dictionary = {"super_rally":"compact"}
++const NAMES: Array[String] = ["RALLY", "KART", "FORKLIFT", "VOLT", "HOVER", "SUPER RALLY"]
++const CLASSES: Array[String] = ["Rally", "Go-kart", "Forklift", "Electric", "Hovercraft", "Super rally"]
+ const DESCRIPTIONS: Array[String] = [
+ 	"Agile and forgiving. A versatile choice for mixed circuits.",
+ 	"Quick off the line. Tight turns and strong grip; low speed on long straights.",
+ 	"Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.",
+ 	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake.",
+-	"Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."]
++	"Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake.",
++	"Rally's agile, forgiving handling with stronger acceleration and a higher top speed."]
+ static var selected: String = "compact"
+ 
+ static func valid_id(id: String) -> String:
+ 	return id if id in IDS else "compact"
++
++static func model_id(id: String) -> String:
++	# Performance variants share the authored chassis, never their rules or saves.
++	return str(MODEL_ALIASES.get(id,id))
+ 
+ static func title(id: String = "") -> String:
+ 	return NAMES[IDS.find(valid_id(selected if id.is_empty() else id))]
+--- a/game/vehicle/vehicle_customisation.gd
++++ b/game/vehicle/vehicle_customisation.gd
+@@ -75,7 +75,7 @@
+ 		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides","Sculpted side pods with swept crest fins"]}
+ 
+ static func supported(id: String) -> bool:
+-	return id in KIT_CARS
++	return VehicleCatalog.model_id(id) in KIT_CARS
+ 
+ static func options(category: String, id: String = "compact") -> Array:
+ 	return (ELECTRIC_OPTIONS if id=="electric" else FORKLIFT_OPTIONS if id=="forklift" else HOVER_OPTIONS if id=="hovercraft" else KART_OPTIONS if id=="kart" else OPTIONS).get(category,[]) if supported(id) else []
+@@ -118,7 +118,7 @@
+ 	return normalized
+ 
+ static func valid_collection(value: Variant) -> bool:
+-	if not value is Dictionary or value.size() > KIT_CARS.size(): return false
++	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
+ 	for id: Variant in value:
+ 		if not id is String or not supported(id) or not valid(value[id],id): return false
+ 	return true
+--- a/game/vehicle/vehicle_livery.gd
++++ b/game/vehicle/vehicle_livery.gd
+@@ -15,8 +15,8 @@
+ 
+ static func defaults(id: String) -> Dictionary:
+ 	return {"version":VERSION, "colors":{
+-		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43", "forklift":"d5a62d", "electric":"b8bbb9", "hovercraft":"b54b3d"}.get(id,"30627d")),
+-		"accent":"e0d5b5" if id == "compact" else "272f33" if id == "electric" else "253239" if id == "hovercraft" else "d9d0b7", "detail":"9ba8ab" if id == "electric" else "a6b3b4" if id == "hovercraft" else "c78e4c"},
++		"body":str({"super_rally":"b73528", "compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43", "forklift":"d5a62d", "electric":"b8bbb9", "hovercraft":"b54b3d"}.get(id,"30627d")),
++		"accent":"e0d5b5" if VehicleCatalog.model_id(id) == "compact" else "272f33" if id == "electric" else "253239" if id == "hovercraft" else "d9d0b7", "detail":"9ba8ab" if id == "electric" else "a6b3b4" if id == "hovercraft" else "c78e4c"},
+ 		"pattern":"plain", "stickers":{"hood":empty_sticker(), "roof":empty_sticker()}}
+ 
+ static func _color(value: Variant) -> bool:
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -101,7 +101,7 @@
+ 	bounds = bounds.grow(0.08)
+ 	# Saved wash voxels retain the original compact's model-space mapping.
+ 	# Fitted aero must not stretch old strokes across the hood/body/rims.
+-	if car.vehicle_id == "compact" and car.customisation != VehicleCustomisation.defaults():
++	if car.model_id == "compact" and car.customisation != VehicleCustomisation.defaults():
+ 		bounds = AABB(Vector3(-1.115,0.181,-2.284),Vector3(2.23,1.412,4.5148))
+ 	if car.vehicle_id=="kart" and car.customisation!=VehicleCustomisation.defaults():
+ 		# Keep existing full/simple stock wash coordinates when a bumper narrows.
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -153,6 +153,7 @@
+             [void]$modularDigest.TransformFinalBlock([byte[]]@(), 0, 0)
+             $modularHashes[$vehicle] = ([BitConverter]::ToString($modularDigest.Hash)).Replace('-', '').ToLowerInvariant()
+         }
++        $modularHashes['super_rally'] = $modularHashes['compact']
+     } finally {
+         $digest.Dispose(); $previewDigest.Dispose(); $headerDigest.Dispose(); $checkpointDigest.Dispose()
+         foreach ($vehicleDigest in $vehicleDigests.Values) { $vehicleDigest.Dispose() }
+--- a/scripts/check_garage_previews.py
++++ b/scripts/check_garage_previews.py
+@@ -18,6 +18,8 @@
+     if not match:
+         raise ValueError("Cannot read active vehicle IDs from VehicleCatalog")
+     expected = set(re.findall(r'"([^"]+)"', match.group(1)))
++    aliases = re.search(r"const MODEL_ALIASES: Dictionary = (\{[^\n]+\})", catalog)
++    model_aliases = json.loads(aliases.group(1)) if aliases else {}
+     if set(provenance["hashes"]) != expected:
+         raise ValueError(
+             "Native default previews must match the active vehicle catalog"
+@@ -37,7 +39,7 @@
+         )
+     scenes = {
+         vehicle: hashlib.sha256(
+-            (ROOT / "game/assets/vehicles/modular_car_bases_v1" / f"{vehicle}_simple_editable.scn").read_bytes()
++            (ROOT / "game/assets/vehicles/modular_car_bases_v1" / f"{model_aliases.get(vehicle, vehicle)}_simple_editable.scn").read_bytes()
+         ).hexdigest()
+         for vehicle in expected
+     }
+--- a/scripts/garage_preview_identity.ps1
++++ b/scripts/garage_preview_identity.ps1
+@@ -2,7 +2,7 @@
+ # The rest-template provenance currently includes every model builder, so none
+ # of those scripts is classified as vehicle-local here.
+ function Get-GaragePreviewVehicleIds {
+-    return @('compact', 'pickup', 'classic', 'formula', 'kart', 'forklift', 'electric', 'hovercraft')
++    return @('compact', 'pickup', 'classic', 'formula', 'kart', 'forklift', 'electric', 'hovercraft', 'super_rally')
+ }
+ 
+ function Get-GaragePreviewVehicles([string]$Relative) {
+@@ -19,10 +19,11 @@
+     # Only resources consumed by one named car are separated. Source files,
+     # shader and unknown paths retain the shared fallback, including all model
+     # builders used by the Garage rest-template provenance check.
+-    if ($Relative -match '^game/assets/garage/(cars_v1|previews_v1)/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft)\.(scn|png)(\.import)?$') {
++    if ($Relative -match '^game/assets/garage/(cars_v1|previews_v1)/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft|super_rally)\.(scn|png)(\.import)?$') {
++        if ($Matches[2] -eq 'compact') { return @('compact', 'super_rally') }
+         return @($Matches[2])
+     }
+-    if ($Relative -match '^game/resources/cars/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft)\.tres$') {
++    if ($Relative -match '^game/resources/cars/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft|super_rally)\.tres$') {
+         return @($Matches[1])
+     }
+     return $vehicles

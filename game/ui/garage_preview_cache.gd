@@ -109,7 +109,9 @@ func identity(view: CarShowroom) -> String:
 		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
 		revision += ":" + preload("res://vehicle/electric_kits.gd").HOOD_REVISION
 		revision += ":" + preload("res://vehicle/electric_body_kits.gd").REVISION
-	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
+	var key: Array=[VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]
+	if view.simple_model: key.append("reduced-garage-1")
+	return JSON.stringify(key).sha256_text()
 
 func _visible_condition(value: Dictionary) -> Dictionary:
 	# A saved clean snapshot has the same original finish as an absent condition.
@@ -134,6 +136,7 @@ func warm_records(records: LocalRecords, read_immediately: bool=true) -> void:
 		view.livery=VehicleLivery.for_car(records.settings,id)
 		view.condition=VehicleCondition.read(records,id)
 		view.customisation=VehicleCustomisation.for_car(records.settings,id)
+		view.simple_model=true
 		if fresh: add_child(view)
 		else: view.refresh_thumbnail()
 		if view.displayed_key==view.preview_key and view._image.texture!=null: _publish(view,view.preview_key,view._image.texture)
@@ -174,7 +177,7 @@ func request(view: CarShowroom) -> void:
 		if prepared_picture.get("vehicle")==view.vehicle_id: prepared_picture={}
 		view.publish_preview(key,remembered)
 		return
-	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
+	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation and bool(prepared_picture.get("simple",false))==view.simple_model:
 		cache_hits+=1
 		_publish(view,key,prepared_picture.texture)
 		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
@@ -198,10 +201,10 @@ func request(view: CarShowroom) -> void:
 		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
 	if active.get("key") == key and active.view.get_ref() == view: return
 	if io.get("key") == key and _view(io) == view: return
-	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":not immediate_reads})
+	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"simple":view.simple_model,"read":not immediate_reads})
 
 func _default(view: CarShowroom) -> bool:
-	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
+	return view.simple_model and view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
 
 func _current(job: Dictionary, visible: bool = false) -> bool:
 	var view: Object = _view(job)
@@ -298,6 +301,7 @@ func _process(_delta: float) -> void:
 		renderer.preview_live_lighting = true
 		renderer.cooperative_build = true
 		renderer.vehicle_id = next.vehicle; renderer.livery = next.paint
+		renderer.simple_model = bool(next.get("simple",false))
 		renderer.condition = next.condition; renderer.customisation = next.parts
 		renderer.framing_scale = 0.84
 		renderer.position = Vector2(-16384,-16384); renderer.size = Vector2(2048,512)

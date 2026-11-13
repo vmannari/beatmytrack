@@ -26,7 +26,7 @@ func run() -> void:
 	game.set_process(false)
 	game.sim.reset(Vector2(0,-20),0.0)
 	game.sim.state.velocity = Vector2(0,12)
-	check(game.handling.version == "hovercraft-4" and game.handling.vector_thrust,"actual game installs the controlled UFO-style tune")
+	check(game.handling.version == "hovercraft-5" and game.handling.vector_thrust,"actual game installs the controlled UFO-style tune")
 	var rows: Array = []
 	for phase: Array in [["coast-turn",84,1.0,0.0,0.0],["power-catch",90,0.0,0.8,0.0],["correct",60,-0.5,0.7,0.0],["air-brake",180,0.0,0.0,0.8]]:
 		game.frame = DriveFrame.sample(phase[2],phase[3],phase[4])

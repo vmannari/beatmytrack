@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from .identity_models import Player
 from .track_models import Board, Run, TrackVersion
 
-CARS = ("compact", "kart", "forklift", "electric", "hovercraft")
+CARS = ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")
 
 
 def ordinary(manifest):

@@ -17,8 +17,8 @@ static func material() -> StandardMaterial3D:
 		surface.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return surface
 
-static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
-	var cache_key: String = kind+":"+str(length)
+static func mesh_for(kind: String, length: float = -1.0, lods: bool = true) -> ArrayMesh:
+	var cache_key: String = kind+":"+str(length)+":"+str(lods)
 	if meshes.has(cache_key): return meshes[cache_key]
 	var kit := NativeTrackVisual.new()
 	kit.theme_id = "pine"
@@ -51,6 +51,10 @@ static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
 	var result := ArrayMesh.new()
 	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
 	result.surface_set_material(0,material())
+	if kind=="tree" and lods:
+		result.set_meta("tree_far_dropped",tool.get_meta("tree_far_dropped",PackedInt32Array()))
+		result=SceneryMeshLods.attach(result,{0.028:SceneryMeshLods.tree_corners(result)})
+	result = preload("res://rendering/mesh_vertex_packing.gd").pack(result)
 	if meshes.size() >= 64: meshes.erase(meshes.keys()[0])
 	meshes[cache_key] = result
 	kit.free()
@@ -64,7 +68,7 @@ static func batch(parent: Node3D, groups: Dictionary) -> void:
 		node.name = "Winter_" + kind
 		var instances := MultiMesh.new()
 		instances.transform_format = MultiMesh.TRANSFORM_3D
-		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)))
+		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)),parent.scenery_lods and not parent.editor_preview if parent is NativeTrackVisual else true)
 		instances.instance_count = poses.size()
 		for i: int in range(poses.size()): instances.set_instance_transform(i,poses[i])
 		node.multimesh = instances

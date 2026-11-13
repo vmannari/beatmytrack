@@ -137,7 +137,7 @@ func configure(id: String, config: HandlingConfig, car: Node3D = null) -> void:
 	if car!=null: visible_contact.configure(car,car is CarVisual)
 	else: visible_contact.outline = PackedVector2Array()
 	# Only the selected vehicle's six engine loops are retained by this race.
-	var bank_id: String = "pickup" if model.vehicle_id == "forklift" else model.vehicle_id
+	var bank_id: String = "pickup" if model.vehicle_id == "forklift" else VehicleCatalog.chassis_id(model.vehicle_id)
 	for i: int in range(3):
 		engine_load[i].stream = _stream(bank_id+"_%d_load"%i,true)
 		engine_coast[i].stream = _stream(bank_id+"_%d_coast"%i,true)

@@ -12,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from . import world_ranking_car_models as _car_models  # noqa: F401
 from .db import Base
 
 KEY = BigInteger().with_variant(Integer, "sqlite")
@@ -68,7 +69,8 @@ class RankingBranch(Base):
 
 class RankingSnapshot(Base):
     __tablename__ = "world_ranking_snapshots"
-    __table_args__ = (UniqueConstraint("branch_id", "week_start"),)
+    __table_args__ = (UniqueConstraint("branch_id", "week_start"),
+        Index("ix_world_ranking_published", "published_at", "id"))
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     branch_id: Mapped[int] = mapped_column(ForeignKey("world_ranking_branches.id"))
     circuit_id: Mapped[int] = mapped_column(ForeignKey("world_circuits.id"))
@@ -139,6 +141,7 @@ class RankingCorrection(Base):
     reason: Mapped[str] = mapped_column(String(500))
     actor: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[int] = mapped_column(BigInteger)
+    vehicle_id: Mapped[str] = mapped_column(String(80), default="", server_default="")
     __table_args__ = (Index("ix_world_correction_week", "circuit_id", "player_key"),)
 
 

@@ -2,6 +2,7 @@ class_name VisualGeometry
 extends RefCounted
 ## Original procedural stand-ins. Geometry never supplies simulation collisions.
 static var optimize_model_geometry: bool = true
+static var batch_transformed_car_parts: bool = true # False is an offline comparison control.
 static var cylinder_meshes: Dictionary = {}
 
 static func material(color: Color) -> StandardMaterial3D:
@@ -13,14 +14,19 @@ static func material(color: Color) -> StandardMaterial3D:
 	return result
 
 
-static func batch_static_parts(parent: Node3D, cooperate: Callable = Callable()) -> void:
+static func batch_static_parts(parent: Node3D, cooperate: Callable = Callable(), protected_nodes: Array[Node3D] = []) -> void:
 	# Keep body suspension, steering pivots and wheel-spin transforms separate.
 	# Only siblings with the same material and shadow mode are combined.
+	if parent is CarVisual:
+		protected_nodes = protected_nodes.duplicate()
+		for node: Node3D in parent.brake_lights+parent.front_wheels+parent.rear_wheels+parent.rolling_wheels:
+			if node not in protected_nodes: protected_nodes.append(node)
 	var groups: Dictionary = {}
 	for child: Node in parent.get_children():
 		if cooperate.is_valid() and not await cooperate.call(): return
-		if child is Node3D: await batch_static_parts(child,cooperate)
+		if child is Node3D: await batch_static_parts(child,cooperate,protected_nodes)
 		if not child is MeshInstance3D or child.get_child_count() != 0: continue
+		if child in protected_nodes: continue
 		var part := child as MeshInstance3D
 		if not part.visible or part.mesh == null or part.mesh.get_surface_count() != 1: continue
 		var surface: Material = part.get_active_material(0)
@@ -63,7 +69,12 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 	for rotor: Node3D in car.rolling_wheels:
 		frames.append(rotor.get_parent())
 		frames.append(rotor)
-	_collect_transform_frames(car,frames)
+	if not batch_transformed_car_parts:_collect_transform_frames(car,frames)
+	else:
+		# Only these additional named nodes articulate outside the wheel/kit API.
+		for label: String in ["FanRotor","FanRotorLeft","FanRotorRight","Rudder","RudderLeft","RudderRight","SteeringAssembly"]:
+			var node: Node3D=car.find_child(label,true,false)
+			if node!=null and node not in frames:frames.append(node)
 	var protected: Array[Material] = [car.brake_material,car.accent_roof]
 	for material: Material in car.paint_materials.values(): protected.append(material)
 	for variant: Dictionary in car.paint_variants: protected.append(variant.material)
@@ -75,7 +86,14 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 		var groups: Dictionary = {}
 		for part: MeshInstance3D in parts:
 			if cooperate.is_valid() and not await cooperate.call(): return
+			# Keep live light/wheel handles and custom vertex-space shaders intact.
+			if part in car.brake_lights or part in car.front_wheels or part in car.rear_wheels or part in car.rolling_wheels:continue
 			var surface: Material = part.get_active_material(0)
+			var original_pose: Transform3D=part.transform
+			var original_parent: Node3D=part.get_parent()
+			while original_parent!=frame:
+				original_pose=original_parent.transform*original_pose;original_parent=original_parent.get_parent()
+			if original_pose!=Transform3D.IDENTITY and not surface is StandardMaterial3D:continue
 			if surface is StandardMaterial3D and surface not in protected:
 				var values: Array = []
 				for property: Dictionary in surface.get_property_list():
@@ -126,7 +144,7 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 static func _collect_fixed_parts(parent: Node3D, frames: Array[Node3D], result: Array[MeshInstance3D]) -> void:
 	for child: Node in parent.get_children():
 		if not child is Node3D or child in frames or not child.is_visible_in_tree(): continue
-		if child is MeshInstance3D and child.transform != Transform3D.IDENTITY: continue
+		if child is MeshInstance3D and child.transform != Transform3D.IDENTITY and not batch_transformed_car_parts: continue
 		if child is MeshInstance3D and child.get_child_count() == 0 and child.mesh != null and child.mesh.get_surface_count() == 1 and child.get_active_material(0) != null:
 			result.append(child)
 		else: _collect_fixed_parts(child,frames,result)

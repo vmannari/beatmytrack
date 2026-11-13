@@ -8,6 +8,10 @@ var day: int = -1
 var version: String = ""
 var vehicle: String = ""
 var best_seconds: float = 0.0
+var ticket_id: String = ""
+var _submission_scope: String
+var _submission: Label
+var _submission_elapsed: float = 1.0
 var summary: Dictionary = {}
 var _serial: int = 0
 var _sample_msec: int = 0
@@ -22,6 +26,7 @@ var _refresh: Button
 var _view: Button
 
 func _ready() -> void:
+	_submission_scope = _scope()
 	var style: StyleBoxFlat = MenuStyle.box(Color("0b1c29f5"),20)
 	style.border_color = MenuStyle.BORDER
 	style.set_border_width_all(1)
@@ -33,6 +38,11 @@ func _ready() -> void:
 	var heading: Label = MenuStyle.label("Standings",32)
 	heading.uppercase = true
 	column.add_child(heading)
+	_submission = MenuStyle.label("",15,true)
+	_submission.name = "DailySubmissionStatus"
+	_submission.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(_submission)
+	_update_submission()
 	var index: int = VehicleCatalog.IDS.find(vehicle)
 	column.add_child(MenuStyle.label(VehicleCatalog.NAMES[index] if index >= 0 else "",16,true))
 	column.add_child(HSeparator.new())
@@ -52,7 +62,7 @@ func _ready() -> void:
 	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(space)
 	column.add_child(HSeparator.new())
-	column.add_child(MenuStyle.label("Your position",16,true))
+	column.add_child(MenuStyle.label("Lap comparison",16,true))
 	_position = MenuStyle.user_label("—",38)
 	_position.name = "DailyResultPosition"
 	_position.add_theme_color_override("font_color",MenuStyle.ACCENT)
@@ -65,7 +75,7 @@ func _ready() -> void:
 	_view.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT)
 	_view.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
 	column.add_child(_view)
-	var caption: Label = MenuStyle.label("One best flying lap per driver and car.",14,true)
+	var caption: Label = MenuStyle.label("This attempt compared with verified best laps.",14,true)
 	caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(caption)
 	if is_instance_valid(client) and client.has_signal("identity_changed"): client.identity_changed.connect(_identity_changed)
@@ -196,7 +206,22 @@ func _columns(rank: String, driver: String, time: String, headers: bool = false,
 		else: columns.add_child(label)
 	return columns
 
+func _update_submission() -> void:
+	if not is_instance_valid(client) or not client.signed_in():
+		_submission.text = tr("Sign in to record a verified time.")
+	elif ticket_id.is_empty() or _submission_scope != _scope():
+		_submission.text = tr("Saved on this device")
+	elif is_instance_valid(cloud) and cloud.has_method("upload_job"):
+		var job: Dictionary = cloud.upload_job(ticket_id)
+		_submission.text = tr("Verified") if job.has("done") else tr("Verification failed") if job.has("failure") else tr("Waiting for verification")
+	else:
+		_submission.text = tr("Waiting for verification")
+
 func _process(_delta: float) -> void:
+	_submission_elapsed += _delta
+	if _submission_elapsed >= 1.0:
+		_submission_elapsed = 0.0
+		_update_submission()
 	if not _expired and _server_now > 0 and _server_now+int((Time.get_ticks_msec()-_sample_msec)/1000) >= (day+1)*86400: _expire()
 
 func _expire() -> void:

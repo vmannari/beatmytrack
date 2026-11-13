@@ -15,7 +15,8 @@ func configure(car: CarVisual, prepare_mesh: bool = true) -> void:
 	hide()
 
 func _prepare_mesh(car: CarVisual) -> void:
-	var key: Array = preload("res://vehicle/prepared_car_cache.gd").key_for(car)
+	var key: Array = ["indexed-ghost-1"]
+	key.append_array(preload("res://vehicle/prepared_car_cache.gd").key_for(car))
 	for index: int in range(prepared_meshes.size()):
 		if prepared_meshes[index].key != key: continue
 		var entry: Dictionary = prepared_meshes.pop_at(index)
@@ -35,9 +36,10 @@ func _prepare_mesh(car: CarVisual) -> void:
 			var canonical := Transform3D(Basis.from_scale(car.scale),Vector3.ZERO)
 			_append_local(rest,canonical,canonical.affine_inverse(),tool)
 			tool.generate_normals()
+			tool.index()
 			mesh = tool.commit()
 			rest.free()
-		var bytes: int = (mesh as ArrayMesh).surface_get_array_len(0)*24
+		var bytes: int = (mesh as ArrayMesh).surface_get_array_len(0)*24+(mesh as ArrayMesh).surface_get_array_index_len(0)*4
 		if bytes <= MAX_BYTES:
 			var total: int = bytes
 			for entry: Dictionary in prepared_meshes: total += int(entry.bytes)
@@ -69,6 +71,7 @@ static func mesh_for(car: CarVisual) -> ArrayMesh:
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_append_meshes(car, car.global_transform.affine_inverse(), tool)
 	tool.generate_normals()
+	tool.index()
 	return tool.commit()
 
 static func _append_local(node: Node3D, transform: Transform3D, inverse: Transform3D, tool: SurfaceTool) -> void:

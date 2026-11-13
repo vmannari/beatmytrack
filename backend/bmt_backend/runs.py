@@ -81,7 +81,7 @@ class TicketRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version_id: str = Field(min_length=36, max_length=36)
     vehicle_id: str = Field(min_length=1, max_length=80)
-    purpose: Literal["race", "creator_test"] = "race"
+    purpose: Literal["race", "creator_test", "daily_laps"] = "race"
     test_population: bool = False
 
 
@@ -181,6 +181,9 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         )
     if payload.purpose == "creator_test":
         pinned = {**pinned, "purpose": "creator_test", "laps": 1}
+    if payload.purpose == "daily_laps":
+        from .daily_verified_laps import ticket_manifest
+        pinned = ticket_manifest(session, version, pinned, player, payload.test_population)
     if payload.test_population:
         pinned = {**pinned, "test_population": True}
     board_id = digest({"version_id": version.id, **pinned})

@@ -52,6 +52,7 @@ const QUIET_BORDER := Color("2e495a88")
 const Badge = preload("res://ui/biome_badge.gd")
 const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
 const LoadingVisual = preload("res://ui/rivalry_loading_visual.gd")
+const PodiumCar = preload("res://ui/rivalry_simple_car.gd")
 
 class TrackProfile extends LapRouteView:
 	func _draw() -> void:
@@ -125,8 +126,8 @@ func ready_for_display() -> bool:
 	if not standings_ready: return false
 	if signed_in and error.is_empty() and model.tracks.is_empty() and (busy or model.received_msec == 0): return false
 	for car: Node in find_children("*","",true,false):
-		if car.get_script() != preload("res://ui/rivalry_victory_car.gd"): continue
-		if not car.presentation_ready or car.viewport.size.x <= 1 or car.viewport.size.y <= 1: return false
+		if car.get_script() != PodiumCar: continue
+		if not car.presentation_ready: return false
 	return true
 
 func _score_topology() -> PackedByteArray:
@@ -250,7 +251,7 @@ func _build_content() -> void:
 	identity.add_theme_constant_override("separation",4)
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(identity)
-	var heading := MenuStyle.label("COMPACT CIRCUIT" if circuit_mode else "WEEKLY RIVALRY",38)
+	var heading := MenuStyle.label((GameText.message("%s Circuit") % VehicleCatalog.title(model.vehicle_id)).to_upper() if circuit_mode else "WEEKLY RIVALRY",38)
 	heading.add_theme_color_override("font_shadow_color",Color("061320"))
 	heading.add_theme_constant_override("shadow_offset_y",2)
 	if section == "overview" and not model.tracks.is_empty():
@@ -464,7 +465,7 @@ func _loading(parent: Control) -> void:
 		card.add_theme_constant_override("separation",0)
 		var car: Control = LoadingVisual.new()
 		car.name = "RivalryLoadingCar_"+str(position+1)
-		car.vehicle_id = "compact" if circuit_mode else VehicleCatalog.selected
+		car.vehicle_id = model.vehicle_id if circuit_mode else VehicleCatalog.selected
 		car.podium_color = color
 		car.phase = position*0.22
 		car.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -638,6 +639,7 @@ func _track_card(parent: Control, finale: bool = false) -> VBoxContainer:
 		var world: Control = preload("res://ui/world_ranking_week_summary.gd").new()
 		world.client = safety_client
 		world.week_start = int(model.world_circuit.get("week_start",0))
+		world.vehicle_id = model.vehicle_id
 		world.compact = true
 		tracks.add_child(world)
 		world.label.add_theme_font_size_override("font_size",13)
@@ -917,11 +919,10 @@ func _podium(parent: Control) -> void:
 		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		header_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		card.add_child(header_space)
-		var car: Control = preload("res://ui/rivalry_victory_car.gd").new()
+		var car: Control = PodiumCar.new()
 		car.name = "RivalryPodiumCar_"+str(position+1)
 		car.vehicle_id = model.vehicle_id
-		car.simple_model = true
-		car.podium_presentation = true
+		car.livery = VehicleLivery.defaults(model.vehicle_id)
 		car.fit_to_frame = true
 		var appearance: Variant = driver.get("appearance",{})
 		if appearance is Dictionary and appearance.get("vehicle_id") == model.vehicle_id:

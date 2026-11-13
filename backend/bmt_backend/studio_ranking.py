@@ -10,7 +10,8 @@ from .admin_models import AdminAudit
 from .middleware import ParsedJSONRoute
 from .studio_queries import read_snapshot
 from .track_models import OperationState, now
-from .world_ranking import WEEK, Correct
+from .world_ranking import WEEK, Correct, correction_car
+from .world_ranking_car_models import CarCircuit
 from .world_ranking_models import (
     Circuit,
     RankingBranch,
@@ -82,15 +83,21 @@ def inspect_ranking(request: Request, role: Access):
         read_snapshot(db)
         data = ranking_status(db, request.app.state.settings)
         circuits = list(db.scalars(select(Circuit).order_by(Circuit.week_start.desc()).limit(27)))
+        cars = {}
+        for event in db.scalars(select(CarCircuit).where(CarCircuit.circuit_id.in_([c.id for c in circuits[:26]]))):
+            cars.setdefault(event.circuit_id, []).append({"vehicle_id": event.vehicle_id,
+                "participation_bps": event.participation_bps, "weights_locked": event.weights_locked,
+                "population_snapshot": event.population_snapshot, "tracks": event.tracks})
         history = list(db.execute(select(RankingCorrection, AdminAudit.actor, RankingPlayer.player_id).select_from(RankingCorrection)
             .outerjoin(AdminAudit, AdminAudit.command_id == RankingCorrection.command_id)
             .outerjoin(RankingPlayer, RankingPlayer.key == RankingCorrection.player_key)
             .where(RankingCorrection.circuit_id.in_([c.id for c in circuits[:26]]))
             .order_by(RankingCorrection.created_at.desc(), RankingCorrection.command_id).limit(26))) if circuits else []
         data.update(circuits=[{'id': c.id, 'week_start': c.week_start, 'original_snapshot': c.original_snapshot,
+                               'policy': c.policy, 'cars': cars.get(c.id, []),
                                'closed': c.week_start + WEEK <= data['as_of'], 'tracks': c.tracks} for c in circuits[:26]],
                     history=[{'command_id': r.command_id, 'circuit_id': r.circuit_id, 'kind': 'void_week' if not r.player_key else 'exclude_player',
-                              'actor': actor or r.actor, 'player_id': player, 'reason': r.reason,
+                              'actor': actor or r.actor, 'player_id': player, 'reason': r.reason, 'vehicle_id': r.vehicle_id,
                               'created_at': r.created_at} for r, actor, player in history[:25]],
                     history_truncated=len(history)>25, circuits_truncated=len(circuits)>26,
                     history_scope='Latest 25 corrections within the 26 latest circuits.', role=role)
@@ -122,11 +129,13 @@ def preview_correction(body: Correct, request: Request, role: Access):
         current = db.get(RankingSnapshot, control.published_id) if control.published_id else None
         if circuit is None or circuit.week_start + WEEK > now():
             raise HTTPException(422, 'CIRCUIT_NOT_CLOSED')
+        correction_car(db, circuit, body.vehicle_id)
         unpublished_void = body.void_week and circuit.original_snapshot is None
         if not unpublished_void and (current is None or circuit.week_start > current.week_start or circuit.original_snapshot is None):
             raise HTTPException(422, 'CIRCUIT_NOT_PUBLISHED')
         if body.player_id and db.scalar(select(RankingPlayer.key).where(RankingPlayer.player_id == body.player_id)) is None:
             raise HTTPException(404, 'PLAYER_NOT_FOUND')
+        scope = body.vehicle_id or 'all cars in the week'
         return {'command': body.model_dump(), 'previous_snapshot': control.published_id,
-                'effect': 'Queue a whole-week void.' if unpublished_void else 'Rebuild ranking generations from launch through the published week. The previous publication remains visible until atomic replacement.',
+                'effect': f'Queue a void for {scope}.' if unpublished_void else f'Rebuild ranking generations from launch through the published week for the correction to {scope}. The previous publication remains visible until atomic replacement.',
                 'kind': 'void_week' if body.void_week else 'exclude_player', 'reason': body.reason.strip()}

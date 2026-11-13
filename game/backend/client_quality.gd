@@ -38,11 +38,26 @@ func supported() -> bool:
 	return telemetry != null and telemetry.enabled and telemetry.client != null and telemetry.client.has_method("quality_supported") and telemetry.client.quality_supported() and telemetry._foreground
 
 func _ready() -> void:
+	if telemetry != null: telemetry.collection_reset.connect(reset_collection)
 	if OS.get_name() == "Android": _device = "android_arm64" if OS.has_feature("arm64") else "android_other"
 	elif OS.get_name() != "Windows" and OS.get_name() != "Linux": _device = "other"
 	# Actual adapter values only. No serial, hardware identifier or device name.
 	_device_model = _bounded_context(OS.get_model_name())
 	_os_version = _bounded_context(OS.get_version())
+
+func reset_collection() -> void:
+	bins.clear()
+	cells.clear()
+	segments.clear()
+	_active = false
+	_race_id = ""
+	_race_frames = PackedInt64Array([0,0,0,0,0,0,0,0])
+	_race_frame_count = 0
+	_position_count = 0
+	dropped_cell_samples = 0
+	_slow_since_sample = false
+	_last_frame_usec = 0
+	_last_summary_msec = Time.get_ticks_msec()
 
 static func _bounded_context(value: String) -> String:
 	var result: String = ""

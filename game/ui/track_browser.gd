@@ -1174,11 +1174,6 @@ static func _align_personal_comparison(snapshot: Dictionary, local: Dictionary) 
 static func _comparison_ready(snapshot: Dictionary) -> bool:
 	return snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS and snapshot.get("race_distribution") is Dictionary and snapshot.get("lap_distribution") is Dictionary
 
-static func _cached_frame_query(distribution: Dictionary, metric: String) -> String:
-	var edges: Array = distribution.get("edges_ms",[])
-	if edges.size() < 2: return ""
-	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),metric,roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)]
-
 static func _snapshot_frame(snapshot: Dictionary) -> Dictionary:
 	if snapshot.get("_comparison_packet") is Dictionary: return snapshot._comparison_packet
 	var result: Dictionary = {}

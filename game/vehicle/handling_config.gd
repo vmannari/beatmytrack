@@ -56,6 +56,8 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export_range(0.4, 1.0, 0.01) var sliding_grip: float = 0.86 # fraction of lateral grip
 @export_range(1.0, 12.0, 0.1) var grip_recovery: float = 5.0 # response/s
 @export_range(2.0, 30.0, 0.1) var lateral_response: float = 17.0 # response/s
+@export_range(0.4, 1.0, 0.01) var high_speed_lateral_response_scale: float = 1.0 # Retain mild sideslip near top speed; normal response below 70% of maximum.
+@export_range(0.4, 1.0, 0.01) var high_speed_lateral_grip_scale: float = 1.0 # Reduce the force turning momentum into the corner at high speed.
 @export_range(0.0, 1.0, 0.05) var corner_energy_retention: float = 0.50 # lateral energy redirected into travel
 @export_range(50.0, 4000.0, 10.0) var rotational_inertia: float = 500.0 # kg m^2 approximation
 @export_range(0.0, 3.0, 0.05) var countersteer_assistance: float = 0.8 # Extra yaw response when actively catching rotation.
@@ -101,6 +103,8 @@ func snapshot() -> Dictionary:
 	if not rear_steering: result.erase("rear_steering")
 	if winter_road_grip == 1.0: result.erase("winter_road_grip")
 	if winter_lateral_grip == 1.0: result.erase("winter_lateral_grip")
+	if high_speed_lateral_response_scale == 1.0: result.erase("high_speed_lateral_response_scale")
+	if high_speed_lateral_grip_scale == 1.0: result.erase("high_speed_lateral_grip_scale")
 	if not rear_wheel_drive: result.erase("rear_wheel_drive")
 	if not single_pedal: result.erase("single_pedal")
 	if handbrake_enabled: result.erase("handbrake_enabled")

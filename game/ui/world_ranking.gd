@@ -10,6 +10,9 @@ var detail: Label
 var status: Label
 var list: VBoxContainer
 var selector: OptionButton
+var car_selector: OptionButton
+var vehicle_id: String = "overall"
+var circuit_button: Button
 var next_button: Button
 var previous_button: Button
 var around_button: Button
@@ -24,10 +27,11 @@ var _around: bool = false
 var bounds := Vector2i(920,680)
 const SCOPES: Array[String] = ["world","country","friends","season","results"]
 
-static func open(parent: Node, backend: Node, target_id: String = "") -> Node:
+static func open(parent: Node, backend: Node, target_id: String = "", selected_car: String = "overall") -> Node:
 	var popup: Node = load("res://ui/world_ranking.gd").new()
 	popup.client = backend
 	popup.player_id = target_id
+	popup.vehicle_id = selected_car
 	popup.bounds = Vector2i(parent.get_viewport().get_visible_rect().size-Vector2(32,32)).min(Vector2i(920,680))
 	parent.add_child(popup)
 	popup.popup_centered(popup.bounds)
@@ -61,7 +65,7 @@ func _ready() -> void:
 	summary.name = "WorldRankingSummary"
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(summary)
-	detail = MenuStyle.label("Best 12 results from 26 weeks · Compact Circuit",17,true)
+	detail = MenuStyle.label("Strongest three cars count at 100%, 40% and 15%." if Adapter.multi_supported(client) else "Best 12 results from 26 weeks · Compact Circuit",17,true)
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(detail)
 	selector = OptionButton.new()
@@ -74,10 +78,36 @@ func _ready() -> void:
 		_history.clear()
 		_around = false
 		_load_page())
-	body.add_child(selector)
+	var selectors := HBoxContainer.new()
+	selectors.add_theme_constant_override("separation",8)
+	body.add_child(selectors)
+	selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	selectors.add_child(selector)
+	car_selector = OptionButton.new()
+	car_selector.name = "WorldRankingCar"
+	car_selector.custom_minimum_size.y = 48
+	car_selector.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	car_selector.add_item("Overall")
+	car_selector.set_item_metadata(0,"overall")
+	for car: String in VehicleCatalog.IDS:
+		car_selector.add_item(VehicleCatalog.title(car))
+		car_selector.set_item_metadata(car_selector.item_count-1,car)
+		if car == vehicle_id: car_selector.select(car_selector.item_count-1)
+	car_selector.visible = Adapter.multi_supported(client)
+	car_selector.item_selected.connect(func(index: int) -> void:
+		vehicle_id = str(car_selector.get_item_metadata(index))
+		_profile.clear()
+		_cursor = ""
+		_history.clear()
+		_around = false
+		_refresh())
+	selectors.add_child(car_selector)
 	var circuit: Button = MenuStyle.button("Race the weekly Compact Circuit",func() -> void:
+		if _circuit_car().is_empty(): return
+		adapter.circuit_vehicle = _circuit_car()
 		adapter.circuit_requested.emit()
 		queue_free())
+	circuit_button = circuit
 	circuit.name = "WorldCircuitEntry"
 	circuit.disabled = not Adapter.circuit_open(client)
 	if circuit.disabled: circuit.text = "Compact Circuit opens at the announced launch"
@@ -120,11 +150,21 @@ func _valid(request: int) -> bool:
 
 func _controls() -> void:
 	selector.disabled = _busy
+	car_selector.disabled = _busy
 	previous_button.disabled = _busy or _history.is_empty()
 	next_button.disabled = _busy or _next.is_empty() or _history.size() >= 8
 	around_button.disabled = _busy or selector.selected == 4
 	around_button.text = "Top" if _around else "Near me"
 	refresh_button.disabled = _busy
+	circuit_button.disabled = not Adapter.circuit_open(client) or _circuit_car().is_empty()
+	if Adapter.multi_supported(client):
+		circuit_button.text = GameText.message("Circuit preparing") if _circuit_car().is_empty() else GameText.message("Race the %s Circuit") % VehicleCatalog.title(_circuit_car())
+
+func _circuit_car() -> String:
+	if not Adapter.multi_supported(client): return "compact"
+	var preferred: String = vehicle_id if vehicle_id != "overall" else VehicleCatalog.selected
+	var available: Array = _profile.get("circuit_cars",VehicleCatalog.IDS)
+	return preferred if preferred in available else str(available[0]) if vehicle_id == "overall" and not available.is_empty() else ""
 
 func _refresh() -> void:
 	if _busy: return
@@ -132,16 +172,23 @@ func _refresh() -> void:
 	_controls()
 	_request += 1
 	var request: int = _request
-	var result: Dictionary = await adapter.profile(player_id,true)
+	var result: Dictionary = await adapter.profile(player_id,true,vehicle_id)
 	if not _valid(request): return
 	_busy = false
-	if result.ok:
+	if result.ok and (result.data.get("policy") != "multi-car-circuit-v2" or result.data.get("car") == vehicle_id):
 		_profile = result.data
 		var rank_text: String = "Unranked" if _profile.get("world_rank") == null else "#%d" % int(_profile.world_rank)
 		var movement: String = ""
 		if _profile.get("movement") != null and int(_profile.movement) != 0: movement = GameText.message(" · %+d places") % int(_profile.movement)
 		summary.text = rank_text+GameText.message("  ·  %d POINTS") % int(_profile.points)+movement
 		detail.text = GameText.message("Best 12 / 26 weeks · %d earned · %+d total · %d points at risk next week") % [int(_profile.get("earned",0)),int(_profile.get("net_change",0)),int(_profile.get("points_at_risk",0))]
+		if _profile.get("policy") == "multi-car-circuit-v2":
+			if vehicle_id == "overall":
+				detail.text = GameText.message("Strongest three cars count at 100%, 40% and 15%.")+GameText.message("\n%+d total · %d points at risk next week") % [int(_profile.get("net_change",0)),int(_profile.get("points_at_risk",0))]
+			else:
+				detail.text = VehicleCatalog.title(vehicle_id)+" · "+detail.text
+				var bonus: int = int(_profile.get("circuit_weights",{}).get(vehicle_id,_profile.get("participation_bps",10000)))
+				detail.text += "\n"+GameText.message("This week's participation bonus: +%.1f%%") % ((bonus-10000)/100.0)
 	else:
 		status.text = "Ranking unavailable. Refresh to retry."
 		_controls()
@@ -162,11 +209,12 @@ func _load_page() -> void:
 	_request += 1
 	var request: int = _request
 	var endpoint: String = "/ranking?scope="+SCOPES[selector.selected]
+	if Adapter.multi_supported(client): endpoint += "&vehicle_id="+vehicle_id.uri_encode()
 	if not _cursor.is_empty(): endpoint += "&cursor="+_cursor.uri_encode()
 	if _around: endpoint += "&around=true"
 	var response: Dictionary = await client.request_api(endpoint,HTTPClient.METHOD_GET,{},"",true)
 	if not _valid(request): return
-	if not response.ok or not Adapter.valid_page(response.data):
+	if not response.ok or not Adapter.valid_page(response.data) or (response.data.get("policy") == "multi-car-circuit-v2" and response.data.get("car") != vehicle_id):
 		_busy = false
 		status.text = "Ranking unavailable. Refresh to retry."
 		_controls()
@@ -175,7 +223,7 @@ func _load_page() -> void:
 	var data: Dictionary = response.data
 	_next = str(data.next_cursor)
 	if data.get("state") == "not_started":
-		status.text = "Complete the five weekly Compact Circuit tracks to earn a World Ranking."
+		status.text = "Complete five weekly Circuit tracks with a car to earn its ranking."
 		if int(data.get("launch_week",0)) > 0: status.text = "Circuit opens "+_date(int(data.launch_week))+" UTC. "+status.text
 	elif data.get("state") == "country_required":
 		status.text = "Choose your country in your account profile."
@@ -208,7 +256,7 @@ func _load_page() -> void:
 	_controls()
 
 func _open_player(row: Dictionary) -> void:
-	preload("res://ui/player_profile.gd").open(self,client,{"id":row.player_id,"name":row.name,"country_code":row.get("country","")},"compact")
+	preload("res://ui/player_profile.gd").open(self,client,{"id":row.player_id,"name":row.name,"country_code":row.get("country","")},vehicle_id if vehicle_id != "overall" else VehicleCatalog.selected)
 
 func _clear_rows() -> void:
 	var scroll: ScrollContainer = list.get_parent() as ScrollContainer
@@ -219,6 +267,14 @@ func _clear_rows() -> void:
 
 func _show_results() -> void:
 	_clear_rows()
+	if _profile.get("policy") == "multi-car-circuit-v2" and vehicle_id == "overall":
+		for car: Dictionary in _profile.get("cars",[]):
+			var position: String = "Unranked" if car.get("world_rank") == null else "#%d" % int(car.world_rank)
+			var text: String = GameText.message("%s · %s · %d points") % [VehicleCatalog.title(str(car.vehicle_id)),position,int(car.points)]
+			text += "\n"+GameText.message("%d%% counts · %.2f overall points") % [int(car.counting_weight),int(car.contribution_hundredths)/100.0]
+			var contribution := MenuStyle.label(text,18)
+			contribution.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			list.add_child(contribution)
 	for row: Dictionary in _profile.get("results",[]):
 		var label: Label = MenuStyle.label(GameText.message("%s · #%d · %d points · %s") % [_date(int(row.week_start)),int(row.weekly_place),int(row.points),"Counting" if row.counting else "Reserve"],18)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

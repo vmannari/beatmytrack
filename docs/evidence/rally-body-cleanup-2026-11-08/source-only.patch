@@ -1,0 +1,408 @@
+--- a/game/vehicle/compact_aero.gd
++++ b/game/vehicle/compact_aero.gd
+@@ -205,6 +205,7 @@
+ 	root.add_child(part)
+ 
+ static func _plate(root: Node3D, key: String, center: Vector3, polygon: Array[Vector2], thickness: float, material: Material) -> void:
++	key += "/plate2"
+ 	if CompactKits.simple_parts: key += "/simple"
+ 	CompactKits._load_prepared(key)
+ 	if not CompactKits.meshes.has(key):
+@@ -219,20 +220,25 @@
+ 				contour.append(a.lerp(p,t).lerp(p.lerp(b,t),t))
+ 		var tool := SurfaceTool.new()
+ 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		# Outlines are relative to center but need not surround (0, 0).
++		# Diffuser fins and splitter fences use body-space y/z coordinates;
++		# fanning their faces to the origin creates sheets across the underbody.
++		var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(PackedVector2Array(contour))
++		var clockwise: bool = Geometry2D.is_polygon_clockwise(PackedVector2Array(contour))
+ 		for side: float in [-1,1]:
+ 			var origin: Vector3 = center+Vector3(side*thickness*0.5,0,0)
+-			for index: int in range(contour.size()):
+-				var a: Vector2 = contour[index]
+-				var b: Vector2 = contour[(index+1)%contour.size()]
+-				_triangle(tool,origin,origin+Vector3(0,a.x,a.y),origin+Vector3(0,b.x,b.y),Vector3(side,0,0))
++			for index: int in range(0,triangles.size(),3):
++				var a: Vector2 = contour[triangles[index]]
++				var b: Vector2 = contour[triangles[index+1]]
++				var c: Vector2 = contour[triangles[index+2]]
++				_triangle(tool,origin+Vector3(0,a.x,a.y),origin+Vector3(0,b.x,b.y),origin+Vector3(0,c.x,c.y),Vector3(side,0,0))
+ 		for index: int in range(contour.size()):
+ 			var a: Vector2 = contour[index]
+ 			var b: Vector2 = contour[(index+1)%contour.size()]
+ 			var points: Array[Vector3] = [center+Vector3(-thickness*0.5,a.x,a.y),center+Vector3(thickness*0.5,a.x,a.y),center+Vector3(thickness*0.5,b.x,b.y),center+Vector3(-thickness*0.5,b.x,b.y)]
+-			var midpoint: Vector2 = (a+b)*0.5
+ 			var delta: Vector2 = b-a
+ 			var normal: Vector3 = Vector3(0,delta.y,-delta.x).normalized()
+-			if normal.dot(Vector3(0,midpoint.x,midpoint.y))<0: normal = -normal
++			if clockwise: normal = -normal
+ 			_triangle(tool,points[0],points[1],points[2],normal)
+ 			_triangle(tool,points[0],points[2],points[3],normal)
+ 		tool.index()
+--- /dev/null
++++ b/game/tests/review_rally_body_underside.gd
+@@ -0,0 +1,89 @@
++extends SceneTree
++## RBC01/RBC02: every Rally body kit, both qualities, low and underside views.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func run() -> void:
++	var phase: String = "before"
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--phase="): phase = arg.trim_prefix("--phase=")
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/rally-body-cleanup-2026-11-08/" + phase)
++	DirAccess.make_dir_recursive_absolute(output)
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").entries.clear()
++	CompactKits.use_baked = prepared
++	root.size = Vector2i(1000, 700)
++	var world := Node3D.new()
++	root.add_child(world)
++	var camera := Camera3D.new()
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 5.0
++	camera.current = true
++	world.add_child(camera)
++	var environment := WorldEnvironment.new()
++	var settings := Environment.new()
++	settings.background_mode = Environment.BG_COLOR
++	settings.background_color = Color(0.16, 0.19, 0.23)
++	settings.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	settings.ambient_light_color = Color.WHITE
++	settings.ambient_light_energy = 0.8
++	environment.environment = settings
++	world.add_child(environment)
++	var light := DirectionalLight3D.new()
++	light.rotation_degrees = Vector3(-35, -35, 0)
++	world.add_child(light)
++	for simple: bool in [false, true]:
++		for option: Array in VehicleCustomisation.OPTIONS.body:
++			var kind: String = option[0]
++			var hits_before: int = preload("res://vehicle/modular_car_kits.gd").hits
++			var car := CarVisual.new()
++			car.vehicle_id = "compact"
++			car.simple_model = simple
++			car.batch_parts = prepared
++			car.editable_kits = true
++			car.customisation = VehicleCustomisation.defaults()
++			car.customisation.body = kind
++			world.add_child(car)
++			while not car.model_ready: await process_frame
++			var label: String = ("simple-" if simple else "standard-") + kind
++			if prepared and kind != "stock":
++				check(preload("res://vehicle/modular_car_kits.gd").hits>hits_before, label + " restores regenerated module")
++			var plate_count: int = 0
++			for part: MeshInstance3D in car.find_children("*", "MeshInstance3D", true, false):
++				var mesh_key: String = str(CompactKits.meshes.find_key(part.mesh))
++				var fin: bool = mesh_key.contains("/strake")
++				var fence: bool = mesh_key.contains("/splitterfence")
++				var part_name: String = mesh_key
++				if not (fin or fence): continue
++				plate_count += 1
++				var bounds: AABB = part.mesh.get_aabb()
++				check(bounds.position.y>0.19, label + " " + part_name + " stays above ground")
++				if fin:
++					check(bounds.position.z>1.7, label + " " + part_name + " stays at rear diffuser")
++				else:
++					check(bounds.end.z< -1.6, label + " " + part_name + " stays at nose splitter")
++			if not prepared:
++				check(plate_count == (7 if kind=="endurance" else 5 if kind=="club" else 3 if kind in ["touring", "urban"] else 0), label + " plate inventory")
++			if DisplayServer.get_name() != "headless":
++				for pose: Array in [["front", Vector3(-4, 1.1, -5)], ["rear", Vector3(4, 0.8, 5)], ["under", Vector3(3, -3, 4)]]:
++					camera.position = pose[1]
++					camera.look_at(Vector3(0, 0.45, 0))
++					for frame: int in range(3): await process_frame
++					await RenderingServer.frame_post_draw
++					check(root.get_texture().get_image().save_png(output.path_join(label + "-" + pose[0] + ".png"))==OK, label + " capture")
++			car.free()
++			await process_frame
++	world.free()
++	print("RALLY_BODY_UNDERSIDE: ", checks, " checks, ", failures, " failures; prepared=", prepared)
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_rally_plate_solids.gd
+@@ -0,0 +1,67 @@
++extends SceneTree
++## RBC03: offset plates stay inside their outline and form closed, outward solids.
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++func run() -> void:
++	CompactKits.use_baked = false
++	var builder: Script = preload("res://vehicle/compact_aero.gd")
++	if "--before" in OS.get_cmdline_user_args():
++		builder = GDScript.new()
++		builder.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rally-body-cleanup-2026-11-08/before-source/compact_aero.gd").replace("class_name CompactAero", "")
++		assert(builder.reload()==OK)
++	var outlines: Array = [
++		[Vector2(0.23,1.78),Vector2(0.35,2.16),Vector2(0.20,2.16),Vector2(0.21,1.78)],
++		[Vector2(0.27,-1.9),Vector2(0.33,-2.0),Vector2(0.30,-2.1),Vector2(0.27,-2.1)],
++		[Vector2(-0.1,-0.2),Vector2(0.1,-0.15),Vector2(0.08,0.2),Vector2(-0.1,0.23)]]
++	for simple: bool in [false,true]:
++		CompactKits.simple_parts = simple
++		for index: int in range(outlines.size()):
++			var outline: Array[Vector2] = []
++			outline.assign(outlines[index])
++			var parent := Node3D.new()
++			builder._plate(parent,"regression/"+str(index),Vector3.ZERO,outline,0.009,StandardMaterial3D.new())
++			var part: MeshInstance3D = parent.get_child(0)
++			var arrays: Array = part.mesh.surface_get_arrays(0)
++			var points: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++			var low := Vector2(INF,INF)
++			var high := Vector2(-INF,-INF)
++			for point: Vector2 in outline:
++				low = low.min(point)
++				high = high.max(point)
++			var bounded: bool = true
++			for point: Vector3 in points:
++				bounded = bounded and point.y>=low.x-0.000001 and point.y<=high.x+0.000001 and point.z>=low.y-0.000001 and point.z<=high.y+0.000001
++			var edges: Dictionary = {}
++			var winding: bool = true
++			var volume: float = 0.0
++			for triangle: int in range(0,indices.size(),3):
++				var a: Vector3 = points[indices[triangle]]
++				var b: Vector3 = points[indices[triangle+1]]
++				var c: Vector3 = points[indices[triangle+2]]
++				var face: Vector3 = (b-a).cross(c-a)
++				# Godot uses clockwise front faces, opposite the cross-product normal.
++				winding = winding and face.length_squared()>1e-20 and face.normalized().dot(normals[indices[triangle]])< -0.99
++				volume += a.cross(b).dot(c)/6.0
++				for edge: int in range(3):
++					var p: String = str(Vector3i((points[indices[triangle+edge]]*1000000).round()))
++					var q: String = str(Vector3i((points[indices[triangle+(edge+1)%3]]*1000000).round()))
++					var key: String = p+q if p<q else q+p
++					edges[key] = int(edges.get(key,0))+1
++			var closed: bool = true
++			for count: int in edges.values(): closed = closed and count==2
++			var label: String = str(index)+" simple="+str(simple)
++			check(bounded,label+" no faces reach outside the outline")
++			check(closed,label+" watertight edges")
++			check(winding,label+" nondegenerate triangles and outward normals")
++			check(volume< -0.00001,label+" outward closed solid volume")
++			parent.free()
++	print("RALLY_PLATE_SOLIDS: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_rally_kit_modules.gd
+@@ -0,0 +1,19 @@
++extends "res://tests/test_modular_car_assets.gd"
++## RBC04: compare each Rally body/aero module to the live source constructor.
++func run() -> void:
++	Garage.enabled = false
++	for simple: bool in [false,true]:
++		var stock: Dictionary = VehicleCustomisation.defaults()
++		var control: CarVisual = await make_car("compact",simple,true,stock,false)
++		var prepared: CarVisual = await make_car("compact",simple,true,stock,false)
++		Rest._stable_names(control)
++		Rest._stable_names(prepared)
++		for category: String in ["body","aero"]:
++			for option: Array in VehicleCustomisation.OPTIONS[category].slice(1):
++				exercise_single_replacement(control,prepared,"compact",simple,category,str(option[0]))
++				await process_frame
++		control.free()
++		prepared.free()
++		await process_frame
++	print("RALLY_KIT_MODULES: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/check_rally_prepared_assets.gd
+@@ -0,0 +1,25 @@
++extends "res://tests/check_prepared_assets.gd"
++## RBC04: full existing metadata/dependency checks scoped to the rebuilt Rally.
++func run() -> void:
++	var sources: Dictionary = Base.source_hashes("compact")
++	for simple: bool in [false,true]:
++		for editable: bool in [false,true]:
++			var car := CarVisual.new()
++			car.simple_model = simple
++			car.editable_kits = editable
++			inspect(Base.path_for(car),"modular_car_base",Base.key_for(car),sources)
++			if editable:
++				for category: String in VehicleCustomisation.CATEGORIES:
++					for option: Array in VehicleCustomisation.options(category,"compact").slice(1):
++						inspect(Kits.path_for(car,category,option[0]),"modular_kit",Kits.key_for(car,category,option[0]),Kits.geometry_sources("compact"))
++			car.free()
++	var car := CarVisual.new()
++	car.editable_kits = true
++	inspect(Garage.DIRECTORY+"compact.scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources("compact"))
++	car.free()
++	car = CarVisual.new()
++	car.simple_model = true
++	inspect(Header.DIRECTORY+"compact.scn","garage_rest",Header.geometry_key(car),Header.geometry_sources())
++	car.free()
++	print("RALLY_PREPARED_ASSETS: ",resources," resources; ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/bake_rally_plate_cleanup.gd
+@@ -0,0 +1,34 @@
++extends SceneTree
++## Rebuild only the shared Rally plate meshes; preserve unrelated kit resources.
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	CompactKits.use_baked = false
++	var material := StandardMaterial3D.new()
++	for simple: bool in [false, true]:
++		CompactKits.simple_parts = simple
++		for kind: String in CompactBodyKits.PROFILES:
++			var holder := Node3D.new()
++			CompactBodyKits.build(holder, kind, material, material, material)
++			holder.free()
++		for kind: String in CompactAero.PROFILES:
++			var holder := Node3D.new()
++			CompactAero.build(holder, kind, material, material, material)
++			holder.free()
++	var path: String = CompactKits.ASSET_ROOT.path_join("manifest.json")
++	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
++	var count: int = 0
++	for key: String in CompactKits.meshes:
++		if not key.contains("/plate2"): continue
++		var mesh: ArrayMesh = CompactKits.meshes[key]
++		var target: String = CompactKits.ASSET_ROOT.path_join("meshes/"+key.sha256_text()+".res")
++		assert(ResourceSaver.save(mesh,target,ResourceSaver.FLAG_COMPRESS)==OK)
++		var digest := HashingContext.new()
++		digest.start(HashingContext.HASH_SHA256)
++		digest.update(var_to_bytes(mesh.surface_get_arrays(0)))
++		manifest.meshes[key] = {"file":target.get_file(),"surface_sha256":digest.finish().hex_encode()}
++		count += 1
++	var file := FileAccess.open(path,FileAccess.WRITE)
++	file.store_string(JSON.stringify(manifest,"\t"))
++	file.close()
++	print("RALLY_PLATE_BAKE: ",count," meshes")
++	quit()
+--- /dev/null
++++ b/scripts/run_rally_body_review.py
+@@ -0,0 +1,37 @@
++"""Run offline Rally kit review with a private user profile."""
++from pathlib import Path
++import os
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / 'docs/evidence/rally-body-cleanup-2026-11-08'
++
++def main():
++    name, script, *args = sys.argv[1:]
++    env = os.environ.copy()
++    for key in ('APPDATA', 'LOCALAPPDATA'):
++        folder = ROOT / 'build/rally-body-review' / name / key.lower()
++        folder.mkdir(parents=True, exist_ok=True)
++        env[key] = str(folder)
++    env['BMT_API_URL'] = ''
++    OUT.mkdir(parents=True, exist_ok=True)
++    command = [sys.executable, 'scripts/run_no_crash_dialog.py', '--',
++               r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe',
++               '--path', 'game', '--audio-driver', 'Dummy', '--script', script, *args]
++    try:
++        result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
++                                text=True, timeout=480)
++        output = result.stdout + result.stderr
++        status = result.returncode
++    except subprocess.TimeoutExpired as error:
++        output = str(error)
++        status = 124
++    (OUT / (name + '.log')).write_text(subprocess.list2cmdline(command) + '\n' + output,
++                                     encoding='utf-8')
++    print(output[-5000:])
++    return status or int(any('ERROR:' in line and 'root certificate store' not in line
++                            for line in output.splitlines()))
++
++if __name__ == '__main__':
++    sys.exit(main())
+--- /dev/null
++++ b/docs/RALLY_BODY_CLEANUP_2026_11_08.md
+@@ -0,0 +1,63 @@
++# Rally body-kit underside cleanup — 2026-11-08
++
++RBC01–RBC04 cover the owner's request to review Rally body kits and remove artefacts beneath the car. All nine optional kits and stock were reviewed in both standard and simple geometry, with low front, low rear and underside captures.
++
++## Finding and correction
++
++Club, Touring, Endurance and Urban had diffuser-fin face triangles reaching from the rear diffuser to model-space `(y,z)=(0,0)`. Club and Endurance also had front splitter fences reaching that same origin. The plate helper treated its translation origin as an interior point of every outline; these body-space outlines do not contain the origin. This produced long triangular sheets underneath the car.
++
++`game/vehicle/compact_aero.gd` now triangulates the rounded outline with `Geometry2D.triangulate_polygon`. Side-wall normals follow polygon winding instead of a direction from the model origin. A new plate cache key excludes obsolete immutable meshes. The helper also supplies Rally spoiler endplates, so both body and aero modules were compared against their source constructors.
++
++No changes to kit dimensions, splitter/diffuser outlines, mud flaps, body profiles, physics, paint or saved customisation were needed. The original plate resources remain available under their old cache keys; production constructors select the corrected keys.
++
++## Changed files and generated assets
++
++- Runtime: `game/vehicle/compact_aero.gd` only.
++- Review/regression: `game/tests/review_rally_body_underside.gd`, `test_rally_plate_solids.gd`, `test_rally_kit_modules.gd`, `check_rally_prepared_assets.gd`.
++- Reproducible plate bake: `game/tests/bake_rally_plate_cleanup.gd`.
++- Private-profile runner: `scripts/run_rally_body_review.py`.
++- Generated: 56 corrected low-level plate meshes and their manifest entries; 78 Rally kit modules, four Rally bases, Garage and header templates; four affected body-kit preview pictures in each desktop renderer.
++
++Other ongoing appearance changes were already present in the workspace. They are preserved. The first bake crossed a concurrent Rally glazing/build-identity update and was rejected as a complete receipt. The subsequent four-stage bake records zero source changes in `bake-changed-sources.json`. Generated Rally bases necessarily include the current glazing, rather than an older snapshot of someone else's work.
++
++## Actual validation
++
++All commands use the pinned Godot 4.7.2 console executable through `scripts/run_no_crash_dialog.py`. The runner assigns private APPDATA/LOCALAPPDATA directories under `build/rally-body-review`, disables the backend URL, and saves commands/output under [the evidence directory](evidence/rally-body-cleanup-2026-11-08).
++
++| Check | Outcome |
++| --- | --- |
++| Original direct plate builder, offset outlines | 24 checks / 4 failures: translated plates escape their outlines |
++| Corrected direct plate builder | 24 / 0: bounded outlines, watertight edges, clockwise fronts/normals and closed volume |
++| Source all-kit native Compatibility review | 152 / 0, 60 captures |
++| Source all-kit native desktop Mobile review | 152 / 0, 60 captures |
++| Confirmed prepared-module native Compatibility and desktop Mobile review | 78 / 0 each, 120 captures; all 18 non-stock quality/kit cases per renderer use prepared modules |
++| Existing source attachment suite | 5,114 / 0 |
++| Focused body/aero source-versus-module comparison | 546 / 0 |
++| Final scoped complete Rally asset preflight after preview refresh | 84 resources, 342 / 0 |
++
++Representative [before](evidence/rally-body-cleanup-2026-11-08/before/standard-club-under.png) and [after](evidence/rally-body-cleanup-2026-11-08/after-compatibility/standard-club-under.png) views show the long sheets removed while the rear fins remain.
++
++Reproduce from the repository root:
++
++```powershell
++python scripts/run_rally_body_review.py solids-final res://tests/test_rally_plate_solids.gd --headless
++python scripts/run_rally_body_review.py solids-control res://tests/test_rally_plate_solids.gd --headless -- --before
++python scripts/run_rally_body_review.py after-compatibility res://tests/review_rally_body_underside.gd --rendering-method gl_compatibility -- --phase=after-compatibility
++python scripts/run_rally_body_review.py after-mobile res://tests/review_rally_body_underside.gd --rendering-method mobile -- --phase=after-mobile
++python scripts/run_rally_body_review.py prepared-confirmed res://tests/review_rally_body_underside.gd --rendering-method gl_compatibility -- --phase=prepared-confirmed --prepared
++python scripts/run_rally_body_review.py plate-attachments res://tests/test_compact_kit_attachments.gd --headless -- --source
++python scripts/run_rally_body_review.py module-geometry res://tests/test_rally_kit_modules.gd --headless
++python scripts/run_rally_body_review.py scoped-preflight res://tests/check_rally_prepared_assets.gd --headless
++```
++
++The bake commands are retained verbatim in `bake-plates.log`, `ready-bake-*.log` and `body-photos-*.log`. They use the existing `bake_modular_car_bases.gd`, `bake_modular_car_kits.gd`, `bake_garage_cars.gd` and `bake_header_simple_compact.gd`, scoped to `--vehicle=compact`. Preview bakes use `--photos-only --category=body --ids=club,touring,endurance,urban`.
++
++## Retained failures and limits
++
++The existing broad modular suite finishes at 1,269 checks / 1 failure: its final invalid-fourth-module rollback fixture does not observe the expected three preceding attachments. All geometry/material/attribute and individual replacement comparisons pass; the assertion remains unchanged. No claim is made that the whole suite passes. The first run crossed the glazing update and retained 31 failures; the stable repeat removes those geometry mismatches.
++
++The global prepared preflight was run during concurrent appearance work and retained 277 failures, including stale unrelated vehicle receipts. The scoped Rally preflight is the task's complete asset gate. Global catalogue-preview provenance/export is not qualified by this task.
++
++Initial native fixtures did not enable every prerequisite for prepared restoration and correctly failed their hit assertions; `prepared-confirmed.log` verifies actual restoration after fixing that fixture. The first original-source control tried to load a second named global class directly and stalled; those owned test sessions were interrupted. The final original control compiles the archived source without its global class declaration and produces the expected four geometric failures. An initial solid test used counterclockwise normals instead of Godot's clockwise front-face convention; the corrected test and original control are both retained. An initial script path error and unavailable Pillow montage attempt are diagnostic setup findings, not passes. Windows certificate-store diagnostics recur in the offline runs; no other engine error was accepted.
++
++No device query/test, APK, owner save/process change, backend operation, deployment or main-index operation was performed. Fresh owner-PC appearance acceptance and any later tablet build remain. The source-only patch and final hashes are retained beside the evidence for review without staging concurrent work.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RALLY-BODY-CLEANUP-20261108 -->
++## Rally body-kit underside artefacts corrected (2026-11-08)
++RBC01–RBC04: Club/Touring/Endurance/Urban diffuser fins and Club/Endurance splitter fences no longer fan to the model origin. Rounded-outline triangulation and winding-based walls preserve intended outlines. All ten body choices/two qualities: source152/0 and confirmed prepared78/0 each desktop renderer. Plate solids24/0 (original24/4), attachment5114/0, body/aero module546/0 and final84-resource342/0 pass. Broader module1269/1 rollback fixture and concurrent global prepared failures remain; no full-suite/export claim. [Changes, captures, commands and source checkpoint](docs/RALLY_BODY_CLEANUP_2026_11_08.md). No device test/install, owner-save/process change, backend action or main-index write.
++<!-- /RALLY-BODY-CLEANUP-20261108 -->
++
+ <!-- GARAGE-SIMPLE-MODELS-20261107 -->
+ ## Garage follows the simpler-model setting (2026-11-07)
+ GSM01-GSM04: Existing saved option now drives live/retained Garage cars, replacements, fitted parts, carousel captures and preloader quality pins. Standard catalogue pictures cannot stand in for reduced cars; background warming observes quality changes. Camera, paint, condition and both reflections remain. Standard-exterior eligibility fixes coarse Kart rim sampling without raising wash tolerances; temporary reference is freed before drawing. Final live App201/0, frozen native241/0 each desktop renderer/80 captures, cache46/0, wash45/0 each tier, translations12/0 and driving72/0 pass; frozen468-resource1925/0 and five-picture157-source checks pass. Concurrent physics/project/workshop edits invalidate live build receipts; coherent source copy and outputs remain isolated, no frozen binary overwrites live work. Legacy preloader foreground-prefetch suite remains unpassed; archived/current fence control matches. JSON-version and initial zoom fixture findings retained. [Implementation, comparisons, source pins, commands, limits and source-only checkpoint](docs/GARAGE_SIMPLE_MODELS_2026_11_07.md). Reload and owner/device appearance/input/memory acceptance remain. No device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved.

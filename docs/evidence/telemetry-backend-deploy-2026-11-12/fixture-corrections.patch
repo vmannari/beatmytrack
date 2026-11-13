@@ -1,0 +1,56 @@
+--- a/backend/tests/test_admin.py
++++ b/backend/tests/test_admin.py
+@@ -55,6 +55,21 @@
+     )
+ 
+ 
++@pytest.fixture
++def postgres_console(postgres_auth):  # noqa: F811 - imported pytest fixture
++    from fastapi.testclient import TestClient
++
++    from bmt_backend.app import create_app
++
++    source, _client = postgres_auth
++    # Route mounting, reporting and legacy-key admission are chosen at startup.
++    app = create_app(replace(source.state.settings, admin_owner_key="o" * 40,
++                            studio_legacy_keys_enabled=True), engine=source.state.engine,
++                     identity_verifier=source.state.identity_verifier)
++    with TestClient(app) as client:
++        yield app, client
++
++
+ def test_admin_denies_missing_and_game_credentials(console):
+     client, _app, ids = console
+     for endpoint in ("overview", "competition-health", "entities/players", "entities/players/" + ids[0]):
+@@ -172,12 +187,11 @@
+ 
+ 
+ @pytest.mark.postgres
+-def test_postgres_admin_daily_query_and_concurrent_command(postgres_auth):  # noqa: F811
++def test_postgres_admin_daily_query_and_concurrent_command(postgres_console):
+     from concurrent.futures import ThreadPoolExecutor
+     from threading import Barrier
+ 
+-    app, client = postgres_auth
+-    app.state.settings = replace(app.state.settings, admin_owner_key="o" * 40)
++    app, client = postgres_console
+     with app.state.session_factory() as db:
+         player = Player(display_name="Admin test racer")
+         db.add(player)
+--- a/backend/tests/test_telemetry_parallel.py
++++ b/backend/tests/test_telemetry_parallel.py
+@@ -409,7 +409,13 @@
+     with ThreadPoolExecutor(max_workers=4) as pool:
+         for _ in range(8):
+             list(pool.map(lambda _i: actor_once(app.state.session_factory, 8), range(4)))
+-    project_pending(app.state.session_factory)
++    # A bounded pass can fold a combined batch before its remaining owners
++    # become eligible again. Drive the same alternating stages to quiescence.
++    for _ in range(64):
++        if project_pending(app.state.session_factory)["pending"] == 0:
++            break
++    else:
++        pytest.fail("Concurrent telemetry did not drain within bounded passes")
+     assert credits(app) == 0
+     with app.state.session_factory() as db:
+         assert db.get(ProductMetric, (now() // 86400, "event_menu_ready", "")).value == 64

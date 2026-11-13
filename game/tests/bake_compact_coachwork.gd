@@ -8,6 +8,7 @@ func _bake() -> void:
 	glazing.use_baked=false
 	glazing.sheets.clear()
 	var car := CarVisual.new()
+	car.simple_model = false # Offline source geometry.
 	car.batch_parts = false
 	root.add_child(car)
 	var directory: String = ProjectSettings.globalize_path(CompactCoachwork.ASSET_ROOT)

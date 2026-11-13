@@ -138,7 +138,7 @@ func _run() -> void:
 		if not page.kit_scroll.get_global_rect().encloses(last.get_global_rect()):
 			print("KIT_FOCUS_BOUNDS ",dimensions," scroll=",page.kit_scroll.get_global_rect()," card=",last.get_global_rect()," value=",page.kit_scroll.scroll_vertical," focused=",root.gui_get_focus_owner()==last)
 		check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"focus reveals last of thirteen aero choices")
-		check(CompactKitThumbnail.images.size()<=16,"retained native-photo cache stays bounded")
+		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
 		check(app.root_ui.get_global_rect().encloses(page.actions.get_global_rect()),"actions fit "+str(dimensions))
 		check(app.root_ui.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"scrolling parts fit "+str(dimensions))
 		check(page.showroom.size.y>=250,"usable showroom "+str(dimensions))
@@ -206,7 +206,7 @@ func _run() -> void:
 	await process_frame
 	check(reflections.views.is_empty(),"real showroom teardown releases reflection views")
 	var report := FileAccess.open(output.path_join("geometry.json"),FileAccess.WRITE)
-	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"geometry":metrics,"cached_parts":CompactKits.meshes.size(),"cached_images":CompactKitThumbnail.images.size()},"\t"))
+	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"geometry":metrics,"cached_parts":CompactKits.meshes.size()},"\t"))
 	report.close()
 	print("COMPACT_KITS: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures else 0)

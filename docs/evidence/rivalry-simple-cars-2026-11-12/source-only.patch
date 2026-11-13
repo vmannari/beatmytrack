@@ -1,0 +1,665 @@
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -52,6 +52,7 @@
+ const Badge = preload("res://ui/biome_badge.gd")
+ const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
+ const LoadingVisual = preload("res://ui/rivalry_loading_visual.gd")
++const PodiumCar = preload("res://ui/rivalry_simple_car.gd")
+ 
+ class TrackProfile extends LapRouteView:
+ 	func _draw() -> void:
+@@ -125,8 +126,8 @@
+ 	if not standings_ready: return false
+ 	if signed_in and error.is_empty() and model.tracks.is_empty() and (busy or model.received_msec == 0): return false
+ 	for car: Node in find_children("*","",true,false):
+-		if car.get_script() != preload("res://ui/rivalry_victory_car.gd"): continue
+-		if not car.presentation_ready or car.viewport.size.x <= 1 or car.viewport.size.y <= 1: return false
++		if car.get_script() != PodiumCar: continue
++		if not car.presentation_ready: return false
+ 	return true
+ 
+ func _score_topology() -> PackedByteArray:
+@@ -918,11 +919,10 @@
+ 		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		header_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		card.add_child(header_space)
+-		var car: Control = preload("res://ui/rivalry_victory_car.gd").new()
++		var car: Control = PodiumCar.new()
+ 		car.name = "RivalryPodiumCar_"+str(position+1)
+ 		car.vehicle_id = model.vehicle_id
+-		car.simple_model = true
+-		car.podium_presentation = true
++		car.livery = VehicleLivery.defaults(model.vehicle_id)
+ 		car.fit_to_frame = true
+ 		var appearance: Variant = driver.get("appearance",{})
+ 		if appearance is Dictionary and appearance.get("vehicle_id") == model.vehicle_id:
+diff --git a/game/tests/test_rivalry_custom_cars.gd b/game/tests/test_rivalry_custom_cars.gd
+--- a/game/tests/test_rivalry_custom_cars.gd
++++ b/game/tests/test_rivalry_custom_cars.gd
+@@ -55,32 +55,18 @@
+ 		for index: int in range(3):
+ 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+ 			check(car != null,"all three ranked players get their own native car")
+-			check(car.car.simple_model,"podium uses the approved reduced 3D model")
+-			check(car.podium_presentation,"podium applies its independent reflection studio")
+-			var camera: Camera3D = car.viewport.find_children("*","Camera3D",true,false)[0]
+-			check((car.car.global_basis*Vector3.FORWARD).dot(camera.global_position-car.car.global_position) > 0.0,"podium turns 180 degrees with its front toward the viewer")
+-			check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"display-density podium targets retain their bounded resolution")
+-			check(car.car.vehicle_id == "compact" and car.car.livery == appearance(index).livery,"podium uses that player's complete paint, livery and stickers")
+-			check(car.car.customisation == appearance(index).customisation,"podium uses that player's four fitted part IDs")
++			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.triangle_count<=600,"podium uses the tiny faceted model")
++			check(car.get_child_count()==0,"podium creates no viewport or reflection studio")
++			check(car.presentation_ready,"projected podium model is ready in its first layout")
++			check(car.vehicle_id == "compact" and car.livery == appearance(index).livery,"podium retains each player's appearance payload and pigments")
++			check(car.customisation == appearance(index).customisation,"simplified podium preserves fitted-part metadata without building it")
+ 			check(car.condition.is_empty(),"remote podium never receives local dirt or washing")
+ 			check(Rect2(Vector2.ZERO,Vector2(dimensions)).encloses(car.get_global_rect()),"native cars remain within the smaller hub bounds")
+ 		if DisplayServer.get_name() != "headless":
+ 			await RenderingServer.frame_post_draw
+ 			for index: int in range(3):
+ 				var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+-				check(car.viewport.render_target_update_mode <= SubViewport.UPDATE_ONCE,"podium requests only bounded one-shot draws")
+-			if dimensions.x == 1280:
+-				var static_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+-				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+-				for _frame: int in range(4): await process_frame
+-				await RenderingServer.frame_post_draw
+-				var live_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+-				check(live_draws > static_draws,"settled one-shot podiums omit the native car draw work")
+-				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+-				for _frame: int in range(4): await process_frame
+-				await RenderingServer.frame_post_draw
+-				check(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME) == static_draws,"static render work returns after bounded refresh")
+-				print("PODIUM_DRAW_WORK: static=%d live=%d" % [static_draws,live_draws])
++				check(not car.is_processing() and not car.is_physics_processing(),"static podium requires no ongoing frame callbacks")
+ 			check(root.get_texture().get_image().save_png(evidence.path_join("hub-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"native hub evidence saved")
+ 		page.free()
+ 		await process_frame
+@@ -108,7 +94,7 @@
+ 	root.add_child(fallback)
+ 	for index: int in range(3):
+ 		var car: Control = fallback.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+-		check(car.livery.is_empty() and car.customisation.is_empty(),"missing, mismatched or malformed remote appearances safely retain stock models")
++		check(car.livery==VehicleLivery.defaults(model.vehicle_id) and car.customisation.is_empty(),"missing, mismatched or malformed remote appearances safely retain stock pigments")
+ 	fallback.free()
+ 	var awards: Control = preload("res://ui/rivalry_victory_car.gd").new()
+ 	root.add_child(awards)
+@@ -158,14 +144,17 @@
+ 		await RenderingServer.frame_post_draw
+ 		for index: int in range(3):
+ 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+-			check(car.car.vehicle_id == id and car.car.livery == appearance(index,id).livery,id+" renders each player's actual chassis and livery")
+-			check(car.car.simple_model,id+" podium uses its actual approved reduced geometry")
+-			var picture: Image = car.viewport.get_texture().get_image()
++			check(car.vehicle_id == id and car.livery == appearance(index,id).livery,id+" retains each player's identity and paint")
++			check(car.triangle_count<=600 and car.get_child_count()==0,id+" podium uses the tiny projected geometry")
++			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
+ 			var occupied: int = 0
++			var pigment := Color(str(appearance(index,id).livery.colors.body))
++			var target := Vector3(pigment.r,pigment.g,pigment.b).normalized()
+ 			for y: int in range(picture.get_height()):
+ 				for x: int in range(picture.get_width()):
+-					if picture.get_pixel(x,y).a > 0.5: occupied += 1
+-			check(occupied > picture.get_width()*picture.get_height()*0.02,id+" native car appears in the bounded render")
++					var pixel: Color = picture.get_pixel(x,y)
++					if Vector3(pixel.r,pixel.g,pixel.b).normalized().dot(target)>0.9995 and pixel.v>0.1: occupied += 1
++			check(occupied > picture.get_width()*picture.get_height()*0.015,id+" visible body pixels retain that player's pigment")
+ 		check(root.get_texture().get_image().save_png(evidence.path_join("car-"+id+".png")) == OK,id+" native podium evidence saved")
+ 		page.free()
+ 		await process_frame
+diff --git a/game/tests/test_rivalry_ready_entry.gd b/game/tests/test_rivalry_ready_entry.gd
+--- a/game/tests/test_rivalry_ready_entry.gd
++++ b/game/tests/test_rivalry_ready_entry.gd
+@@ -78,24 +78,33 @@
+ 			check(page!=null and page.track_rows.size()==5 and page.standings_ready,"first entering frame has five tracks and settled standings")
+ 			var cars: Array[Node] = page.find_children("RivalryPodiumCar_*","",true,false)
+ 			check(cars.size()==3,"first entering frame has all podium cars")
++			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+ 			for car: Node in cars:
+-				check(car.presentation_ready and car.viewport.size.x>1 and car.viewport.size.y>1,"podium car is prepared before entry")
+-				if DisplayServer.get_name()!="headless":
+-					var picture: Image = car.viewport.get_texture().get_image()
+-					var pixels: int = 0
+-					for y: int in range(0,picture.get_height(),4):
+-						for x: int in range(0,picture.get_width(),4):
+-							if picture.get_pixel(x,y).a>0.1: pixels += 1
+-					check(pixels>50,"first entering frame has a rendered car image")
++				check(car.presentation_ready and car.size.x>1 and car.size.y>1,"podium car is prepared before entry")
+ 			await capture(id+"-first-frame")
+ 			inspected = true
+ 			break
+ 	check(inspected,"observe the first visible rivalry frame")
+ 	await settle()
++	# During the first pixels of a slide the car can still be offscreen. Inspect
++	# canvas raster once the page is fully visible, rather than an unrelated crop.
++	if DisplayServer.get_name()!="headless":
++		await RenderingServer.frame_post_draw
++		var page: Node = app.content.find_child("WeeklyRivalryPage",true,false)
++		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
++			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
++			var pixels: int = 0
++			for y: int in range(0,picture.get_height(),4):
++				for x: int in range(0,picture.get_width(),4):
++					var pixel: Color = picture.get_pixel(x,y)
++					if pixel.r>pixel.b*1.08 and pixel.r>0.4: pixels += 1
++			check(pixels>10,"fully visible page contains the rendered stock roof pigments")
+ 
+ func run() -> void:
+ 	var profile: String = ProjectSettings.globalize_path("user://").replace("\\","/").simplify_path()
+-	var isolated: String = ProjectSettings.globalize_path("res://../build/rivalry-ready-entry/").replace("\\","/").simplify_path().trim_suffix("/")+"/"
++	var profile_root: String = OS.get_environment("BMT_RIVALRY_READY_PROFILE_ROOT")
++	if profile_root.is_empty(): profile_root = "res://../build/rivalry-ready-entry/"
++	var isolated: String = ProjectSettings.globalize_path(profile_root).replace("\\","/").simplify_path().trim_suffix("/")+"/"
+ 	if not profile.begins_with(isolated):
+ 		check(false,"set APPDATA under build/rivalry-ready-entry")
+ 		quit(1)
+diff --git a/game/tests/test_rivalry_view_polish.gd b/game/tests/test_rivalry_view_polish.gd
+--- a/game/tests/test_rivalry_view_polish.gd
++++ b/game/tests/test_rivalry_view_polish.gd
+@@ -118,7 +118,7 @@
+ 		check(name_label.size.x >= name_label.get_theme_font("font").get_string_size(name_label.text,HORIZONTAL_ALIGNMENT_LEFT,-1,name_label.get_theme_font_size("font_size")).x,"reference player names fit without truncation")
+ 		var car: Control = page.find_child("RivalryPodiumCar_"+str(position),true,false)
+ 		check(car.size.y >= 88 and car.fit_to_frame,"larger car previews fit the available frame")
+-		check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"render targets retain existing bounds")
++		check(car.get_child_count()==0 and car.presentation_ready,"podium fits its frame without a 3D render target")
+ 		var card: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
+ 		check(is_equal_approx(card.size.y,194.0-(position-1)) and is_equal_approx(card.global_position.y-winner.global_position.y,float(position-1)),"podium heights descend by one unit per position")
+ 		check(is_equal_approx(card.get_global_rect().end.y,winner.get_global_rect().end.y),"stepped podium cards retain a shared bottom edge")
+diff --git a/game/tests/profile_deep_loading.gd b/game/tests/profile_deep_loading.gd
+--- a/game/tests/profile_deep_loading.gd
++++ b/game/tests/profile_deep_loading.gd
+@@ -140,7 +140,10 @@
+ 		trace.mark("entry_ready")
+ 		var cars: Array = []
+ 		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
+-			cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.viewport.size.x,car.viewport.size.y],"mode":car.viewport.render_target_update_mode,"model_ready":car.car.model_ready})
++			if car.get_script()==load("res://ui/rivalry_simple_car.gd"):
++				cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.size.x,car.size.y],"triangles":car.triangle_count,"canvas":true})
++			else:
++				cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.viewport.size.x,car.viewport.size.y],"mode":car.viewport.render_target_update_mode,"model_ready":car.car.model_ready})
+ 		check(cars.size() == 3,"all three production podium widgets retained")
+ 		var row: Dictionary = {"cycle":cycle,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"cars":cars,"feature_load_ms":app.feature_load_ms.duplicate(true)}
+ 		rows.append(row); print("DEEP_ROW ",JSON.stringify(row))
+diff --git a/game/ui/rivalry_simple_car.gd b/game/ui/rivalry_simple_car.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_simple_car.gd
+@@ -0,0 +1,202 @@
++extends Control
++## Tiny faceted podium models. Project once into the existing menu canvas so
++## entry needs no CarVisual, SubViewport, lighting, reflections or car shaders.
++var vehicle_id: String = "compact"
++var livery: Dictionary = {}
++var customisation: Dictionary = {} # Preserve the appearance payload; omit fitted detail.
++var condition: Dictionary = {}
++var fit_to_frame: bool = true
++var presentation_ready: bool:
++	get: return not faces.is_empty() and size.x > 1 and size.y > 1
++var faces: Array[Dictionary] = []
++var model_bounds: Rect2
++var triangle_count: int = 0
++var canvas_triangle_count: int = 0
++var _canvas_mesh: ArrayMesh
++var _layer: int = 0
++var _view := Vector3(-6,4,-8).normalized()
++var _right := Vector3(8,0,-6).normalized()
++var _up := _right.cross(_view)
++var _light := Vector3(-3,7,-5).normalized()
++const RUBBER := Color("202832")
++const GLASS := Color("314d60")
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_build()
++	resized.connect(queue_redraw)
++
++func _pigment(slot: String, fallback: String) -> Color:
++	return Color.from_string(str(livery.get("colors",{}).get(slot,fallback)),Color(fallback))
++
++func _build() -> void:
++	var paint: Color = _pigment("body","30627d")
++	var accent: Color = _pigment("accent","e0d5b5")
++	var detail: Color = _pigment("detail","a4abad")
++	match vehicle_id:
++		"kart":
++			_box(Vector3(0,0.31,0),Vector3(1.25,0.16,1.95),RUBBER)
++			_hull([Vector3(-1.2,0.47,0.37),Vector3(-0.58,0.55,0.46),Vector3(0.9,0.46,0.39)],0.28,paint)
++			_box(Vector3(0,0.64,0.35),Vector3(0.55,0.6,0.22),RUBBER)
++			_box(Vector3(0,0.72,0.08),Vector3(0.46,0.5,0.38),accent)
++			_box(Vector3(0,1.08,0.09),Vector3(0.41,0.34,0.38),detail)
++			_box(Vector3(0,1.09,-0.108),Vector3(0.35,0.13,0.02),GLASS)
++			_wheels(0.8,0.79,0.27,0.29,detail)
++		"forklift":
++			_box(Vector3(0,0.65,0.28),Vector3(1.4,0.68,1.85),paint)
++			_box(Vector3(0,0.95,0.36),Vector3(0.62,0.54,0.57),RUBBER)
++			for side: float in [-1.0,1.0]:
++				for end: float in [-0.35,1.0]:
++					_box(Vector3(side*0.59,1.38,end),Vector3(0.1,1.05,0.1),RUBBER)
++				_box(Vector3(side*0.5,1.12,-0.99),Vector3(0.12,2.0,0.15),RUBBER)
++				_box(Vector3(side*0.47,0.2,-1.5),Vector3(0.15,0.09,1.1),detail)
++			_box(Vector3(0,1.94,0.31),Vector3(1.42,0.13,1.6),accent)
++			_box(Vector3(0,0.65,-1.05),Vector3(1.16,0.17,0.14),detail)
++			_wheels(0.72,0.67,0.35,0.3,detail)
++		"hovercraft":
++			_hull([Vector3(-1.85,0.72,0.4),Vector3(-1.3,1.04,0.5),Vector3(1.5,1.04,0.5),Vector3(1.85,0.76,0.4)],0.1,RUBBER)
++			_hull([Vector3(-1.65,0.65,0.58),Vector3(-1.0,0.92,0.68),Vector3(1.45,0.84,0.65)],0.38,paint)
++			_cabin(-0.75,0.7,-0.25,0.6,0.57,0.67,1.17,accent)
++			for side: float in [-1.0,1.0]:
++				_cylinder(Vector3(side*0.6,0.99,1.35),0.4,0.27,RUBBER,false)
++				_cylinder(Vector3(side*0.6,0.99,1.19),0.26,0.02,detail,false)
++		_:
++			var coupe: bool = vehicle_id == "super_rally"
++			var volt: bool = vehicle_id == "electric"
++			var length: float = 2.13 if coupe else 2.0 if volt else 1.85
++			_hull([Vector3(-length,0.69,0.62),Vector3(-length+0.4,0.87,0.8),Vector3(length-0.27,0.86,0.81),Vector3(length,0.72,0.66)],0.3,paint)
++			_cabin(-0.4 if coupe else -1.05 if volt else -0.84,1.15 if coupe else 1.4,-0.04 if coupe else -0.47 if volt else -0.39,0.64 if coupe else 0.95 if volt else 0.88,0.73,0.79,1.22 if coupe else 1.29 if volt else 1.44,accent)
++			_wheels(0.87,1.27 if coupe else 1.14,0.34,0.25,detail)
++			_box(Vector3(0,0.47,-length-0.01),Vector3(1.33,0.15,0.09),RUBBER)
++			_box(Vector3(0,0.66,-length-0.015),Vector3(0.59,0.17,0.03),RUBBER)
++			for side: float in [-1.0,1.0]:
++				_box(Vector3(side*0.54,0.69,-length-0.025),Vector3(0.27,0.13,0.035),Color("e8dfb5"))
++	faces.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.layer < b.layer if a.layer != b.layer else a.depth < b.depth)
++	var first: bool = true
++	for face: Dictionary in faces:
++		for point: Vector2 in face.points:
++			model_bounds = Rect2(point,Vector2.ZERO) if first else model_bounds.expand(point)
++			first = false
++	_batch_faces()
++	queue_redraw()
++
++func _batch_faces() -> void:
++	var vertices := PackedVector2Array()
++	var colors := PackedColorArray()
++	var indices := PackedInt32Array()
++	for face: Dictionary in faces:
++		var offset: int = vertices.size()
++		vertices.append_array(face.points)
++		for point: Vector2 in face.points: colors.append(face.color)
++		for index: int in Geometry2D.triangulate_polygon(face.points): indices.append(offset+index)
++		# A narrow alpha fringe softens edges without a separate line draw for
++		# every facet. All fill/fringe triangles share the same canvas batch.
++		var center := Vector2.ZERO
++		for point: Vector2 in face.points: center += point/face.points.size()
++		for edge: int in range(face.points.size()):
++			var a: Vector2 = face.points[edge]
++			var b: Vector2 = face.points[(edge+1)%face.points.size()]
++			var direction: Vector2 = (b-a).normalized()
++			var outward := Vector2(direction.y,-direction.x)
++			if outward.dot((a+b)*0.5-center)<0: outward = -outward
++			offset = vertices.size()
++			vertices.append_array(PackedVector2Array([a,b,b+outward*0.014,a+outward*0.014]))
++			var clear: Color = face.color
++			clear.a = 0
++			colors.append_array(PackedColorArray([face.color,face.color,clear,clear]))
++			indices.append_array(PackedInt32Array([offset,offset+1,offset+2,offset,offset+2,offset+3]))
++	var arrays: Array = []
++	arrays.resize(Mesh.ARRAY_MAX)
++	arrays[Mesh.ARRAY_VERTEX] = vertices
++	arrays[Mesh.ARRAY_COLOR] = colors
++	arrays[Mesh.ARRAY_INDEX] = indices
++	_canvas_mesh = ArrayMesh.new()
++	_canvas_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	canvas_triangle_count = indices.size()/3
++
++func _project(point: Vector3) -> Vector2:
++	return Vector2(point.dot(_right),-point.dot(_up))
++
++func _face(points: PackedVector3Array, color: Color, center: Vector3) -> void:
++	var middle := Vector3.ZERO
++	for point: Vector3 in points: middle += point/points.size()
++	var normal: Vector3 = (points[1]-points[0]).cross(points[2]-points[0]).normalized()
++	if normal.dot(middle-center) < 0: normal = -normal
++	triangle_count += points.size()-2
++	if normal.dot(_view) <= 0: return
++	var polygon := PackedVector2Array()
++	for point: Vector3 in points: polygon.append(_project(point))
++	var light: float = 0.57+0.43*maxf(0.0,normal.dot(_light))
++	faces.append({"points":polygon,"color":Color(color.r*light,color.g*light,color.b*light,1.0),"depth":middle.dot(_view),"layer":_layer})
++
++func _prism(points: PackedVector3Array, colors: Array[Color]) -> void:
++	var center := Vector3.ZERO
++	for point: Vector3 in points: center += point/points.size()
++	for side: int in range(6):
++		var indices: Array = [[0,1,2,3],[4,7,6,5],[0,4,5,1],[1,5,6,2],[2,6,7,3],[3,7,4,0]][side]
++		var face := PackedVector3Array()
++		for index: int in indices: face.append(points[index])
++		_face(face,colors[mini(side,colors.size()-1)],center)
++
++func _box(center: Vector3, extent: Vector3, color: Color) -> void:
++	var points := PackedVector3Array()
++	for point: Vector3 in [Vector3(-1,-1,-1),Vector3(1,-1,-1),Vector3(1,-1,1),Vector3(-1,-1,1),Vector3(-1,1,-1),Vector3(1,1,-1),Vector3(1,1,1),Vector3(-1,1,1)]:
++		points.append(center+point*extent*0.5)
++	_prism(points,[color])
++
++func _cabin(front: float, rear: float, roof_front: float, roof_rear: float, width: float, low: float, high: float, roof: Color) -> void:
++	_layer = 1
++	_prism(PackedVector3Array([Vector3(-width,low,front),Vector3(width,low,front),Vector3(width,low,rear),Vector3(-width,low,rear),Vector3(-width*0.79,high,roof_front),Vector3(width*0.79,high,roof_front),Vector3(width*0.79,high,roof_rear),Vector3(-width*0.79,high,roof_rear)]),[RUBBER,roof,GLASS])
++	_layer = 0
++
++func _hull(sections: Array[Vector3], bottom: float, color: Color) -> void:
++	var rings: Array[PackedVector3Array] = []
++	var center := Vector3(0,(bottom+sections[0].z)*0.5,(sections[0].x+sections[-1].x)*0.5)
++	# Short longitudinal faces keep painter ordering correct where the cabin
++	# covers the deck. This is a fixed-angle illustration, not a general renderer.
++	var slices: Array[Vector3] = []
++	for index: int in range(sections.size()-1):
++		var count: int = maxi(1,ceili(absf(sections[index+1].x-sections[index].x)/0.4))
++		for step: int in range(count): slices.append(sections[index].lerp(sections[index+1],float(step)/count))
++	slices.append(sections[-1])
++	for section: Vector3 in slices:
++		var ring := PackedVector3Array()
++		var bevel: float = minf(0.07,(section.z-bottom)*0.25)
++		for xy: Vector2 in [Vector2(-section.y+0.09,bottom),Vector2(section.y-0.09,bottom),Vector2(section.y,bottom+bevel),Vector2(section.y,section.z-bevel),Vector2(section.y-0.09,section.z),Vector2(-section.y+0.09,section.z),Vector2(-section.y,section.z-bevel),Vector2(-section.y,bottom+bevel)]:
++			ring.append(Vector3(xy.x,xy.y,section.x))
++		rings.append(ring)
++	_face(rings[0],color,center)
++	_face(rings[-1],color,center)
++	for ring: int in range(rings.size()-1):
++		for side: int in range(8):
++			var next: int = (side+1)%8
++			_face(PackedVector3Array([rings[ring][side],rings[ring][next],rings[ring+1][next],rings[ring+1][side]]),color,center)
++
++func _wheels(x: float, z: float, radius: float, width: float, hub: Color) -> void:
++	for side: float in [-1.0,1.0]:
++		# Fixed camera: far wheels sit behind the body, near wheels cover it.
++		_layer = 2 if side < 0 else -1
++		for end: float in [-1.0,1.0]:
++			_cylinder(Vector3(side*x,radius,end*z),radius,width,RUBBER)
++			_cylinder(Vector3(side*(x+width*0.51),radius,end*z),radius*0.51,0.015,hub)
++	_layer = 0
++
++func _cylinder(center: Vector3, radius: float, width: float, color: Color, axle_x: bool = true) -> void:
++	var rings: Array[PackedVector3Array] = []
++	for end: float in [-0.5,0.5]:
++		var ring := PackedVector3Array()
++		for index: int in range(8):
++			var angle: float = TAU*(index+0.5)/8.0
++			ring.append(center+(Vector3(end*width,cos(angle)*radius,sin(angle)*radius) if axle_x else Vector3(sin(angle)*radius,cos(angle)*radius,end*width)))
++		rings.append(ring)
++	_face(rings[0],color,center)
++	_face(rings[1],color,center)
++	for side: int in range(8):
++		var next: int = (side+1)%8
++		_face(PackedVector3Array([rings[0][side],rings[0][next],rings[1][next],rings[1][side]]),color,center)
++
++func _draw() -> void:
++	if not presentation_ready: return
++	var zoom: float = minf(size.x/maxf(model_bounds.size.x,0.01),size.y/maxf(model_bounds.size.y,0.01))*0.9
++	draw_set_transform(size*0.5-model_bounds.get_center()*zoom,0,Vector2.ONE*zoom)
++	draw_mesh(_canvas_mesh,null)
+diff --git a/game/tests/test_rivalry_simple_car.gd b/game/tests/test_rivalry_simple_car.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_rivalry_simple_car.gd
+@@ -0,0 +1,81 @@
++extends SceneTree
++## Isolated geometry, native raster and lifecycle checks for the tiny podium cars.
++const Preview = preload("res://ui/rivalry_simple_car.gd")
++const IDS: Array[String] = ["compact","super_rally","electric","kart","forklift","hovercraft"]
++var checks: int = 0
++var failures: int = 0
++var evidence: String = OS.get_environment("BMT_SIMPLE_CARS_EVIDENCE")
++var measurements: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("FAIL: ",label)
++
++func run() -> void:
++	root.size = Vector2i(1200,610)
++	var backdrop := ColorRect.new()
++	backdrop.color = Color("172b3b")
++	backdrop.size = Vector2(1200,610)
++	root.add_child(backdrop)
++	var baseline_draws: int = 0
++	if DisplayServer.get_name()!="headless":
++		await process_frame
++		await RenderingServer.frame_post_draw
++		baseline_draws = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
++	var shapes: Array[String] = []
++	var views: Array[Control] = []
++	for index: int in range(IDS.size()):
++		var preview: Control = Preview.new()
++		preview.vehicle_id = IDS[index]
++		preview.position = Vector2(20+(index%3)*400,40+(index/3)*300)
++		preview.size = Vector2(360,230)
++		preview.livery = {"colors":{"body":"be4d32","accent":"d8c9a6","detail":"a0adb3"}}
++		var original: Dictionary = preview.livery.duplicate(true)
++		var began: int = Time.get_ticks_usec()
++		root.add_child(preview)
++		var built_us: int = Time.get_ticks_usec()-began
++		check(preview.presentation_ready,IDS[index]+" prepares synchronously")
++		check(preview.triangle_count > 24 and preview.triangle_count <= 600,IDS[index]+" bounded tiny model")
++		check(preview.canvas_triangle_count<1600,IDS[index]+" bounded canvas fill and antialias geometry")
++		check(preview.get_child_count()==0 and not preview.is_processing(),IDS[index]+" needs no 3D resources or frame processing")
++		check(preview.livery==original,IDS[index]+" preserves appearance data")
++		var signature: String = var_to_bytes(preview.faces).hex_encode().sha256_text()
++		check(signature not in shapes,IDS[index]+" has a distinct silhouette")
++		shapes.append(signature)
++		measurements.append({"vehicle":IDS[index],"triangles":preview.triangle_count,"canvas_triangles":preview.canvas_triangle_count,"visible_faces":preview.faces.size(),"build_us":built_us})
++		var label := Label.new()
++		label.text = IDS[index].to_upper()
++		label.position = preview.position+Vector2(120,225)
++		root.add_child(label)
++		views.append(preview)
++	for _frame: int in range(4): await process_frame
++	if DisplayServer.get_name()!="headless":
++		await RenderingServer.frame_post_draw
++		var draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)-baseline_draws
++		print("SIMPLE_CAR_DRAW_WORK ",JSON.stringify({"six_models_and_labels":draws}))
++		check(draws>0 and draws<=18,"six models and labels retain bounded canvas draw work")
++		var picture: Image = root.get_texture().get_image()
++		for preview: Control in views:
++			var colored: int = 0
++			var paint: int = 0
++			var crop: Image = picture.get_region(Rect2i(preview.get_global_rect()))
++			for y: int in range(crop.get_height()):
++				for x: int in range(crop.get_width()):
++					var pixel: Color = crop.get_pixel(x,y)
++					if pixel.r>pixel.b*1.4 and pixel.r>0.25: paint += 1
++					if absf(pixel.r-backdrop.color.r)+absf(pixel.g-backdrop.color.g)+absf(pixel.b-backdrop.color.b)>0.15: colored += 1
++			check(colored>1000 and paint>100,preview.vehicle_id+" renders a visible coloured model")
++		if not evidence.is_empty():
++			DirAccess.make_dir_recursive_absolute(evidence)
++			check(picture.save_png(evidence.path_join("models-"+RenderingServer.get_current_rendering_method()+".png"))==OK,"save six-model native gallery")
++	for preview: Control in views:
++		var original: String = var_to_bytes(preview.faces).hex_encode().sha256_text()
++		preview.size = Vector2(160,88)
++		check(preview.presentation_ready and original==var_to_bytes(preview.faces).hex_encode().sha256_text(),"resizing fits retained geometry")
++		preview.hide()
++		preview.free()
++	await process_frame
++	print("SIMPLE_CAR_METRICS ",JSON.stringify(measurements))
++	print("RIVALRY_SIMPLE_CARS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/scripts/qualify_rivalry_simple_cars.py b/scripts/qualify_rivalry_simple_cars.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/qualify_rivalry_simple_cars.py
+@@ -0,0 +1,134 @@
++"""Sequential offline checks in disposable projects with private user profiles."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / "build/rivalry-simple-cars-2026-11-12"
++OUT = ROOT / "docs/evidence/rivalry-simple-cars-2026-11-12"
++ENGINE = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
++
++
++def prepare(full=False):
++    project = WORK / ("project/game" if full else "minimal")
++    project.mkdir(parents=True, exist_ok=True)
++    if full:
++        if (WORK / "frozen-source.json").exists():
++            # Preserve the other authors' measured source/asset revision. Refresh
++            # only this task's own sources; never publish frozen assets to live.
++            owned = [*json.loads((WORK / "before.json").read_text()),
++                     "game/ui/rivalry_simple_car.gd", "game/tests/test_rivalry_simple_car.gd"]
++            for rel in owned:
++                target = project / Path(rel).relative_to("game")
++                target.parent.mkdir(parents=True, exist_ok=True)
++                shutil.copy2(ROOT / rel, target)
++            return project
++        paths = [p for p in (ROOT / "game").rglob("*") if p.is_file()
++                 and p.relative_to(ROOT / "game").parts[0] not in ("assets", ".godot", "android", "tmp", "build")]
++        for p in paths:
++            target = project / p.relative_to(ROOT / "game")
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copy2(p, target)
++        cache = project / ".godot"
++        cache.mkdir(exist_ok=True)
++        for name in ("global_script_class_cache.cfg", "extension_list.cfg", "uid_cache.bin"):
++            source = ROOT / "game/.godot" / name
++            if source.exists(): shutil.copy2(source, cache / name)
++        for link, target in [(project / "assets", ROOT / "game/assets"), (cache / "imported", ROOT / "game/.godot/imported")]:
++            if not link.exists():
++                subprocess.run(["powershell", "-NoProfile", "-Command",
++                                "New-Item -ItemType Junction -Path $env:BMT_TEST_LINK -Target $env:BMT_TEST_TARGET | Out-Null"],
++                               env=dict(os.environ, BMT_TEST_LINK=str(link), BMT_TEST_TARGET=str(target)), check=True)
++        shutil.copytree(ROOT / "backend/tests/fixtures", project.parent / "backend/tests/fixtures", dirs_exist_ok=True)
++    else:
++        (project / "project.godot").write_text('config_version=5\n[application]\nconfig/name="Rivalry simple car qualification"\n[display]\nwindow/size/viewport_width=1200\nwindow/size/viewport_height=610\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n', encoding="utf-8")
++        for rel in ("ui/rivalry_simple_car.gd", "tests/test_rivalry_simple_car.gd"):
++            target = project / rel
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copy2(ROOT / "game" / rel, target)
++    return project
++
++
++def digest(project):
++    files = {}
++    # Include linked runtime assets/imports as read-only inputs; do not follow
++    # links when disposing of these projects after qualification.
++    for folder in (project, project / "assets", project / ".godot/imported"):
++        if not folder.exists(): continue
++        for p in sorted(folder.rglob("*")):
++            relative = p.relative_to(project)
++            if not p.is_file() or (folder == project and relative.parts[0] in (".godot", "assets")): continue
++            files[str(relative).replace("\\", "/")] = hashlib.sha256(p.read_bytes()).hexdigest()
++    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(), files
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("name")
++    parser.add_argument("--full", action="store_true")
++    parser.add_argument("--renderer", default="gl_compatibility")
++    parser.add_argument("--script", default="res://tests/test_rivalry_simple_car.gd")
++    parser.add_argument("--profile")
++    parser.add_argument("--baseline", action="store_true")
++    parser.add_argument("--headless", action="store_true")
++    parser.add_argument("arguments", nargs="*")
++    args = parser.parse_args()
++    OUT.mkdir(parents=True, exist_ok=True)
++    project = prepare(args.full)
++    if args.baseline:
++        shutil.copy2(WORK / "before/game/ui/weekly_rivalry_page.gd", project / "ui/weekly_rivalry_page.gd")
++    profile = WORK / "profiles" / (args.profile or args.name)
++    for rel in ("roaming", "local"): (profile / rel).mkdir(parents=True, exist_ok=True)
++    captures = OUT / args.name
++    captures.mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"), LOCALAPPDATA=str(profile / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="", BMT_SIMPLE_CARS_EVIDENCE=str(OUT),
++               BMT_RIVALRY_CARS_EVIDENCE_DIR=str(captures), BMT_LOADING_OUTPUT=str(OUT / (args.name+"-timings.json")),
++               BMT_GRAPHICS_OUTPUT=str(captures), BMT_RIVALRY_POLISH_EVIDENCE_DIR=str(captures),
++               BMT_RIVALRY_READY_CAPTURE_DIR=str(captures), BMT_RIVALRY_READY_PROFILE_ROOT=str(profile))
++    wrapper = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", str(ENGINE)]
++    version = subprocess.check_output(wrapper+["--version"], text=True).strip()
++    assert version == (ROOT / "godot-version.txt").read_text().strip(), version
++    command = wrapper+["--path", str(project), "--audio-driver", "Dummy", "--position", "20000,20000",
++                       "--rendering-method", args.renderer, "--script", args.script]
++    if args.headless: command.append("--headless")
++    command += ["--", "--output="+str(OUT / args.name), *args.arguments]
++    before, before_files = digest(project)
++    started = time.monotonic()
++    log_path = OUT / (args.name+".log")
++    with log_path.open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++        while process.poll() is None:
++            time.sleep(0.3)
++            content = log_path.read_text(encoding="utf-8", errors="replace")
++            if "SCRIPT ERROR:" in content or time.monotonic()-started > 240:
++                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=log, stderr=subprocess.STDOUT)
++                break
++        code = process.wait()
++    after, after_files = digest(project)
++    changed = [rel for rel in sorted(before_files.keys() | after_files.keys()) if before_files.get(rel) != after_files.get(rel)]
++    content = log_path.read_text(encoding="utf-8", errors="replace")
++    diagnostics = [line for line in content.splitlines() if line.startswith(("SCRIPT ERROR:", "ERROR:", "WARNING:", "FAIL:"))]
++    invalid = [line for line in diagnostics if "Failed to read the root certificate store" not in line]
++    receipt = dict(command=command, engine=version, exit_code=code, seconds=round(time.monotonic()-started,3),
++                   before_sha256=before, after_sha256=after, unchanged_project=before==after,
++                   changed_files=changed, input_file_count=len(before_files),
++                   diagnostics=diagnostics, baseline=args.baseline, full_project=args.full,
++                   source_scope=("Private frozen source/assets/imports; only task-owned sources refreshed"
++                                 if args.full and (WORK / "frozen-source.json").exists() else
++                                 "Private source copy; read-only live asset/import junctions measured before/after"
++                                 if args.full else "Minimal isolated project; no game assets or imports"))
++    (OUT / (args.name+"-receipt.json")).write_text(json.dumps(receipt, indent=2)+"\n", encoding="utf-8")
++    print(json.dumps(receipt), flush=True)
++    print("\n".join(content.splitlines()[-5:]), flush=True)
++    return int(code != 0 or before != after or bool(invalid))
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/docs/RIVALRY_SIMPLE_CARS_2026_11_12.md b/docs/RIVALRY_SIMPLE_CARS_2026_11_12.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_SIMPLE_CARS_2026_11_12.md
+@@ -0,0 +1,45 @@
++# Simple Rivalry podium cars — 12 November 2026
++
++RSC01–RSC05: the owner requests very simple cars after the Rivalry entry investigation. The hub’s three podium previews now use small faceted vehicle shapes with player paint colours. This intentionally replaces detailed fitted parts, patterns/stickers, weathering and reflective racing materials in these thumbnails. Appearance validation, complete source payloads, self/remote scoping, scores, actions and layout remain.
++
++## Implementation
++
++`game/ui/rivalry_simple_car.gd` builds distinct Rally, Super Rally, Volt, Kart, Forklift and Hover silhouettes, projects their faces at a fixed viewing angle and batches the shaded colours and antialias fringes into one 2D canvas mesh per car. It creates no CarVisual, Node3D, camera, lights, reflection environment or SubViewport. Model generation is synchronous; resizing scales retained geometry. The existing menu canvas draws each car in one call, with no per-frame script processing or persistent global cache. The hub’s readiness check now waits for the actual projected models and usable layout dimensions.
++
++Shape geometry is 368–488 triangles; the final canvas fill plus edge smoothing is 856–1,148 triangles. In the isolated six-model gallery the final renderer records 12 draws including six labels, on both desktop renderers. The early per-facet prototype cost 2,234 draws in the same gallery and was replaced before completion. The draw-call regression gate rejects that approach. Final construction is typically about 1.4–1.9 ms per model; the first desktop Vulkan mesh allocation measured 10.3 ms in one run. This is not a tablet memory/FPS claim.
++
++Only the hub podium uses this view. The shared detailed preview, Garage, races, finale and Share views were not edited. Seventeen shared-source/configuration hash controls remain exact. The separate repeated race contact-outline issue from [the investigation](RIVALRY_RACE_LOADING_INVESTIGATION_2026_11_12.md) is not changed by this UI work.
++
++## Actual App entry comparison
++
++| Desktop renderer | Original first entry ms | Simple first entry ms | Original / simple repeat ms | Original / simple Rivalry feature load ms |
++| --- | ---: | ---: | ---: | ---: |
++| OpenGL Compatibility | 2925.4 | 660.9 | 77.8 / 72.6 | 1775.3 / 383.8 |
++| Vulkan Mobile (desktop) | 5580.7 | 618.6 | 95.9 / 55.1 | 2095.8 / 390.1 |
++
++Pinned official Godot 4.7.2 (`ed1daf0bf`), RTX 3090/i7-11700K, Windows, actual offline App, 1280×720, offscreen native windows, Dummy audio, music disabled and private user profiles. Garage background warming is suppressed, matching the earlier diagnostic. Each entry includes real page handling, readiness and drawn frames. Each table cell is a single run; renderer/OS caches and other owner processes are uncontrolled. The earlier 11-second native first-use draw stall is not reproduced by these already-warmed original controls. These timings support the local change but are not Android, network-entry, sustained-FPS or statistical performance results.
++
++[Final actual Rivalry page](evidence/rivalry-simple-cars-2026-11-12/final-entry-simple-gl/rivalry.png) · [Six simple vehicle models](evidence/rivalry-simple-cars-2026-11-12/models-gl_compatibility.png) · [Player-specific colours](evidence/rivalry-simple-cars-2026-11-12/final-custom-cars-gl/gl_compatibility/hub-1280x720.png)
++
++## Validation and retained findings
++
++| Final gate | Result |
++| --- | --- |
++| Isolated models, geometry/raster/draw budget | 50 checks / 0 failures each desktop renderer |
++| Custom appearance, malformed fallback, account scope, all six vehicles and three layouts | 204 / 0 each renderer |
++| Actual App entry/reentry | 6 / 0 each renderer |
++| First entering-page readiness, delayed reply, cancellation and failed service action | 67 / 0 OpenGL |
++| Hub layout, score refresh and backgrounds | 381 / 0 OpenGL |
++| Frozen production parsing | 551 scripts / 0 failures |
++
++The nine final gates total 968 runtime assertions plus the separate 551-script parse scan. All seven full-project final gates have the same before/after private input digest, with 30,103 inputs per run. The two minimal native gates use only the new widget/test and their project configuration. No final native run reports a script error, leaked resource or certificate-store diagnostic. Python helper compilation and task-only patch validation are recorded separately.
++
++Initial constant-expression parsing and a thin Kart bevel triangulation attempt failed and were corrected; their logs remain. The initial linked Vulkan measurements ran to completion but were rejected when vehicle assets changed underneath them. Per-file tracking identifies changed Forklift artwork, Challenger surfaces and Volt kit resources in one rejected run. Assets/imports were then detached into disposable private copies and other source revisions pinned, after which all table controls and final gates have stable inputs. `freeze.json` also records live/frozen differences during copying; this is not a claim of whole-live prepared-asset parity or a successful 551-resource asset preflight. The ongoing authors’ cache/geometry changes were preserved, and no frozen binary was published back to live.
++
++## Evidence, reproduction and retention
++
++[Evidence directory](evidence/rivalry-simple-cars-2026-11-12/) contains process commands, logs, before/after input digests, final metrics, rejected attempts, selected native pictures, source controls and a source-only patch. `game/tests/test_rivalry_simple_car.gd` can run in a minimal project containing only that test and the new widget; `python scripts/qualify_rivalry_simple_cars.py NAME --renderer gl_compatibility|mobile` prepares it. Add `--full --script res://tests/test_rivalry_custom_cars.gd` for the full hub checks. The full helper initially links runtime assets/imports and rejects any detected drift; an immutable private revision is required while other authors are baking assets. The recorded baseline command uses the task-start hub source; reconstruct it from the source-only patch when reproducing later. Do not run concurrent GPU probes.
++
++The temporary `.keep` pin was removed and the mandatory build cleaner applied. Automatic approval review rejected immediate recursive deletion of `build/rivalry-simple-cars-2026-11-12` with “blocked by policy”; no bypass was attempted. Its project copies, shader caches and test profiles remain disposable build output under the normal 24-hour active-work grace and seven-day/20 GiB retention rules, not permanent evidence. Selected comparisons and concise receipts remain in docs; redundant PNGs are listed by hash in `capture-disposition.json`. `cleanup.json` contains the exact disposition and cleaner receipt. The task-only checkpoint reverses and reapplies byte-exactly in a small disposable source fixture, with no main-index write.
++
++Reload is required to see the new hub previews. Owner visual acceptance and actual Android qualification remain. No device query/test, APK/export, live backend request, deployment, owner-save edit or owner-process change was performed.

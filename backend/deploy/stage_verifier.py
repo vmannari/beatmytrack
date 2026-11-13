@@ -36,7 +36,7 @@ SCRIPTS = {
     ),
     "input": ("drive_frame", "route_driver", "profiled_route_driver", "racing_trajectory", "trajectory_mpc", "conservative_trajectory_mpc", "trajectory_handbrake", "trajectory_planner"),
     "persistence": ("track_library", "document_encoding", "document_read_cache"),
-    "race": ("race_rules", "track_session", "spline_gate_corridor", "road_gate_coverage", "rewind_history", "lap_telemetry", "personal_ghost_run", "attempt_evidence", "input_record"),
+    "race": ("race_rules", "track_session", "checkpoint_layout_cache", "spline_gate_corridor", "road_gate_coverage", "rewind_history", "lap_telemetry", "personal_ghost_run", "attempt_evidence", "input_record"),
     "track": (
         "builtin_tracks",
         "bridge_elevation",

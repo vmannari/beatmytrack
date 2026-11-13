@@ -10,7 +10,6 @@ signal select_requested
 signal populate_requested
 signal rotation_requested
 signal rotation_chosen(angle: float)
-signal controls_requested
 signal snap_chosen(step: float)
 var category: String = "All"
 var biome: String = "pine"
@@ -163,9 +162,6 @@ func _tiles() -> void:
 func refresh() -> void:
 	if not is_instance_valid(tiles): return
 	_tiles()
-
-func open_properties() -> void:
-	controls_requested.emit()
 
 func _activate_asset(kind: String) -> void:
 	if not CreatorCatalog.available(kind,biome): return

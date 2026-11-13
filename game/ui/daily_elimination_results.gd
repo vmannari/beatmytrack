@@ -7,6 +7,7 @@ const Medal = preload("res://ui/daily_medal.gd")
 var rules: RefCounted
 var session: TrackSession
 var result_saved: bool = true
+var ticket_id: String = ""
 var client: Node
 var cloud: Node
 var day: int = -1
@@ -25,8 +26,10 @@ var _margin: MarginContainer
 var _retry: Button
 var _back: Button
 var _best_index: int = -1
+var _result_owner_scope: String
 
 func _ready() -> void:
+	_result_owner_scope = _owner_scope()
 	MenuStyle.fill(self)
 	theme = MenuStyle.theme()
 	var scenery := TextureRect.new()
@@ -89,6 +92,7 @@ func _ready() -> void:
 	_build_laps()
 	var board := preload("res://ui/daily_results_standings.gd").new()
 	board.name = "DailyResultsStandings"
+	board.ticket_id = ticket_id
 	board.client = client
 	board.cloud = cloud
 	board.day = day
@@ -280,6 +284,8 @@ func _open_standings() -> void:
 	if get_node_or_null("DailyStandings") != null: return
 	var dialog := preload("res://ui/daily_standings.gd").new()
 	dialog.flying_laps = true
+	if _owner_scope() == _result_owner_scope and _best_index >= 0:
+		dialog.best_seconds = session.lap_times[_best_index]
 	dialog.client = client
 	dialog.cloud = cloud
 	dialog.day = day
@@ -290,6 +296,10 @@ func _open_standings() -> void:
 	dialog.server_now = day*86400
 	add_child(dialog)
 	dialog.popup_centered()
+
+func _owner_scope() -> String:
+	if client == null: return ""
+	return str([client.base_url() if client.has_method("base_url") else "",client.player.get("id","") if client.signed_in() else ""])
 
 func _card_style(background: Color, border: Color, padding: int) -> StyleBoxFlat:
 	var style: StyleBoxFlat = MenuStyle.box(background,padding)

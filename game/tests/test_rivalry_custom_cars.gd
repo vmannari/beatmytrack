@@ -55,32 +55,18 @@ func run() -> void:
 		for index: int in range(3):
 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
 			check(car != null,"all three ranked players get their own native car")
-			check(car.car.simple_model,"podium uses the existing simpler 3D model")
-			check(car.podium_presentation,"podium applies its independent reflection studio")
-			var camera: Camera3D = car.viewport.find_children("*","Camera3D",true,false)[0]
-			check((car.car.global_basis*Vector3.FORWARD).dot(camera.global_position-car.car.global_position) > 0.0,"podium turns 180 degrees with its front toward the viewer")
-			check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"display-density podium targets retain their bounded resolution")
-			check(car.car.vehicle_id == "compact" and car.car.livery == appearance(index).livery,"podium uses that player's complete paint, livery and stickers")
-			check(car.car.customisation == appearance(index).customisation,"podium uses that player's four fitted part IDs")
+			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.triangle_count<=600,"podium uses the tiny faceted model")
+			check(car.get_child_count()==0,"podium creates no viewport or reflection studio")
+			check(car.presentation_ready,"projected podium model is ready in its first layout")
+			check(car.vehicle_id == "compact" and car.livery == appearance(index).livery,"podium retains each player's appearance payload and pigments")
+			check(car.customisation == appearance(index).customisation,"simplified podium preserves fitted-part metadata without building it")
 			check(car.condition.is_empty(),"remote podium never receives local dirt or washing")
 			check(Rect2(Vector2.ZERO,Vector2(dimensions)).encloses(car.get_global_rect()),"native cars remain within the smaller hub bounds")
 		if DisplayServer.get_name() != "headless":
 			await RenderingServer.frame_post_draw
 			for index: int in range(3):
 				var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
-				check(car.viewport.render_target_update_mode <= SubViewport.UPDATE_ONCE,"podium requests only bounded one-shot draws")
-			if dimensions.x == 1280:
-				var static_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
-				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-				for _frame: int in range(4): await process_frame
-				await RenderingServer.frame_post_draw
-				var live_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
-				check(live_draws > static_draws,"settled one-shot podiums omit the native car draw work")
-				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				for _frame: int in range(4): await process_frame
-				await RenderingServer.frame_post_draw
-				check(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME) == static_draws,"static render work returns after bounded refresh")
-				print("PODIUM_DRAW_WORK: static=%d live=%d" % [static_draws,live_draws])
+				check(not car.is_processing() and not car.is_physics_processing(),"static podium requires no ongoing frame callbacks")
 			check(root.get_texture().get_image().save_png(evidence.path_join("hub-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"native hub evidence saved")
 		page.free()
 		await process_frame
@@ -108,11 +94,11 @@ func run() -> void:
 	root.add_child(fallback)
 	for index: int in range(3):
 		var car: Control = fallback.find_child("RivalryPodiumCar_"+str(index+1),true,false)
-		check(car.livery.is_empty() and car.customisation.is_empty(),"missing, mismatched or malformed remote appearances safely retain stock models")
+		check(car.livery==VehicleLivery.defaults(model.vehicle_id) and car.customisation.is_empty(),"missing, mismatched or malformed remote appearances safely retain stock pigments")
 	fallback.free()
 	var awards: Control = preload("res://ui/rivalry_victory_car.gd").new()
 	root.add_child(awards)
-	check(not awards.car.simple_model,"awards retain their existing detailed car by default")
+	check(awards.car.simple_model,"awards retain their approved reduced car by default")
 	check(not awards.podium_presentation and is_zero_approx(awards.car.rotation.y),"awards retain their original lighting, orientation and compositing")
 	awards.free()
 	if DisplayServer.get_name() != "headless": await all_vehicle_views()
@@ -158,14 +144,17 @@ func all_vehicle_views() -> void:
 		await RenderingServer.frame_post_draw
 		for index: int in range(3):
 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
-			check(car.car.vehicle_id == id and car.car.livery == appearance(index,id).livery,id+" renders each player's actual chassis and livery")
-			check(car.car.simple_model,id+" podium uses its actual simpler geometry")
-			var picture: Image = car.viewport.get_texture().get_image()
+			check(car.vehicle_id == id and car.livery == appearance(index,id).livery,id+" retains each player's identity and paint")
+			check(car.triangle_count<=600 and car.get_child_count()==0,id+" podium uses the tiny projected geometry")
+			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
 			var occupied: int = 0
+			var pigment := Color(str(appearance(index,id).livery.colors.body))
+			var target := Vector3(pigment.r,pigment.g,pigment.b).normalized()
 			for y: int in range(picture.get_height()):
 				for x: int in range(picture.get_width()):
-					if picture.get_pixel(x,y).a > 0.5: occupied += 1
-			check(occupied > picture.get_width()*picture.get_height()*0.02,id+" native car appears in the bounded render")
+					var pixel: Color = picture.get_pixel(x,y)
+					if Vector3(pixel.r,pixel.g,pixel.b).normalized().dot(target)>0.9995 and pixel.v>0.1: occupied += 1
+			check(occupied > picture.get_width()*picture.get_height()*0.015,id+" visible body pixels retain that player's pigment")
 		check(root.get_texture().get_image().save_png(evidence.path_join("car-"+id+".png")) == OK,id+" native podium evidence saved")
 		page.free()
 		await process_frame

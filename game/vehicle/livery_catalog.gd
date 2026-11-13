@@ -26,13 +26,15 @@ static func texture(file: String) -> Texture2D:
 	return textures[file]
 
 static func has_roof(id: String) -> bool:
-	return id in ["compact", "pickup", "classic", "electric", "hovercraft"]
+	return VehicleCatalog.chassis_id(id) in ["compact", "pickup", "classic", "electric", "hovercraft"]
 
 static func sticker_label(id: String, panel: String) -> String:
 	return "Rear" if id == "forklift" and panel == "hood" else panel.capitalize()
 
 static func projection(id: String) -> Dictionary:
-	return {
+	var super_rally: bool = id == "super_rally"
+	id = VehicleCatalog.chassis_id(id)
+	var result: Dictionary = {
 		"hovercraft": {"bounds":Vector3(2.32,1.42,4.26), "hood":Vector4(-0.36,-1.78,0.72,0.60), "roof":Vector4(-0.17,-0.25,0.34,0.68), "levels":Vector2(0.75,1.03)},
 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
 		"compact": {"bounds":Vector3(1.76,1.52,4.18), "hood":Vector4(-0.69,-1.96,1.38,0.88), "roof":Vector4(-0.56,-0.32,1.12,1.38), "levels":Vector2(0.90,1.43)},
@@ -43,3 +45,9 @@ static func projection(id: String) -> Dictionary:
 		# The existing primary sticker slot maps onto rear X/-Y, between the lamps.
 		"forklift": {"bounds":Vector3(1.88,2.89,4.24), "hood":Vector4(-0.39,-1.24,0.78,0.44), "roof":Vector4(0,0,1,1), "levels":Vector2(1.54,10)}
 	}.get(id, {})
+	if super_rally:
+		result.bounds = Vector3(2.14,1.44,4.60)
+		result.hood = Vector4(-0.72,-2.08,1.44,1.12)
+		result.roof = Vector4(-0.48,-0.24,0.96,1.16)
+		result.levels = Vector2(0.92,1.34)
+	return result

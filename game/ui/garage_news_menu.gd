@@ -37,6 +37,7 @@ var _account_button: Button
 var _navigation_separator: VSeparator
 var _examples: Array = []
 var _masthead: Label
+var _masthead_header: HBoxContainer
 var _tagline: Label
 var _layout_size := Vector2.ZERO
 var _layout_queued: bool = false
@@ -102,6 +103,7 @@ func _build_paper() -> void:
 	column.add_theme_constant_override("separation",6)
 	content.add_child(column)
 	var header := HBoxContainer.new()
+	_masthead_header = header
 	header.add_theme_constant_override("separation",18)
 	column.add_child(header)
 	var mast := VBoxContainer.new()
@@ -228,7 +230,9 @@ func _apply_layout() -> void:
 	if _tab != "ranking": _render()
 
 func _layout_header() -> void:
-	_masthead.add_theme_font_size_override("font_size",44 if size.x < 1100 else 64 if size.x >= 1360 else 58)
+	var narrow: bool = size.x < 900
+	_masthead.add_theme_font_size_override("font_size",34 if narrow else 44 if size.x < 1100 else 64 if size.x >= 1360 else 58)
+	_masthead_header.add_theme_constant_override("separation",8 if narrow else 18)
 	for button: Button in _tabs.values(): button.add_theme_font_size_override("font_size",19)
 	_controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_controls.size_flags_vertical = Control.SIZE_SHRINK_CENTER

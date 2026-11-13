@@ -1,4 +1,5 @@
 extends SceneTree
+const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
 ## Review sheets of the shipping native photographs, rendered with native UI.
 var output: String = "res://../docs/evidence/compact-kits-expanded-2026-10-14/catalog-compatibility"
 func _initialize() -> void: _run.call_deferred()
@@ -25,7 +26,7 @@ func _run() -> void:
 		grid.add_theme_constant_override("v_separation",8)
 		column.add_child(grid)
 		for option: Array in VehicleCustomisation.OPTIONS[category]:
-			var card: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
+			var card: OfflineKitThumbnail = OfflineKitThumbnail.make(category,option,false,func() -> void: pass)
 			card.custom_minimum_size = Vector2(380,132)
 			grid.add_child(card)
 		for frame: int in range(6): await process_frame

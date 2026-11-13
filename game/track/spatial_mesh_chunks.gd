@@ -21,15 +21,13 @@ static func add_cooperative(parent: Node3D, source: MeshInstance3D, enabled: boo
 	var count: int = indices.size() if not indices.is_empty() else vertices.size()
 	var extent: Vector3 = source.mesh.get_aabb().size
 	# Include boundary-vertex duplication and node allowance conservatively.
-	var estimate: int = ceili((vertices.size()*96+count*4)*1.2)+MAX_CHUNKS*512
+	var estimate: int = ceili((vertices.size()*96+count*4)*1.2)+MAX_CHUNKS*512+int(source.mesh.get_meta("scenery_lod_bytes",0))*2
 	if adaptive and extra_budget >= 0 and estimate > extra_budget:
 		_attach(parent,source)
 		return [source]
 	if count/3 < MIN_TRIANGLES or maxf(extent.x,extent.z) <= TILE_SIZE*1.5:
 		_attach(parent,source)
 		return [source]
-	var size: float = TILE_SIZE
-	var groups: Dictionary = {}
 	var object_ends: PackedInt32Array = source.get_meta("spatial_object_ends",PackedInt32Array())
 	var object_centres: PackedVector3Array = source.get_meta("spatial_object_centres",PackedVector3Array())
 	if not object_ends.is_empty() and not _valid_object_ranges(object_ends,object_centres,count):
@@ -38,24 +36,22 @@ static func add_cooperative(parent: Node3D, source: MeshInstance3D, enabled: boo
 		# whole family when a detached staged source cannot be partitioned safely.
 		_attach(parent,source)
 		return [source]
-	while true:
-		groups.clear()
-		for start: int in range(0,count,3):
-			if start % 768 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
-			var a: int = indices[start] if not indices.is_empty() else start
-			var b: int = indices[start+1] if not indices.is_empty() else start+1
-			var c: int = indices[start+2] if not indices.is_empty() else start+2
-			var center: Vector3 = (vertices[a]+vertices[b]+vertices[c])/3.0
-			if not object_ends.is_empty():
-				var object: int = object_ends.bsearch(start+1)
-				assert(object<object_centres.size(),"Static prop assembly ranges must cover every triangle.")
-				center = object_centres[object]
-			var key := Vector2i(floori(center.x/size),floori(center.z/size))
-			if not groups.has(key): groups[key] = PackedInt32Array()
-			groups[key].append_array(PackedInt32Array([a,b,c]))
-		if groups.size() <= MAX_CHUNKS: break
-		size *= 2.0
-	if groups.size() <= 1:
+	# Numerical grouping/remapping does not need the scene tree or renderer.
+	# Running it on the existing worker removes repeated main-frame waits.
+	var lod_packets: Array = preload("res://track/scenery_mesh_lods.gd").packets(source.mesh) if source.mesh is ArrayMesh else []
+	var prepare: Callable = preload("res://track/spatial_mesh_preparation.gd").run.bind(arrays,indices,vertices,count,object_ends,object_centres,TILE_SIZE,MAX_CHUNKS,lod_packets)
+	var prepared: Array = []
+	if cooperate.is_valid() and parent.is_inside_tree():
+		var job = preload("res://editor/work_job.gd").start(prepare,parent.get_tree())
+		while not job.done:
+			var frame: int = Engine.get_process_frames()
+			if not await cooperate.call(): job.cancel(); return []
+			if frame == Engine.get_process_frames(): await parent.get_tree().process_frame
+		if not await cooperate.call(): return []
+		prepared = job.result if job.result is Array else []
+	else:
+		prepared = prepare.call(func() -> bool: return false)
+	if prepared.is_empty():
 		_attach(parent,source)
 		return [source]
 	var result: Array[MeshInstance3D] = []
@@ -67,31 +63,12 @@ static func add_cooperative(parent: Node3D, source: MeshInstance3D, enabled: boo
 	var normal_offset: int = RenderingServer.mesh_surface_get_format_offset(format,vertices.size(),Mesh.ARRAY_NORMAL) if preserve_normals else 0
 	var normal_stride: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,vertices.size()) if preserve_normals else 0
 	var source_name: String = str(source.name) if not source.name.is_empty() else "MeshInstance3D"
-	for key: Vector2i in groups:
+	for data: Dictionary in prepared:
 		if cooperate.is_valid() and not await cooperate.call(): return []
-		var chosen: PackedInt32Array = groups[key]
-		var map: Dictionary = {}
-		var used := PackedInt32Array()
-		for corner: int in range(chosen.size()):
-			if corner % 512 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
-			var original: int = chosen[corner]
-			if not map.has(original):
-				map[original] = used.size()
-				used.append(original)
-			chosen[corner] = map[original]
-		var part: Array = []
-		part.resize(Mesh.ARRAY_MAX)
-		for attribute: int in range(Mesh.ARRAY_INDEX):
-			if arrays[attribute] == null: continue
-			var data: Variant = arrays[attribute].slice(0,0)
-			var stride: int = 4 if attribute in [Mesh.ARRAY_TANGENT,Mesh.ARRAY_BONES,Mesh.ARRAY_WEIGHTS] else 1
-			data.resize(used.size()*stride)
-			for index: int in range(used.size()):
-				if index % 256 == 0 and cooperate.is_valid() and not await cooperate.call(): return []
-				for component: int in range(stride):
-					data[index*stride+component] = arrays[attribute][used[index]*stride+component]
-			part[attribute] = data
-		part[Mesh.ARRAY_INDEX] = chosen
+		var key: Vector2i = data.key
+		var size: float = data.size
+		var part: Array = data.arrays
+		var used: PackedInt32Array = data.used
 		var mesh := ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,part)
 		if preserve_normals:
@@ -112,6 +89,7 @@ static func add_cooperative(parent: Node3D, source: MeshInstance3D, enabled: boo
 			packet.vertex_data = packed
 			mesh.clear_surfaces()
 			mesh.set("_surfaces",[packet])
+		mesh = preload("res://track/scenery_mesh_lods.gd").attach(mesh,data.get("lods",{}))
 		var node := MeshInstance3D.new()
 		node.name = source_name if result.is_empty() else source_name+"_Tile_"+str(key.x)+"_"+str(key.y)
 		node.mesh = mesh
@@ -130,6 +108,9 @@ static func add_cooperative(parent: Node3D, source: MeshInstance3D, enabled: boo
 			source.add_child(node)
 		else: parent.add_child(node)
 		result.append(node)
+		# Release this CPU packet as its immutable renderer resource takes over.
+		# The completed WorkJob shares these dictionaries; it retains no copies.
+		data.clear()
 	if adaptive:
 		source.set_meta("spatial_mesh_family",true)
 		source.set_script(preload("res://track/static_mesh_draw_view.gd"))

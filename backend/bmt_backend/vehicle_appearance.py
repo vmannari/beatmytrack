@@ -6,6 +6,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CATALOG = json.loads(Path(__file__).with_name("vehicle_appearance_catalog.json").read_text(encoding="utf-8"))
+# Increment when validation semantics change without a catalogue change.
+CONTRACT_VERSION = 1
+
+
+def contract_key():
+    from hashlib import sha256
+
+    return sha256((f"appearance-v{CONTRACT_VERSION}:" + json.dumps(CATALOG, sort_keys=True)).encode()).hexdigest()
 
 
 class Cosmetic(BaseModel):
@@ -75,13 +83,13 @@ class Parts(Cosmetic):
 
 
 class Appearance(Cosmetic):
-    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"]
+    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally"]
     livery: Livery
     customisation: Parts
 
     @model_validator(mode="after")
     def fitted_parts(self):
-        catalog = CATALOG["parts"] if self.vehicle_id == "compact" else CATALOG["kart_parts"] if self.vehicle_id == "kart" else CATALOG["hovercraft_parts"] if self.vehicle_id == "hovercraft" else CATALOG["forklift_parts"] if self.vehicle_id == "forklift" else CATALOG["electric_parts"] if self.vehicle_id == "electric" else {}
+        catalog = CATALOG["parts"] if self.vehicle_id in ("compact", "super_rally") else CATALOG["kart_parts"] if self.vehicle_id == "kart" else CATALOG["hovercraft_parts"] if self.vehicle_id == "hovercraft" else CATALOG["forklift_parts"] if self.vehicle_id == "forklift" else CATALOG["electric_parts"] if self.vehicle_id == "electric" else {}
         for category, option in self.customisation.model_dump().items():
             if category != "version" and option not in catalog.get(category, ["stock"]):
                 raise ValueError("Part is not fitted to this vehicle")

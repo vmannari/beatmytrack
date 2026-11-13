@@ -32,6 +32,13 @@ func check(ok: bool, label: String) -> void:
 	if not ok:
 		failures += 1
 		print("FAIL: "+label)
+func untinted(car: CarVisual, paint: Dictionary) -> bool:
+	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+		if node.material_overlay != null: return false
+	for slot: String in VehicleLivery.SLOTS:
+		if car.paint_materials.has(slot) and not car.paint_materials[slot].albedo_color.is_equal_approx(Color(str(paint.colors[slot]))): return false
+	return true
+
 func settle() -> void:
 	while page._workbench_focus_pending or page._menu_motion != null or (page.showroom.camera_motion != null and page.showroom.camera_motion.is_running()): await process_frame
 	for frame: int in range(12): await process_frame
@@ -90,7 +97,7 @@ func run() -> void:
 			check(page.showroom.customisation[category] == option[0],"unowned preview visible "+category+"/"+str(option[0]))
 			check(page.kit_draft[category] == "stock" and page.records.settings == original,"preview leaves equipped/save exact "+category+str(index))
 			check(shop.purchases == 0 and page._purchase_dialog == null,"browse never purchases or opens confirmation")
-			check(page._part_indicator.visible and page._part_highlight.meshes.is_empty(),"selected native part marked without altering its finish "+category)
+			check(page._part_indicator.visible and untinted(page.showroom.car,page.draft),"selected native part marked without altering its finish "+category)
 		await settle()
 		check(page.showroom.car == car and page.showroom.showroom_viewport == viewport,"preview retains actual car and viewport "+category)
 		check(page._customisation_camera.focused_category == focus and not page.showroom.camera.transform.is_equal_approx(home_camera),"main Garage camera focuses on "+category)
@@ -110,9 +117,9 @@ func run() -> void:
 		check(page.showroom.customisation[category] == "stock" and page.records.settings == original,"original option previews without saving "+category)
 		var cancel_view: Transform3D = page.showroom.camera.transform
 		page._cancel_cosmetic_preview()
-		check(page.showroom.customisation == page.kit_draft and page._part_highlight.meshes.is_empty(),"cancel restores part and highlight "+category)
+		check(page.showroom.customisation == page.kit_draft and not page._part_indicator.visible and untinted(page.showroom.car,page.draft),"cancel restores part and highlight "+category)
 		check(page.showroom.camera.transform.is_equal_approx(cancel_view) and page._customisation_camera.focused_category==focus,"cancel keeps the editing view on the equipped part "+category)
-	check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache remains bounded")
+	check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
 	page._select_kit_category("hood")
 	page._preview_kit("hood","louvres")
 	page._equip_cosmetic_preview()
@@ -146,7 +153,7 @@ func run() -> void:
 	check(page._cosmetic_preview.is_empty() and page.showroom.customisation.hood == "louvres","account switch restores equipped appearance")
 	page._preview_kit("hood","dome")
 	page._show_section("care")
-	check(page.showroom.customisation.hood == "louvres" and page._part_highlight.meshes.is_empty(),"navigation discards preview and overlay")
+	check(page.showroom.customisation.hood == "louvres" and not page._part_indicator.visible and untinted(page.showroom.car,page.draft),"navigation discards preview and overlay")
 	page._show_section("customise")
 	await settle()
 	check(page._customisation_camera.focused_category=="body","opening Patterns focuses the main Garage body")

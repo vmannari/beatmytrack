@@ -2,10 +2,12 @@ extends Node
 ## Bounded first-party observations; never invoked by canonical simulation.
 ## Authentication scopes stay local and are never accepted as event identity.
 signal observations_due
+signal collection_reset
 const Storage = preload("res://backend/atomic_json.gd")
 const SCHEMA: String = "bmt-product-events-v1"
 const MAX_EVENTS: int = 1000
 const MAX_QUEUE_BYTES: int = 2097152
+const MAX_QUEUE_METADATA_BYTES: int = 16384
 const MAX_BATCH_EVENTS: int = 50
 const MAX_BATCH_BYTES: int = 65536
 const MAX_AGE_SECONDS: int = 86400
@@ -50,6 +52,8 @@ var _heartbeat_msec: int = Time.get_ticks_msec()
 var _uploading: bool = false
 var _next_upload_msec: int = 0
 var _retry_delay_msec: int = FLUSH_INTERVAL_MSEC
+var _batch_event_limit: int = MAX_BATCH_EVENTS
+var _consent_generation: int = 0
 var _deduplicated: Dictionary = {}
 var _timer: Timer
 var _uuid_pattern: RegEx = RegEx.create_from_string("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$")
@@ -65,6 +69,7 @@ var _build_pattern: RegEx = RegEx.create_from_string("^[A-Za-z0-9._:-]{1,80}$")
 var _scope_pattern: RegEx = RegEx.create_from_string("^[a-f0-9]{64}$")
 var _next_summary_msec: int = 0
 var _reported_counters: String = "0/0/0"
+var _losses: RefCounted = preload("res://backend/telemetry_loss_counters.gd").new()
 var _event_ids: Array[String] = uuid_pool(128)
 var _provisional_first_opens: Dictionary = {}
 var _collection_started_scope: String = ""
@@ -116,10 +121,12 @@ func _erase_saved_queue() -> void:
 func set_enabled(value: bool) -> void:
 	if enabled == value: return
 	enabled = value
+	_consent_generation += 1
 	if client != null:
 		if "analytics_opt_in" in client: client.analytics_opt_in = value
 		if client.has_method("cancel_telemetry"): client.cancel_telemetry()
 	if not value:
+		collection_reset.emit()
 		# Settings is a menu action. Join the already bounded disk task so it cannot
 		# recreate a removed outbox after withdrawal.
 		if _thread != null:
@@ -134,7 +141,10 @@ func set_enabled(value: bool) -> void:
 		_queue_budget_bytes = 0
 		_dirty = false
 		_erase_saved_queue()
-		if client != null and "network_health" in client: client.network_health._scopes.clear()
+		if client != null and "network_health" in client: client.network_health.clear()
+		_losses.clear(_loss_values())
+		_reported_counters = "0/0/0"
+		_next_summary_msec = 0
 	else: update_identity()
 
 func erase_account(origin: String, player_id: String) -> void:
@@ -148,8 +158,9 @@ func erase_account(origin: String, player_id: String) -> void:
 		else: kept.append(entry)
 	queue = kept
 	_first_open_scopes.erase(removed_scope)
+	_losses.sources.erase(removed_scope)
 	_recount_budget()
-	if client != null and "network_health" in client: client.network_health._scopes.erase(removed_scope)
+	if client != null and "network_health" in client: client.network_health.erase_scope(removed_scope)
 	_mark_dirty()
 	if enabled: _save_if_needed()
 	else:
@@ -168,7 +179,9 @@ func update_identity() -> void:
 		if _collection_started_scope == _scope:
 			_record_first_open()
 			return
+	_capture_losses()
 	_scope = next_scope
+	if _scoped_losses_supported(): _next_summary_msec = 0
 	_collection_started_scope = _scope if supported else ""
 	# No implicit guest/account merging and no transfer between signed-in players.
 	_session_id = uuid()
@@ -271,7 +284,7 @@ func _enqueue(name: String, safe: Dictionary, identifier: String = "") -> bool:
 	_queue_budget_bytes += _entry_budget(entry)
 	if _pending_since_msec < 0: _pending_since_msec = Time.get_ticks_msec()
 	if name not in PASSIVE_NAMES and _journey_pending_msec < 0: _journey_pending_msec = Time.get_ticks_msec()
-	while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-8192:
+	while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-MAX_QUEUE_METADATA_BYTES:
 		_persisted_ids.erase(str(queue[0].event.id))
 		_queue_budget_bytes -= _entry_budget(queue[0])
 		queue.pop_front()
@@ -313,7 +326,7 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 	elif name in ["challenge_opened","challenge_joined","challenge_created","share_clicked"]: allowed = ["challenge_id","reason"]
 	elif name in ["session_started","session_foregrounded"]: allowed = ["reason"]
 	elif name in ["session_backgrounded","session_heartbeat"]: allowed = ["foreground_ms"]
-	elif name == "collection_summary": allowed = ["dropped_events","rejected_events","persistence_failures"]
+	elif name == "collection_summary": allowed = ["dropped_events","rejected_events","persistence_failures","counter_id"]
 	elif name in ["offer_exposed","purchase_requested"]: allowed = ["product_id"]
 	var safe: Dictionary = {}
 	for key: String in properties:
@@ -325,7 +338,7 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 			elif key == "scene" and value in ["menu","race","editor"]: safe[key] = value
 			elif key == "track_version_id" and value is String and _uuid_pattern.search(value) != null: safe[key] = value
 			continue
-		if key in ["track_version_id","ticket_id","challenge_id"] and value is String and _uuid_pattern.search(value) != null: safe[key] = value
+		if key in ["track_version_id","ticket_id","challenge_id","counter_id"] and value is String and _uuid_pattern.search(value) != null: safe[key] = value
 		elif key == "car_id" and value in VehicleCatalog.IDS: safe[key] = value
 		elif key == "mode" and value in ["free","rivalry","challenge","creator"]: safe[key] = value
 		elif key == "biome" and value in ["pine","desert","night_city","winter","storm"]: safe[key] = value
@@ -454,12 +467,37 @@ func pump() -> void:
 	if batch.events.is_empty(): return
 	_upload.call_deferred(batch,_scope)
 
+func _loss_values() -> Array[int]:
+	return [dropped_events,rejected_events,persistence_failures]
+
+func _capture_losses() -> void:
+	if _losses.capture(_scope if enabled else "guest",_loss_values()): _mark_dirty()
+
+func _scoped_losses_supported() -> bool:
+	return client != null and client.has_method("loss_counters_supported") and client.loss_counters_supported()
+
 func _report_losses() -> void:
+	_capture_losses()
 	var now: int = Time.get_ticks_msec()
 	if now < _next_summary_msec: return
-	var counters: String = str(dropped_events)+"/"+str(rejected_events)+"/"+str(persistence_failures)
+	var properties: Dictionary = {"dropped_events":mini(1000000,dropped_events),"rejected_events":mini(1000000,rejected_events),"persistence_failures":mini(1000000,persistence_failures)}
+	if _scoped_losses_supported():
+		if not _losses.sources.has(_scope): return
+		var source: Dictionary = _losses.sources[_scope]
+		if str(source.counter_id).is_empty():
+			if _event_ids.is_empty(): return
+			source.counter_id = _event_ids.pop_back()
+			_mark_dirty()
+		properties = source.duplicate()
+	else:
+		# A server downgrade cannot relabel already-reported scoped losses as a
+		# second legacy global counter. Keep modern observations for negotiation.
+		for source: Dictionary in _losses.sources.values():
+			if not str(source.counter_id).is_empty(): return
+	var counters: String = JSON.stringify(properties)
 	if counters == _reported_counters: return
-	if observe("collection_summary",{"dropped_events":mini(1000000,dropped_events),"rejected_events":mini(1000000,rejected_events),"persistence_failures":mini(1000000,persistence_failures)}):
+	if properties.dropped_events == 0 and properties.rejected_events == 0 and properties.persistence_failures == 0: return
+	if observe("collection_summary",properties):
 		_reported_counters = counters
 		_next_summary_msec = now+IDLE_FLUSH_MSEC
 
@@ -497,6 +535,7 @@ func batch_payload() -> Dictionary:
 	var quality: String = ""
 	for entry: Dictionary in queue:
 		if str(entry.scope) != _scope or not _persisted_ids.has(str(entry.event.id)): continue
+		if entry.event.name == "collection_summary" and entry.event.properties.has("counter_id") and not _scoped_losses_supported(): continue
 		if entry.event.name in NETWORK_NAMES and not _network_supported(): continue
 		if entry.event.name == "race_statistics" and not _package_supported(entry.event.properties): continue
 		if entry.event.name == "shader_profile" and (not client.has_method("shader_profiles_supported") or not client.shader_profiles_supported()): continue
@@ -506,7 +545,7 @@ func batch_payload() -> Dictionary:
 			quality = str(entry.clock_quality)
 		if entry.build_id != build or entry.platform != platform or entry.clock_quality != quality: continue
 		var event_bytes: int = JSON.stringify(entry.event).to_utf8_buffer().size()+1
-		if events.size() >= MAX_BATCH_EVENTS or bytes+event_bytes > MAX_BATCH_BYTES: break
+		if events.size() >= _batch_event_limit or bytes+event_bytes > MAX_BATCH_BYTES: break
 		events.append(entry.event.duplicate(true))
 		bytes += event_bytes
 	var value: Dictionary = {"schema":SCHEMA,"purpose_policy":"bmt-product-telemetry-v1","build_id":build,"platform":platform,"clock_quality":quality,"batch_id":uuid(),"install_id":_install_id,"events":events}
@@ -521,10 +560,21 @@ func _package_supported(properties: Dictionary) -> bool:
 func _upload(batch: Dictionary, scope: String) -> void:
 	if _uploading or not _allowed or not _foreground or scope != _scope: return
 	_uploading = true
+	var consent_generation: int = _consent_generation
 	var response: Dictionary = await client.request_telemetry(batch)
 	_uploading = false
+	if consent_generation != _consent_generation or not enabled: return
 	_next_upload_msec = Time.get_ticks_msec()+_retry_delay_msec
 	if not response.get("ok",false):
+		if int(response.get("status",0)) == 413:
+			if batch.events.size() > 1:
+				_batch_event_limit = maxi(1,batch.events.size()/2)
+			else:
+				# A permanently oversized singleton cannot block valid siblings.
+				_remove_acknowledged(scope,{str(batch.events[0].id):true})
+				rejected_events += 1
+			_next_upload_msec = Time.get_ticks_msec()+FLUSH_INTERVAL_MSEC
+			return
 		_retry_delay_msec = mini(900000,_retry_delay_msec*2)
 		return
 	if response.get("data",{}).get("schema","") != "bmt-product-acks-v1": return
@@ -538,6 +588,9 @@ func _upload(batch: Dictionary, scope: String) -> void:
 			acknowledged[str(item.id)] = true
 			if item.status == "rejected": rejected_events += 1
 	if acknowledged.is_empty(): return
+	_remove_acknowledged(scope,acknowledged)
+
+func _remove_acknowledged(scope: String, acknowledged: Dictionary) -> void:
 	var kept: Array[Dictionary] = []
 	for entry: Dictionary in queue:
 		if str(entry.scope) == scope and acknowledged.has(str(entry.event.id)):
@@ -588,9 +641,10 @@ func _save_if_needed() -> void:
 	if _thread != null or not _loaded or not _dirty: return
 	if Time.get_ticks_msec() < _next_save_msec: return
 	if storage_path.is_empty(): return # Tests may explicitly exercise enqueue only.
+	_capture_losses()
 	_save_generation = _generation
 	# Event dictionaries are immutable after enqueue; copy only the outer list.
-	var value: Dictionary = {"schema":SCHEMA,"install_id":_install_id,"process_exit_cursor":_process_exit_cursor,"first_open_scopes":_first_open_scopes.duplicate(),"queue":queue.duplicate(),"dropped_events":dropped_events,"rejected_events":rejected_events,"persistence_failures":persistence_failures}
+	var value: Dictionary = {"schema":SCHEMA,"install_id":_install_id,"loss_sources":_losses.sources.duplicate(true),"process_exit_cursor":_process_exit_cursor,"first_open_scopes":_first_open_scopes.duplicate(),"queue":queue.duplicate(),"dropped_events":dropped_events,"rejected_events":rejected_events,"persistence_failures":persistence_failures}
 	_start_thread("write",_write_measured.bind(storage_path,value,256 if _event_ids.size() < 128 else 0))
 
 static func _write_measured(path: String, value: Dictionary, refill_count: int = 0) -> Dictionary:
@@ -611,6 +665,7 @@ func _finish_thread(completed: Variant = null) -> void:
 		for id: String in result.event_ids:
 			if _event_ids.size() < 512: _event_ids.append(id)
 	if _thread_kind == "read":
+		_capture_losses()
 		result = result.get("data",{}) if result is Dictionary else {}
 		_loaded = true
 		if result is Dictionary and result.get("schema","") == SCHEMA:
@@ -632,6 +687,7 @@ func _finish_thread(completed: Variant = null) -> void:
 			dropped_events += _saved_integer(result.get("dropped_events",0))
 			rejected_events += _saved_integer(result.get("rejected_events",0))
 			persistence_failures += _saved_integer(result.get("persistence_failures",0))
+			_losses.restore(result.get("loss_sources",{}),_loss_values())
 			var scopes: Dictionary = result.first_open_scopes if result.get("first_open_scopes") is Dictionary else {}
 			for scope: String in scopes:
 				if _scope_pattern.search(scope) != null and scopes[scope] == true: _first_open_scopes[scope] = true
@@ -647,7 +703,7 @@ func _finish_thread(completed: Variant = null) -> void:
 		_recount_budget()
 		_provisional_first_opens.clear()
 		_record_first_open()
-		while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-8192:
+		while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-MAX_QUEUE_METADATA_BYTES:
 			_persisted_ids.erase(str(queue[0].event.id))
 			_queue_budget_bytes -= _entry_budget(queue[0])
 			queue.pop_front()

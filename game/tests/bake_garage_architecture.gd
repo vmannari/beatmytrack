@@ -3,11 +3,14 @@ extends SceneTree
 const SOURCES: Array[String]=[
 	"ui/garage_environment.gd","ui/garage_details.gd","ui/garage_drain.gd",
 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
+	"ui/garage_workshop.gd","ui/garage_plant.gd",
+	"ui/garage_plant_leaf.gdshader","ui/garage_plant_ceramic.gdshader",
 	"ui/garage_timber.gdshader","ui/garage_audio_wood.gdshader","ui/garage_vinyl.gdshader",
 	"ui/garage_audio_lid.gdshader","ui/garage_display_backing.gdshader",
 	"ui/garage_display_stone.gdshader","ui/garage_surface_finish.gdshader",
 	"soundtrack/record_library.gd",
 	"tests/support/garage_mesh_lods.gd",
+	"tests/support/car_refinement_lods.gd","vehicle/car_mesh_lods.gd",
 ]
 func _initialize() -> void: run.call_deferred()
 func run() -> void:

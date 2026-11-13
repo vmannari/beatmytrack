@@ -106,7 +106,7 @@ static func _driver(car: CarVisual, trim: Material, metal: Material) -> void:
 	# Anatomically aligned hands reach the thick D-shaped steering rim.
 	var wheel := Node3D.new()
 	wheel.name = "SteeringAssembly"
-	wheel.position = Vector3(0,0.54,-0.31)
+	wheel.position = preload("res://vehicle/kart_steering.gd").CENTER
 	wheel.rotation.x = 1.15
 	p.add_child(wheel)
 	var rim: Array[Vector3] = []
@@ -119,7 +119,7 @@ static func _driver(car: CarVisual, trim: Material, metal: Material) -> void:
 	G.rounded(wheel,"WheelHub",Vector3.ZERO,Vector3(0.075,0.025,0.065),0.010,dark,s)
 	G.rounded(wheel,"DashDisplay",Vector3(0,0.021,-0.095),Vector3(0.10,0.025,0.048),0.009,metal,s)
 	G.rounded(wheel,"DashGlass",Vector3(0,0.035,-0.095),Vector3(0.075,0.004,0.031),0.001,visor,s)
-	G.tube(p,"SteeringColumn",[Vector3(0,0.32,-0.85),Vector3(0,0.54,-0.31)],0.017,metal,s,8)
+	G.tube(p,"SteeringColumn",[Vector3(0,0.32,-0.85),wheel.position],0.017,metal,s,8)
 	G.tube(p,"ColumnSupport",[Vector3(-0.20,0.17,-0.85),Vector3(0,0.32,-0.85),Vector3(0.20,0.17,-0.85)],0.014,metal,s,12)
 
 static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Material) -> void:
@@ -127,8 +127,10 @@ static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Mat
 	var s: bool = car.simple_model
 	var cast := CompactFinish.alloy(Color("535b5b"))
 	cast.roughness = 0.62
-	var bronze := CompactFinish.alloy(Color("77705c"))
-	bronze.roughness = 0.57
+	cast.metallic = 0.28
+	var bronze := CompactFinish.alloy(Color("716253"))
+	bronze.roughness = 0.68
+	bronze.metallic = 0.54
 	G.rounded(p,"EngineMount",Vector3(0.395,0.205,0.70),Vector3(0.30,0.055,0.38),0.020,metal,s)
 	G.rounded(p,"CastCrankcase",Vector3(0.395,0.30,0.75),Vector3(0.31,0.22,0.33),0.073,cast,s)
 	G.rounded(p,"CylinderBlock",Vector3(0.405,0.435,0.70),Vector3(0.21,0.20,0.23),0.033,cast,s)
@@ -166,7 +168,7 @@ static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Mat
 			var a: float = TAU*step/16
 			strap.append(Vector3(x,0.38+sin(a)*radius,1.02+cos(a)*radius))
 		G.tube(p,"ExhaustStrap",strap,0.005,metal,s,48)
-	G.tube(p,"RearBrakeLine",[Vector3(-0.26,0.19,-0.75),Vector3(-0.35,0.20,0.1),Vector3(-0.33,0.30,0.87)],0.006,trim,s,32)
+	G.tube(p,"RearBrakeLine",[Vector3(-0.26,0.19,-0.75),Vector3(-0.45,0.205,0.10),Vector3(-0.45,0.205,0.74),Vector3(-0.45,0.22,0.80),Vector3(-0.33,0.30,0.87)],0.006,trim,s,32)
 	# Turned live-axle disc and guarded chain run sit inboard of the rear tyres.
 	var brake := Node3D.new()
 	brake.position = Vector3(-0.34,0.22,0.88)
@@ -176,12 +178,22 @@ static func _engine(car: CarVisual, trim: Material, metal: Material, bright: Mat
 	G.rounded(p,"ChainGuard",Vector3(0.22,0.33,0.80),Vector3(0.026,0.055,0.46),0.012,trim,s)
 	G.tube(p,"ChainUpperRun",[Vector3(0.225,0.30,0.61),Vector3(0.225,0.295,0.96)],0.010,cast,s,10)
 	G.tube(p,"ChainLowerRun",[Vector3(0.225,0.19,0.61),Vector3(0.225,0.13,0.96)],0.010,cast,s,10)
+	# Rear-left frame bay: outside the cockpit and opposite the right engine.
+	var fuel := Node3D.new()
+	fuel.name = "FuelAssembly"
+	fuel.position = Vector3(-0.36,0,0.64)
+	p.add_child(fuel)
 	var tank := CompactFinish.rubber(Color("b8afa0"))
-	Panels.formed(p,"FuelTank",[Vector4(0.155,0.062,-0.28,0.110),Vector4(0.170,0.086,-0.28,0.150),Vector4(0.265,0.086,-0.28,0.150),Vector4(0.296,0.066,-0.265,0.120),Vector4(0.312,0.039,-0.26,0.080),Vector4(0.321,0.033,-0.26,0.048)],tank,s,true)
-	var cap: MeshInstance3D = G.lathe(p,"FuelCap",[Vector2(-0.009,0),Vector2(-0.009,0.028),Vector2(-0.005,0.036),Vector2(0.006,0.036),Vector2(0.011,0.028),Vector2(0.011,0)],trim,s)
-	cap.position = Vector3(0,0.332,-0.26)
+	Panels.formed(fuel,"FuelTank",[Vector4(0.215,0.044,0,0.075),Vector4(0.230,0.060,0,0.100),Vector4(0.315,0.060,0,0.100),Vector4(0.347,0.048,0.005,0.082),Vector4(0.363,0.032,0.012,0.052),Vector4(0.372,0.028,0.015,0.038)],tank,s,true)
+	var cap: MeshInstance3D = G.lathe(fuel,"FuelCap",[Vector2(-0.009,0),Vector2(-0.009,0.025),Vector2(-0.005,0.032),Vector2(0.006,0.032),Vector2(0.011,0.025),Vector2(0.011,0)],trim,s)
+	cap.position = Vector3(0,0.383,0.015)
 	cap.rotation.z = PI*0.5
-	G.tube(p,"FuelLine",[Vector3(0.05,0.29,-0.17),Vector3(0.30,0.22,0.12),Vector3(0.38,0.35,0.53)],0.005,trim,s,24)
+	for z: float in [-0.058,0.058]:
+		Detail.plate(fuel,"FuelCradle"+str(z),Vector3(0,0.204,z),Vector3(0.146,0.014,0.040),0.006,metal)
+		G.rounded(fuel,"FuelMountPad"+str(z),Vector3(0,0.213,z),Vector3(0.108,0.006,0.032),0.002,trim,s)
+		G.tube(fuel,"FuelRetainingStrap"+str(z),[Vector3(-0.063,0.215,z),Vector3(-0.065,0.303,z),Vector3(-0.049,0.348,z),Vector3(0.049,0.348,z),Vector3(0.065,0.303,z),Vector3(0.063,0.215,z)],0.004,trim,s,20)
+		Detail.fastener(fuel,"FuelMountBolt"+str(z),Vector3(-0.068,0.214,z),Vector3.UP,0.006,bright)
+	G.tube(p,"FuelLine",[Vector3(-0.305,0.245,0.615),Vector3(-0.24,0.205,0.68),Vector3(0.15,0.205,0.68),Vector3(0.38,0.35,0.53)],0.005,trim,s,32)
 
 static func _chamber_radius(profile: Array[Vector4], longitudinal: float) -> float:
 	for station: int in range(profile.size()-1):

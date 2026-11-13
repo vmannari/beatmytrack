@@ -101,7 +101,6 @@ var _compare_parts: Dictionary = {}
 var _compare_livery: Dictionary = {}
 var _compare_button: Button
 var _part_indicator: Control
-var _part_highlight := preload("res://ui/garage_part_highlight.gd").new()
 var _customisation_camera := preload("res://ui/garage_customisation_camera.gd").new()
 var _customise_tab: String = "livery"
 var _sticker_surface: String = "hood"
@@ -262,27 +261,6 @@ func _shop_changed() -> void:
 	if is_instance_valid(kit_cards) and section == "tuning":
 		_refresh_kit_preview()
 	if not _cosmetic_preview.is_empty() and str(_cosmetic_preview.scope) != str(economy.scope): _cancel_cosmetic_preview()
-
-func _shop_badge(tile: Control, id: String) -> void:
-	if economy == null: return
-	var badge: Label = tile.get_node_or_null("CoinPrice") as Label
-	if badge == null:
-		badge = MenuStyle.label("",13)
-		badge.name = "CoinPrice"
-		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		badge.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b1823"),3))
-		badge.position = Vector2(7,7)
-		tile.add_child(badge)
-	if tile is CompactKitThumbnail:
-		badge.remove_theme_stylebox_override("normal")
-		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		badge.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		badge.offset_left = 4
-		badge.offset_right = -4
-		badge.offset_top = -25
-		badge.offset_bottom = -5
-	badge.text = economy.caption(id)
-	badge.add_theme_color_override("font_color",MenuStyle.MUTED if economy.owns(id) else MenuStyle.ACCENT)
 
 func _require_owned(id: String, title: String, apply: Callable) -> bool:
 	if economy == null or economy.owns(id): return true
@@ -634,6 +612,7 @@ func _create_showroom() -> void:
 	if progressive_entry: showroom.studio_interactive.connect(_studio_prepared)
 	showroom.name = "GarageShowroom"
 	showroom.vehicle_id = vehicle_id
+	showroom.simple_model = true
 	showroom.garage_mode = true
 	showroom.interaction_inset_top = 68
 	showroom.interaction_inset_bottom = 0
@@ -782,6 +761,7 @@ func _build_carousel() -> void:
 		if cached_carousel: model.preview_service = _preview_service
 		model.name = "CarModel_" + id
 		model.vehicle_id = id
+		model.simple_model = true
 		model.livery = VehicleLivery.for_car(records.settings, id)
 		model.customisation = VehicleCustomisation.for_car(records.settings,id)
 		model.condition = VehicleCondition.read(records, id)
@@ -877,6 +857,7 @@ func _replace_showroom_car() -> void:
 	_livery_saved = draft.duplicate(true)
 	var wear: Dictionary = VehicleCondition.read(records,vehicle_id)
 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	showroom.simple_model = true
 	showroom.replace_car(vehicle_id,draft,wear,kit_draft)
 	_condition_saved = wear.duplicate(true)
 	_condition_presented = showroom.weathering.snapshot()
@@ -894,6 +875,7 @@ func open_car(index: int) -> void:
 func _refresh_thumbnails() -> void:
 	for id: String in thumbnails:
 		var model: CarShowroom = thumbnails[id]
+		model.apply_model_quality(true)
 		var paint: Dictionary = VehicleLivery.for_car(records.settings, id)
 		var condition: Dictionary = VehicleCondition.read(records, id)
 		if model.livery != paint: model.apply_livery(paint)
@@ -919,9 +901,11 @@ func refresh_selection() -> void:
 	_replace_showroom_car()
 	_show_section("cars")
 	_update_cards()
+	_refresh_thumbnails()
 
 func refresh_cosmetics() -> void:
 	if not is_instance_valid(showroom): return
+	showroom.apply_model_quality(true)
 	_refresh_thumbnails()
 	# Do not interrupt an uncommitted colour picker or sticker gesture.
 	if draft != _livery_saved: return
@@ -1260,7 +1244,7 @@ func _select_kit(category: String, option: String) -> void:
 	var title: String = option.capitalize()
 	for item: Array in VehicleCustomisation.options(category,vehicle_id):
 		if item[0] == option: title = str(item[1])
-	if not _require_owned("kit/"+vehicle_id+"/"+category+"/"+option,title,_select_kit.bind(category,option)): return
+	if not _require_owned("kit/"+VehicleCatalog.chassis_id(vehicle_id)+"/"+category+"/"+option,title,_select_kit.bind(category,option)): return
 	_save_kits(next)
 
 func _preview_kit(category: String, option: String) -> void:
@@ -1288,7 +1272,7 @@ func _refresh_kit_preview() -> void:
 	for index: int in range(kit_cards.get_child_count()):
 		var card: Button = kit_cards.get_child(index)
 		var option: Array = VehicleCustomisation.options(kit_category,vehicle_id)[index]
-		var item: String = "kit/"+vehicle_id+"/"+kit_category+"/"+str(option[0])
+		var item: String = "kit/"+VehicleCatalog.chassis_id(vehicle_id)+"/"+kit_category+"/"+str(option[0])
 		var equipped: bool = str(option[0])==str(kit_draft[kit_category])
 		var owned: bool = equipped or economy==null or economy.owns(item)
 		var cost: int = 0 if economy==null else economy.price(item)
@@ -1314,7 +1298,6 @@ func _set_part_compare(active: bool) -> void:
 		showroom.apply_livery(draft)
 	else: return
 	_condition_presented = showroom.weathering.snapshot()
-	_part_highlight.clear()
 	_part_indicator.hide()
 	GameText.bind(_compare_button,"Showing equipped")
 	showroom.invalidate_render()
@@ -1340,7 +1323,6 @@ func _cancel_cosmetic_preview(refresh: bool = true, restore_appearance: bool = t
 	if is_instance_valid(_part_indicator): _part_indicator.hide()
 	_preview_serial += 1
 	if is_instance_valid(_preview_hint): _preview_hint.hide()
-	_part_highlight.clear()
 	if not _cosmetic_preview.is_empty():
 		var kind: String = str(_cosmetic_preview.kind)
 		_cosmetic_preview.clear()
@@ -1363,7 +1345,7 @@ func _equip_cosmetic_preview() -> void:
 	var id: String
 	var title: String
 	if value.kind == "kit":
-		id = "kit/"+vehicle_id+"/"+str(value.category)+"/"+str(value.option)
+		id = "kit/"+VehicleCatalog.chassis_id(vehicle_id)+"/"+str(value.category)+"/"+str(value.option)
 		title = kit_shelf.selected_title
 	else:
 		id = "livery/"+str(_preset_value(int(value.index)).pattern)
@@ -1672,6 +1654,7 @@ func _toggle_wash() -> void:
 
 func _super_wash() -> void:
 	if section != "care" or not is_visible_in_tree() or _menu_motion != null: return
+	if is_instance_valid(showroom.super_wash_effect) and showroom.super_wash_effect.visible: return
 	# Free for now. A future rewarded-ad completion should enter here only
 	# after confirming the same Garage owner and selected car are still active.
 	_save_condition()
@@ -1679,13 +1662,8 @@ func _super_wash() -> void:
 	showroom.set_wash_mode(false)
 	wash_button.text = "Wash"
 	_update_wash_hint()
-	# Reset both deposit layers, aged grime and every wash voxel, including
-	# the underside and wheels, then recreate the clean weathering textures.
-	showroom.weathering.reset()
-	showroom.weathering.restore({})
 	showroom.play_super_wash()
 	showroom.invalidate_render()
-	_save_condition()
 	_update_wash_status()
 
 func _select_wash_tool(tool: String) -> void:
@@ -1704,6 +1682,7 @@ func _save_condition() -> void:
 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
 	# Prepared/outgoing garage pages must never overwrite newer race wear.
 	if current != _condition_saved:
+		if is_instance_valid(showroom.super_wash_effect): showroom.super_wash_effect.reset()
 		showroom.weathering.restore(current)
 		_condition_saved = current.duplicate(true)
 		_condition_presented = showroom.weathering.snapshot()
@@ -1736,6 +1715,7 @@ func _process(_delta: float) -> void:
 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()
 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
 	if current != _condition_saved:
+		if is_instance_valid(showroom.super_wash_effect): showroom.super_wash_effect.reset()
 		showroom.weathering.restore(current)
 		_condition_saved = current.duplicate(true)
 		_condition_presented = showroom.weathering.snapshot()

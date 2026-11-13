@@ -1,9 +1,10 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-const VERSION: String = "authored-props-17-sculpted-wreck-cliff"
+const VERSION: String = "authored-props-19-protected-tree-lods"
 const GUARDRAIL = preload("res://track/guardrail_visual.gd")
 const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
+const SCENERY_LODS = preload("res://track/scenery_mesh_lods.gd")
 const CACHE_LIMIT: int = 96
 static var meshes: Dictionary = {}
 static var pine_meshes: Dictionary = {}
@@ -67,6 +68,7 @@ static func publish_warm(packet: Dictionary) -> bool:
 	if warmed(kind,theme,float(packet.length),str(packet.color)): return true
 	var model: ArrayMesh = PropGeometry.finish(packet.tool,kind not in PropEgypt.KINDS and kind not in PropWinterCraft.KINDS and kind not in PropNight.KINDS)
 	if theme == "winter" and kind in WINTER_FINISH.KINDS: model = WINTER_FINISH.apply(model,kind,float(packet.length))
+	SCENERY_LODS.prepare_source(model,kind)
 	if kind == "tree": _admit(pine_meshes,TrackTheme.foliage(theme).to_html()+"/true",model,32)
 	else: _admit(meshes,_key(kind,theme,float(packet.length),str(packet.color)),model,CACHE_LIMIT)
 	return true
@@ -75,7 +77,7 @@ static func _touch(mesh: Mesh) -> void:
 	_clock += 1; _ages[mesh.get_instance_id()] = _clock
 
 static func _bytes(mesh: Mesh) -> int:
-	return preload("res://editor/cache_bytes.gd").mesh(mesh)+mesh.get_meta("prop_hidden_triangles",PackedInt32Array()).size()*4
+	return preload("res://editor/cache_bytes.gd").mesh(mesh)+mesh.get_meta("prop_hidden_triangles",PackedInt32Array()).size()*4+mesh.get_meta("tree_far_dropped",PackedInt32Array()).size()*4
 
 static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
 	assert(Thread.is_main_thread())
@@ -108,10 +110,11 @@ static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, 
 		# like deep triangular dents under the low Desert sun.
 		model = PropGeometry.finish(local,kind not in PropEgypt.KINDS and kind not in PropWinterCraft.KINDS and kind not in PropNight.KINDS)
 		if kit.theme_id == "winter" and kind in WINTER_FINISH.KINDS: model = WINTER_FINISH.apply(model,kind,length)
+		SCENERY_LODS.prepare_source(model,kind)
 		_admit(meshes,key,model,CACHE_LIMIT)
 	_touch(model)
 	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
-	if kind in PropWinterCraft.KINDS or kind in PropEgypt.KINDS or kind in PropNight.KINDS:
+	if kind in PropWinterCraft.KINDS or kind in PropEgypt.KINDS or kind in PropNight.KINDS or tool.get_meta("scenery_lods_enabled",false):
 		# Keep a building's overlapping trim in its original triangle order inside
 		# one spatial draw. These are triangle-corner ends, before hidden pruning.
 		var ends: PackedInt32Array = tool.get_meta("spatial_object_ends",PackedInt32Array())
@@ -241,13 +244,26 @@ static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, tu
 	if model == null:
 		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
 		_pine_model(local,kit,Vector3.ZERO,1,0,color)
-		model = PropGeometry.finish(local); _admit(pine_meshes,key,model,32)
+		model = PropGeometry.finish(local)
+		SCENERY_LODS.prepare_source(model,"tree")
+		_admit(pine_meshes,key,model,32)
 	_touch(model)
+	var offset: int=int(tool.get_meta("prop_triangle_count",0))
 	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+	var dropped: PackedInt32Array=tool.get_meta("tree_far_dropped",PackedInt32Array())
+	for triangle: int in model.get_meta("tree_far_dropped",PackedInt32Array()):dropped.append(offset+triangle)
+	tool.set_meta("tree_far_dropped",dropped)
+	if tool.get_meta("scenery_lods_enabled",false):
+		var ends: PackedInt32Array=tool.get_meta("spatial_object_ends",PackedInt32Array())
+		var centres: PackedVector3Array=tool.get_meta("spatial_object_centres",PackedVector3Array())
+		ends.append(int(tool.get_meta("prop_triangle_count"))*3);centres.append(center)
+		tool.set_meta("spatial_object_ends",ends);tool.set_meta("spatial_object_centres",centres)
 
 static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
 	var branches := SurfaceTool.new(); branches.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var far_dropped:=PackedInt32Array()
+	var needle_dropped:=PackedInt32Array()
 	for i: int in range(7):
 		var a: float = i*2.4
 		PropGeometry.tube(branches,Vector3(0,0.035,0),Vector3(cos(a)*0.24,0.008,sin(a)*0.24),0.055,0.014,Color("63523e"),6)
@@ -260,7 +276,10 @@ static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: fl
 			var reach: float = radius*(0.91+0.09*sin(branch*2.7+tier))
 			var points: Array[Vector3] = [Vector3(-0.15,height+0.47,0),Vector3(reach*0.63,height+0.12,-reach*0.36),Vector3(reach,height-0.10,-reach*0.13),Vector3(reach*0.83,height-0.02,reach*0.08),Vector3(reach*0.95,height-0.15,reach*0.24),Vector3(reach*0.45,height+0.04,reach*0.40)]
 			var ridge := Vector3(reach*0.38,height+0.37,0)
+			var first: int=branches.commit_to_arrays()[Mesh.ARRAY_VERTEX].size()/3
 			PropGeometry.tube(branches,Vector3(0,height+0.10,0),Vector3(reach*0.77,height-0.045,0).rotated(Vector3.UP,angle-turn),0.025,0.007,Color("746044"),6)
+			if tier>=3:
+				for triangle: int in range(first,branches.commit_to_arrays()[Mesh.ARRAY_VERTEX].size()/3):far_dropped.append(triangle)
 			for i: int in range(points.size()):
 				var j: int = (i+1)%points.size()
 				var shade: Color = color.lightened(0.23) if i<3 else color.darkened(0.12)
@@ -268,17 +287,24 @@ static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: fl
 				_leaf_face(tool,kit,center,scale,angle,[points[j],points[i],Vector3(0,height-0.02,0)],color.darkened(0.40))
 			# Split needle tips, rather than a single unbroken triangular blade.
 			for spray: int in range(3):
+				var first_spray: int=tool.commit_to_arrays()[Mesh.ARRAY_VERTEX].size()/3
 				var p := Vector3(reach*(0.47+spray*0.17),height+0.14-spray*0.075,reach*(-0.19+spray*0.16))
 				_leaf_face(tool,kit,center,scale,angle,[p+Vector3(-0.17,0.06,-0.05),p+Vector3(0.16,-0.06,-0.09),p+Vector3(0.13,-0.08,0.09),p+Vector3(-0.13,0.07,0.06)],color.lightened(0.17+(spray%2)*0.06))
+				if spray==0:
+					for triangle: int in range(first_spray,tool.commit_to_arrays()[Mesh.ARRAY_VERTEX].size()/3):needle_dropped.append(triangle)
 	# Small pointed leader rather than a round cap.
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.22,2.65),Vector2(0.0,3.3)],[color.lightened(0.20)],true)
+	var first_branch: int=tool.commit_to_arrays()[Mesh.ARRAY_VERTEX].size()/3
+	var removed: PackedInt32Array=needle_dropped
+	for triangle: int in far_dropped:removed.append(first_branch+triangle)
+	tool.set_meta("tree_far_dropped",removed)
 	PropGeometry.append_transformed(tool,branches,center,scale,turn)
 
-static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array, reverse: bool = false) -> void:
+static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array, reverse: bool = false, radial: int = 20) -> void:
 	for row: int in range(profile.size()-1):
-		for i: int in range(20):
-			var a: float=TAU*i/20+turn
-			var b: float=TAU*(i+1)/20+turn
+		for i: int in range(radial):
+			var a: float=TAU*i/radial+turn
+			var b: float=TAU*(i+1)/radial+turn
 			var lo: Vector2=profile[row]
 			var hi: Vector2=profile[row+1]
 			tool.set_color(colors[row])

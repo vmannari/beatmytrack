@@ -39,7 +39,7 @@ func _menu_presented() -> void:
 
 func _spec() -> Dictionary:
 	var id: String=VehicleCatalog.selected
-	return {"records":app.records,"profile":app.active_profile,"vehicle":id,"paint":VehicleLivery.for_car(app.records.settings,id),"parts":VehicleCustomisation.for_car(app.records.settings,id),"wear":VehicleCondition.read(app.records,id)}
+	return {"records":app.records,"profile":app.active_profile,"vehicle":id,"paint":VehicleLivery.for_car(app.records.settings,id),"parts":VehicleCustomisation.for_car(app.records.settings,id),"wear":VehicleCondition.read(app.records,id),"simple":true}
 
 func invalidate() -> void:
 	_next_audit=0
@@ -159,6 +159,7 @@ func _process(_delta: float) -> void:
 		studio=Studio.new()
 		studio.name="PreloadedGarageStudio"
 		studio.vehicle_id=_pin.vehicle
+		studio.simple_model=_pin.simple
 		studio.garage_mode=true
 		studio.framing_scale=0.84
 		studio.livery=_pin.paint.duplicate(true)

@@ -28,6 +28,7 @@ static func build(car: CarVisual) -> void:
 			_box(body,Vector3(0.25,0.009,0.018),Vector3(side*0.81,0.62,-0.41+ridge*0.079),0.004,steel,1,"StepGrip")
 		_arch(car,side,-config_axle(),0.43,paint,rubber)
 		_arch(car,side,config_axle(),0.30,paint,rubber)
+	_front_panel(car,paint)
 	_box(body,Vector3(1.49,0.13,2.68),Vector3(0,0.37,0.17),0.055,rubber,detail,"Chassis")
 	_box(body,Vector3(1.31,0.10,1.33),Vector3(0,0.81,-0.27),0.035,dark,detail,"OperatorFloor")
 	for index: int in range(10):
@@ -85,6 +86,43 @@ static func _side_skin(car: CarVisual, side: float, paint: Material) -> void:
 		_solid_strip(tool,corners,Vector3(-side*0.065,0,0),Vector3(side,0,0),index==0,index==steps-1)
 	_attach(car.body,tool.commit(),paint,"FormedSideSkinLeft" if side<0.0 else "FormedSideSkinRight")
 
+static func _front_panel(car: CarVisual, paint: Material) -> void:
+	# Formed front bulkhead joins the side noses, behind the mast and hoses.
+	# Raised outer corners follow the wheel openings; the centre meets the chassis.
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var steps: int = 48 if car.simple_model else 96
+	for index: int in range(steps):
+		var outer: Array[Vector3] = []
+		var inner: Array[Vector3] = []
+		var normals: Array[Vector3] = []
+		for coordinate: Vector2 in [Vector2(0,0),Vector2(1,0),Vector2(1,1),Vector2(0,1)]:
+			var u: float = lerpf(-1.0,1.0,(index+coordinate.x)/steps)
+			var across: float = absf(u)*0.82
+			var bend: float = smoothstep(0.54,0.79,across)
+			# The return overlaps inside each side skin, 2 mm ahead of its end
+			# cap. A constant-depth backing keeps the tight bends from folding.
+			var z: float = -0.95-0.322*bend
+			var back_z: float = z+0.06
+			var wheel_dz: float = back_z+config_axle()
+			var arch: float = 0.43+sqrt(maxf(0.0,0.495*0.495-wheel_dz*wheel_dz))
+			var lower: float = lerpf(0.39,arch,smoothstep(0.53,0.61,across))
+			var y: float = lerpf(lower,1.12,coordinate.y)
+			var x: float = u*(0.818-0.045*pow((y-0.75)/0.55,2.0))
+			outer.append(Vector3(x,y,z))
+			inner.append(Vector3(x,y,back_z))
+			var t: float = clampf((across-0.54)/0.25,0.0,1.0)
+			var slope: float = -0.322*6.0*t*(1.0-t)/0.25*signf(u)
+			normals.append(Vector3(slope,0,-1).normalized())
+		_smooth_quad(tool,outer,normals)
+		_face(tool,inner,Vector3.BACK)
+		_face(tool,[outer[0],inner[0],inner[1],outer[1]],Vector3.DOWN)
+		_face(tool,[outer[3],outer[2],inner[2],inner[3]],Vector3.UP)
+		if index == 0: _face(tool,[outer[0],outer[3],inner[3],inner[0]],Vector3.LEFT)
+		if index == steps-1: _face(tool,[outer[1],inner[1],inner[2],outer[2]],Vector3.RIGHT)
+	tool.index()
+	_attach(car.body,tool.commit(),paint,"FormedFrontPanel")
+
 static func _arch(car: CarVisual, side: float, z: float, tire: float, paint: Material, trim: Material) -> void:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -98,7 +136,19 @@ static func _arch(car: CarVisual, side: float, z: float, tire: float, paint: Mat
 			# The rolled rim sits outside the side skin instead of sharing its face.
 			corners.append(Vector3(side*lerpf(0.857,0.833,pair.y),tire+sin(pair.x)*radius,z+cos(pair.x)*radius))
 		_solid_strip(tool,corners,Vector3(-side*0.045,0,0),Vector3(side,0,0),index==0,index==steps-1)
-	_attach(car.body,tool.commit(),paint,"RolledWheelArch%s%s" % ["Left" if side<0.0 else "Right","Front" if z<0.0 else "Rear"])
+	var shell: ArrayMesh = tool.commit()
+	var arrays: Array = shell.surface_get_arrays(0)
+	var positions: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	for vertex: int in range(positions.size()):
+		var radial: Vector3 = Vector3(0,positions[vertex].y-tire,positions[vertex].z-z).normalized()
+		var amount: float = normals[vertex].dot(radial)
+		if absf(amount)>0.05:
+			normals[vertex] = (Vector3(normals[vertex].x,0,0)+radial*signf(amount)*sqrt(maxf(0,1-normals[vertex].x*normals[vertex].x))).normalized()
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var smooth := ArrayMesh.new()
+	smooth.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	_attach(car.body,smooth,paint,"RolledWheelArch%s%s" % ["Left" if side<0.0 else "Right","Front" if z<0.0 else "Rear"])
 	# Thin inner lip separates paint from tire without filling the opening.
 	var path: Array[Vector3] = []
 	for index: int in range(steps+1):

@@ -9,11 +9,11 @@ import ast
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / "build/biome-shader-profiles-20261106/godot-4.7.2-stable"
@@ -21,6 +21,12 @@ EVIDENCE = ROOT / "docs/evidence/biome-shader-profiles-2026-11-06"
 SCONS = ROOT / ".tools/scons-music/scripts/scons.py"
 MODULE_FILES = ("config.py", "SCsub", "register_types.h", "register_types.cpp",
                 "biome_shader_profiles.h", "biome_shader_profiles.cpp", "draw_calls.h")
+SWAPPY_LIBRARY_SHA256 = {
+    "arm64-v8a": "4e7a74ea57678b30f518537ef2e06bb144a7d15fe93774af18d4ed56c519e68d",
+    "armeabi-v7a": "d4c29b80da05b61095e332cdd734ecb71083b122a379a8f6d6b2ec5358d5426d",
+    "x86": "a75b413c2c84fa421808ddffc11a00decef76d76123c192f8784ba37fe9fc9b5",
+    "x86_64": "36256209a6628c63deeb52a2d0050538f74f70f20ffb173fa9cf3a462b2d706a",
+}
 
 
 def literal_return(path: Path, function: str):
@@ -35,7 +41,7 @@ def configured_sdk() -> Path:
         return Path(value)
     settings = Path(os.environ.get("APPDATA", str(Path.home() / "AppData/Roaming"))) / "Godot/editor_settings-4.7.tres"
     if settings.is_file():
-        match = re.search(r'^export/android/android_sdk_path\s*=\s*"([^"]+)"', settings.read_text(encoding="utf-8"), re.M)
+        match = re.search(r'^export/android/android_sdk_path\s*=\s*"([^"]+)"', settings.read_text(encoding="utf-8"), re.MULTILINE)
         if match:
             return Path(match[1].replace("\\\\", "\\"))
     return Path.home() / "AppData/Local/Android/Sdk"
@@ -69,7 +75,18 @@ def verify_engine(engine: Path, evidence: Path = EVIDENCE) -> str:
     return expected
 
 
+def native_build_inputs(engine: Path) -> dict:
+    # Preserve the qualified runtime/profile fingerprint; build configuration
+    # is an additional identity, including Python/SCsub inputs it omits.
+    names = [f"modules/biome_shader_profiles/{name}" for name in MODULE_FILES]
+    names += ["SConstruct", "methods.py", "platform_methods.py",
+              "platform/android/detect.py", "platform/android/SCsub"]
+    return {name: hashlib.sha256((engine / name).read_bytes()).hexdigest() for name in names}
+
+
 def preflight(engine: Path, sdk: Path, arch: str, target: str, jobs: int) -> dict:
+    # SCons changes directory to the engine tree before interpreting SDK paths.
+    engine, sdk = engine.resolve(), sdk.resolve()
     if not engine.resolve().is_relative_to((ROOT / "build").resolve()):
         raise ValueError("Engine output must stay in the repository's owned build directory")
     fingerprint = verify_engine(engine)
@@ -81,18 +98,33 @@ def preflight(engine: Path, sdk: Path, arch: str, target: str, jobs: int) -> dic
     compiler = ndk / "toolchains/llvm/prebuilt" / host / "bin" / ("clang++.exe" if os.name == "nt" else "clang++")
     missing = []
     properties = ndk / "source.properties"
-    if not properties.is_file() or not re.search(r"^Pkg.Revision\s*=\s*" + re.escape(ndk_version) + r"\s*$", properties.read_text(), re.M):
+    if not properties.is_file() or not re.search(r"^Pkg.Revision\s*=\s*" + re.escape(ndk_version) + r"\s*$", properties.read_text(), re.MULTILINE):
         missing.append(f"Pinned Android NDK {ndk_version} at {ndk}")
     if not compiler.is_file():
         missing.append(f"NDK compiler: {compiler}")
     if not SCONS.is_file():
         missing.append(f"SCons: {SCONS}")
+    # Pinned engine installer selects godot-swappy from-source-2025-01-31.
+    # All four archives are required by detect_swappy(), even for one ABI.
+    swappy = {}
+    for abi, expected in SWAPPY_LIBRARY_SHA256.items():
+        library = engine / "thirdparty/swappy-frame-pacing" / abi / "libswappy_static.a"
+        actual = hashlib.sha256(library.read_bytes()).hexdigest() if library.is_file() else ""
+        swappy[abi] = {"path": str(library), "sha256": actual, "sha256_expected": expected}
+        if actual != expected:
+            missing.append(f"Pinned Swappy from-source-2025-01-31 library: {library}")
     command = [sys.executable, str(SCONS), "-C", str(engine), "platform=android",
                f"target={target}", f"arch={arch}", f"ANDROID_HOME={sdk}", f"ndk_platform=android-{api}",
-               "generate_android_binaries=no", "opengl3=yes", "vulkan=yes", "debug_symbols=no",
+               "generate_android_binaries=no", "opengl3=yes", "vulkan=yes", "swappy=yes",
+               "profiler=none", "debug_symbols=no",
                "optimize=speed", "lto=none", f"-j{jobs}"]
     return {"ready": not missing, "missing": missing, "engine": str(engine), "sdk": str(sdk),
             "required_ndk": ndk_version, "minimum_api": api, "source_fingerprint": fingerprint,
+            "native_build_inputs": native_build_inputs(engine), "input_snapshot_phase": "before compilation",
+            "build_helper_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "environment_overrides": {"ANDROID_HOME": str(sdk), "ANDROID_SDK_ROOT": str(sdk),
+                                      "GIT_OPTIONAL_LOCKS": "0"},
+            "swappy": swappy, "external_profiler": "none",
             "command": command, "scope": "native engine library only; no Gradle/game export",
             "android_profile_qualified": False}
 
@@ -107,15 +139,30 @@ def main() -> int:
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
+    if args.receipt:
+        args.receipt = args.receipt.resolve()
+        owned_roots = [(ROOT / "build").resolve(), (ROOT / "docs/evidence").resolve()]
+        if (not any(args.receipt != root and args.receipt.is_relative_to(root) for root in owned_roots)
+                or args.receipt.exists()):
+            parser.error("Use a new receipt file under the repository's owned build/evidence directories")
     try:
         result = preflight(args.engine, args.sdk, args.arch, args.target, args.jobs)
         code = 0 if result["ready"] else 2
         if args.build and result["ready"]:
             started = time.monotonic()
             # Passing an already validated SDK avoids SCons' automatic NDK install.
-            completed = subprocess.run(result["command"], cwd=ROOT, check=False)
+            # Platform discovery calls detect.can_build() before command-line
+            # Variables are applied, so it also needs the SDK in the child env.
+            build_environment = os.environ.copy()
+            build_environment.update(result["environment_overrides"])
+            completed = subprocess.run(result["command"], cwd=ROOT, env=build_environment, check=False)
             code = completed.returncode
             result.update(exit_code=code, elapsed_seconds=time.monotonic() - started)
+            if native_build_inputs(Path(result["engine"])) != result["native_build_inputs"]:
+                raise ValueError("Native build inputs changed during compilation; build identity is not established")
+            for dependency in result["swappy"].values():
+                if hashlib.sha256(Path(dependency["path"]).read_bytes()).hexdigest() != dependency["sha256"]:
+                    raise ValueError("Swappy dependency changed during compilation")
             variant = "debug" if args.target == "template_debug" else "release"
             abi = "arm64-v8a" if args.arch == "arm64" else "x86_64"
             outputs = args.engine / "platform/android/java/lib/libs" / variant / abi
@@ -127,7 +174,8 @@ def main() -> int:
         result, code = {"ready": False, "error": str(error)}, 2
     if args.receipt:
         args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        with args.receipt.open("x", encoding="utf-8") as receipt:
+            receipt.write(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     return code
 

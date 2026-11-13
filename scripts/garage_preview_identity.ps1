@@ -2,7 +2,7 @@
 # The rest-template provenance currently includes every model builder, so none
 # of those scripts is classified as vehicle-local here.
 function Get-GaragePreviewVehicleIds {
-    return @('compact', 'pickup', 'classic', 'formula', 'kart', 'forklift', 'electric', 'hovercraft')
+    return @('compact', 'pickup', 'classic', 'formula', 'kart', 'forklift', 'electric', 'hovercraft', 'super_rally')
 }
 
 function Get-GaragePreviewVehicles([string]$Relative) {
@@ -19,10 +19,10 @@ function Get-GaragePreviewVehicles([string]$Relative) {
     # Only resources consumed by one named car are separated. Source files,
     # shader and unknown paths retain the shared fallback, including all model
     # builders used by the Garage rest-template provenance check.
-    if ($Relative -match '^game/assets/garage/(cars_v1|previews_v1)/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft)\.(scn|png)(\.import)?$') {
+    if ($Relative -match '^game/assets/garage/(cars_v1|previews_v1)/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft|super_rally)\.(scn|png)(\.import)?$') {
         return @($Matches[2])
     }
-    if ($Relative -match '^game/resources/cars/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft)\.tres$') {
+    if ($Relative -match '^game/resources/cars/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft|super_rally)\.tres$') {
         return @($Matches[1])
     }
     return $vehicles

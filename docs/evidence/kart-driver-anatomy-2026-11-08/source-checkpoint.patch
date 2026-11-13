@@ -1,0 +1,894 @@
+--- a/scripts/prepare_kart_driver.py
++++ b/scripts/prepare_kart_driver.py
+@@ -1,4 +1,4 @@
+-"""Pose tomkart's CC-BY driver offline; retain its original mesh/UV topology.
++"""Pose tomkart's CC-BY driver offline; reconstruct a continuous fitted garment.
+ 
+ Usage: python scripts/prepare_kart_driver.py path/to/source.zip --output folder
+ Textures are copied unchanged here; use the reviewed unbranded textures for shipping.
+@@ -10,6 +10,8 @@
+ from pathlib import Path
+ 
+ import numpy as np
++
++from kart_driver_geometry import normals as mesh_normals, subdivide, two_bone, union_cloth, front_seam
+ 
+ 
+ def rotation_between(a, b):
+@@ -71,20 +73,41 @@
+     scale = 0.42
+     # A proper 180-degree rotation faces the kart's -Z nose without mirroring.
+     forward = np.diag([-1., 1., -1.])
+-    lean = np.deg2rad(27)
++    lean = np.deg2rad(35)
+     torso_rotation = np.array([[1, 0, 0], [0, np.cos(lean), -np.sin(lean)], [0, np.sin(lean), np.cos(lean)]])
+     pelvis_source = np.array([0, .10, -.24]) * scale
+-    pelvis_target = np.array([0, .35, .095])
++    pelvis_target = np.array([0, .35, -.065])
+ 
+     def reclined(points):
+         return (points - pelvis_source) @ torso_rotation.T + pelvis_target
+ 
+     def torso(points):
++        points=points.copy()
++        height=points[:,1]/scale
++        width=np.interp(height,[-.3,.15,.45,.8,1.1,1.3,1.45,1.57],
++                        [.36,.40,.37,.42,.49,.47,.24,.14])*scale
++        depth=np.interp(height,[-.3,.15,.45,.8,1.1,1.3,1.45,1.57],
++                        [.27,.28,.24,.26,.29,.24,.19,.15])*scale
++        radial=points[:,[0,2]]-np.array([0,-.23])*scale
++        radius=np.linalg.norm(radial/np.c_[width,depth],axis=1)
++        # Round the source's broad flat chest/waist facets into the garment's
++        # elliptical sections. Interior cap vertices remain inside the volume.
++        influence=np.clip((radius-.45)/.30,0,1)*.72
++        radial*=((1-influence)+influence/np.maximum(radius,.1))[:,None]
++        points[:,[0,2]]=radial+np.array([0,-.23])*scale
+         neck = np.array([0, 1.50, -.23]) * scale
+         aligned = points - neck + reclined(neck[None, :])[0]
+         weight = np.clip((points[:, 1]/scale-1.32)/(1.57-1.32),0,1)
+         weight = weight*weight*(3-2*weight)
+-        return reclined(points)*(1-weight[:, None])+aligned*weight[:, None]
++        posed=reclined(points)*(1-weight[:, None])+aligned*weight[:, None]
++        # The source object's origin is at the waist, above its hip joints.
++        # Seat the pelvis by the actual hip reference, without lifting the
++        # chest/head or pulling the trouser junction down through the bucket.
++        source_hip=np.array([0,-.11,-.23])*scale
++        hip_correction=pelvis_target-np.array([0,.005,0])-reclined(source_hip[None,:])[0]
++        pelvic_weight=np.clip((points[:,1]/scale+.05)/.40,0,1)
++        pelvic_weight=1-pelvic_weight*pelvic_weight*(3-2*pelvic_weight)
++        return posed+pelvic_weight[:,None]*hip_correction
+ 
+     def segment(points, start, end, target_start, target_end):
+         start, end = np.array(start) * scale, np.array(end) * scale
+@@ -96,42 +119,66 @@
+         delta += np.outer(delta @ axis, axis) * (stretch - 1)
+         return delta @ rotation.T + target_start
+ 
++    # Fit the boot's load-bearing sole to the real PedalPlate back face. The
++    # source sole faces down; kart pedal normals face up/back by 0.30 radians.
++    foot_angle = np.pi/2-.30
++    foot_rotation = np.array([[1,0,0],[0,np.cos(foot_angle),-np.sin(foot_angle)],
++                              [0,np.sin(foot_angle),np.cos(foot_angle)]])
++    pedal_normal = np.array([0,np.sin(.30),np.cos(.30)])
++    sole_source = np.array([.30,-2.220,-.27])*scale
++    sole_target = np.array([.17,.28,-.94])+pedal_normal*(.023/2+.001)
++    ankle_source = np.array([.30,-2.02,-.17])*scale
++    ankle_target = (ankle_source-sole_source)@foot_rotation.T+sole_target
++    hip_target = np.array([.125,.345,-.065])
++    knee_target = two_bone(hip_target,ankle_target,.445,.440,np.array([.17,.9,-.4]))
++    wrist_target = np.array([.177,.565,-.215])
++    shoulder_target = torso(np.array([[.42,1.32,-.17]])*scale)[0]
++    elbow_target = two_bone(shoulder_target,wrist_target,.315,.300,np.array([.55,.35,.04]))
++
++    def mirror(point, side):
++        return np.array(point)*np.array([side,1,1])
++
+     def pose(points, index):
+-        if index in [0, 1, 2, 3, 4]:
+-            # Keep the head looking forward while the torso rests against the
+-            # seat. Reclining the helmet with the chest makes it look skyward.
+-            neck = np.array([0, 1.50, -.23]) * scale
+-            return points - neck + torso(neck[None, :])[0]
+-        if index in [11, 12, 13, 20]:
++        if index in [0,1,2,3,4]:
++            neck = np.array([0,1.50,-.23])*scale
++            return points-neck+torso(neck[None,:])[0]
++        if index in [11,12,13,20]:
+             return torso(points)
+-        # Sides below are in the kart coordinate system after the half-turn.
+-        side = -1 if index in [5, 6, 7, 14, 15, 16] else 1
+-        def blend(a, b, low, high):
+-            weight = np.clip((points[:, 1] / scale - low) / (high - low), 0, 1)
+-            weight = weight * weight * (3 - 2 * weight)
+-            return a * (1 - weight[:, None]) + b * weight[:, None]
+-
+-        if index in [5, 6, 7, 8, 9, 10]:
+-            shoulder = torso(np.array([[side * .42, 1.32, -.17]]) * scale)[0]
+-            upper = segment(points, [side * .42, 1.32, -.17], [side * .79, .55, -.17],
+-                            shoulder, [side * .26, .565, .02])
+-            forearm = segment(points, [side * .79, .55, -.17], [side * .96, .31, -.23],
+-                              [side * .26, .565, .02], [side * .195, .555, -.17])
+-            hand = segment(points, [side * .96, .31, -.23], [side * 1.02, -.23, -.23],
+-                           [side * .195, .555, -.17], [side * .15, .53, -.36])
+-            # All three separate source pieces use the same deformation at
+-            # overlapping seams, preserving their original shared boundaries.
+-            arm = blend(hand, forearm, .26, .36)
+-            arm = blend(arm, upper, .46, .64)
+-            return blend(arm, torso(points), 1.10, 1.33)
+-        hip, knee, ankle = [side * .12, .345, .095], [side * .145, .49, -.34], [side * .14, .245, -.72]
+-        if index in [14, 15, 16, 17, 18, 19]:
+-            thigh = segment(points, [side * .22, -.11, -.23], [side * .25, -1.07, -.20], hip, knee)
+-            shin = segment(points, [side * .25, -1.07, -.20], [side * .30, -2.02, -.17], knee, ankle)
+-            foot = points - np.array([side * .30, -2.02, -.17]) * scale + ankle
+-            leg = blend(foot, shin, -2.10, -1.93)
+-            leg = blend(leg, thigh, -1.18, -.94)
+-            return blend(leg, torso(points), -.26, -.05)
++        side = -1 if index in [5,6,7,14,15,16] else 1
++        def blend(a,b,low,high):
++            weight=np.clip((points[:,1]/scale-low)/(high-low),0,1)
++            weight=weight*weight*(3-2*weight)
++            return a*(1-weight[:,None])+b*weight[:,None]
++        if index in [5,6,7,8,9,10]:
++            # Tailored sleeve volume: the source forearm is almost as wide as
++            # its upper sleeve. Narrow the cuff gradually around the bone axis.
++            axis_start=np.array([side*.96,.31,-.23])*scale
++            axis_end=np.array([side*.73,.83,-.17])*scale
++            axis=(axis_end-axis_start)/np.linalg.norm(axis_end-axis_start)
++            offset=points-axis_start
++            radial=offset-np.outer(offset@axis,axis)
++            cuff_weight=np.clip((1.08-points[:,1]/scale)/.70,0,1)
++            points=points-radial*(.23*cuff_weight[:,None])
++            shoulder=mirror(shoulder_target,side)
++            elbow=mirror(elbow_target,side)
++            wrist=mirror(wrist_target,side)
++            upper=segment(points,[side*.42,1.32,-.17],[side*.73,.83,-.17],shoulder,elbow)
++            forearm=segment(points,[side*.73,.83,-.17],[side*.96,.31,-.23],elbow,wrist)
++            hand=segment(points,[side*.96,.31,-.23],[side*1.02,-.23,-.23],
++                         wrist,[side*.150,.515,-.348])
++            arm=blend(hand,forearm,.26,.40)
++            arm=blend(arm,upper,.69,.96)
++            return blend(arm,torso(points),1.15,1.36)
++        if index in [14,15,16,17,18,19]:
++            hip,knee,ankle=[mirror(v,side)for v in [hip_target,knee_target,ankle_target]]
++            thigh=segment(points,[side*.22,-.11,-.23],[side*.25,-1.07,-.20],hip,knee)
++            shin=segment(points,[side*.25,-1.07,-.20],[side*.30,-2.02,-.17],knee,ankle)
++            foot=(points-mirror(sole_source,side))@foot_rotation.T+mirror(sole_target,side)
++            if index in [14,17]:
++                return foot
++            leg=blend(foot,shin,-2.10,-1.88)
++            leg=blend(leg,thigh,-1.22,-.91)
++            return blend(leg,torso(points),-.29,.06)
+         raise ValueError(index)
+ 
+     result = {"asset": dict(source["asset"]), "scene": 0, "scenes": [{"nodes": [0]}],
+@@ -139,11 +186,11 @@
+               "materials": source["materials"], "images": source["images"], "textures": source["textures"],
+               "samplers": source.get("samplers", []), "buffers": [{"uri": "driver.bin"}], "bufferViews": [], "accessors": []}
+     result["asset"]["generator"] = "Beat my track offline seated adaptation of tomkart's CC-BY-4.0 model"
+-    result["asset"]["extras"]["modifications"] = "Seated kart pose; lettering and brand marks removed from textures."
++    result["asset"]["extras"]["modifications"] = "Control-fitted seated pose; continuous remeshed garment; lettering and brand marks removed."
+     payload = bytearray()
+ 
+     def write(values, kind, component=5126):
+-        values = np.asarray(values, dtype={5126: "<f4", 5123: "<u2"}[component])
++        values = np.asarray(values, dtype={5126: "<f4", 5123: "<u2",5125:"<u4"}[component])
+         while len(payload) % 4:
+             payload.append(0)
+         offset = len(payload)
+@@ -156,35 +203,88 @@
+         result["accessors"].append(accessor)
+         return len(result["accessors"]) - 1
+ 
+-    hip, knee, ankle = np.array([.12, .345, .095]), np.array([.145, .49, -.34]), np.array([.14, .245, -.72])
+-    flexion = np.rad2deg(np.arccos(np.clip(np.dot(knee-hip, ankle-knee) /
+-                                         (np.linalg.norm(knee-hip)*np.linalg.norm(ankle-knee)), -1, 1)))
+-    report = {"source_sha256": hashlib.sha256(args.archive.read_bytes()).hexdigest(),
+-              "scale": scale, "scale_before": .34, "linear_size_increase_percent": (scale/.34-1)*100,
+-              "torso_recline_degrees": float(np.rad2deg(lean)), "knee_flexion_degrees": float(flexion),
+-              "hip": hip.tolist(), "knee": knee.tolist(), "ankle": ankle.tolist(), "parts": []}
+-    for index, mesh in enumerate(source["meshes"]):
+-        primitive = mesh["primitives"][0]
+-        vertices = read(primitive["attributes"]["POSITION"])
+-        transformed = (world[index] @ np.c_[vertices, np.ones(len(vertices))].T).T[:, :3]
+-        standing = transformed @ forward.T * scale
+-        positions = pose(standing, index)
+-        # Inverse-transpose Jacobians preserve source normals through the
+-        # blended joints as well as the rigid portions of each limb.
+-        epsilon = 1e-5
+-        jacobian = np.stack([(pose(standing + np.eye(3)[axis] * epsilon, index) -
+-                              pose(standing - np.eye(3)[axis] * epsilon, index)) / (2 * epsilon)
+-                             for axis in range(3)], axis=2)
+-        linear = jacobian @ forward @ world[index][:3, :3]
+-        normals = np.einsum('ni,nij->nj', read(primitive["attributes"]["NORMAL"]), np.linalg.inv(linear))
+-        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+-        indices = read(primitive["indices"]).reshape(-1)
+-        result["meshes"][0]["primitives"].append({"attributes": {
+-            "POSITION": write(positions, "VEC3"), "NORMAL": write(normals, "VEC3"),
+-            "TEXCOORD_0": write(read(primitive["attributes"]["TEXCOORD_0"]), "VEC2")},
+-            "indices": write(indices, "SCALAR", 5123), "material": primitive["material"]})
+-        report["parts"].append({"source_mesh": index, "triangles": len(indices)//3,
+-                                "min": positions.min(0).tolist(), "max": positions.max(0).tolist()})
++    hip,knee,ankle=hip_target,knee_target,ankle_target
++    report={"source_sha256":hashlib.sha256(args.archive.read_bytes()).hexdigest(),
++            "pelvis_corrective_translation":(pelvis_target-np.array([0,.005,0])-reclined((np.array([0,-.11,-.23])*scale)[None,:])[0]).tolist(),
++            "scale":scale,"torso_recline_degrees":float(np.rad2deg(lean)),
++            "foot_rotation_degrees":float(np.rad2deg(foot_angle)),
++            "hip":hip.tolist(),"knee":knee.tolist(),"ankle":ankle.tolist(),
++            "knee_flexion_degrees":float(np.rad2deg(np.arccos(np.clip(np.dot(knee-hip,ankle-knee)/
++                (np.linalg.norm(knee-hip)*np.linalg.norm(ankle-knee)),-1,1)))),
++            "thigh_length":float(np.linalg.norm(knee-hip)),"shin_length":float(np.linalg.norm(ankle-knee)),
++            "shoulder":shoulder_target.tolist(),"elbow":elbow_target.tolist(),
++            "wrist":wrist_target.tolist(),"sole_contact":sole_target.tolist(),"parts":[]}
++    cloth_parts=[]
++    def emit(positions,normals,uv,indices,material,label,colors=None):
++        result["meshes"][0]["primitives"].append({"attributes":{
++            "POSITION":write(positions,"VEC3"),"NORMAL":write(normals,"VEC3"),
++            "TEXCOORD_0":write(uv,"VEC2")},
++            "indices":write(indices.reshape(-1),"SCALAR",5125),"material":material})
++        if colors is not None:
++            result["meshes"][0]["primitives"][-1]["attributes"]["COLOR_0"]=write(colors,"VEC3")
++        report["parts"].append({"source_mesh":label,"triangles":len(indices.reshape(-1))//3,
++                              "min":positions.min(0).tolist(),"max":positions.max(0).tolist()})
++    for index,mesh in enumerate(source["meshes"]):
++        if index==12:
++            continue
++        primitive=mesh["primitives"][0]
++        vertices=read(primitive["attributes"]["POSITION"])
++        transformed=(world[index]@np.c_[vertices,np.ones(len(vertices))].T).T[:,:3]
++        standing=transformed@forward.T*scale
++        faces=read(primitive["indices"]).reshape(-1,3)
++        if index in [6,7,9,10,11,13,15,16,18,19,20]:
++            standing,mapping=np.unique(standing.round(5),axis=0,return_inverse=True)
++            faces=mapping[faces]
++            edges=np.sort(np.concatenate([faces[:,[0,1]],faces[:,[1,2]],faces[:,[2,0]]]),axis=1)
++            _,counts=np.unique(edges,axis=0,return_counts=True)
++            print("Source garment",index,"boundary edges",int(np.sum(counts==1)),flush=True)
++            standing,faces=subdivide(standing,faces,2)
++            cloth_parts.append((pose(standing,index),faces))
++            cloth_material=primitive["material"]
++            continue
++        if index in [14,17]:
++            # Flatten only the original tread contact vertices, removing its
++            # tiny left/right tilt before aligning with the pedal plane.
++            sole=standing[:,1]<standing[:,1].min()+.055*scale
++            standing[sole,1]=sole_source[1]
++        positions=pose(standing,index)
++        epsilon=1e-5
++        jacobian=np.stack([(pose(standing+np.eye(3)[axis]*epsilon,index)-
++                            pose(standing-np.eye(3)[axis]*epsilon,index))/(2*epsilon)
++                            for axis in range(3)],axis=2)
++        linear=jacobian@forward@world[index][:3,:3]
++        normals=np.einsum('ni,nij->nj',read(primitive["attributes"]["NORMAL"]),np.linalg.inv(linear))
++        normals/=np.linalg.norm(normals,axis=1,keepdims=True)
++        emit(positions,normals,read(primitive["attributes"]["TEXCOORD_0"]),faces,primitive["material"],index)
++    positions,faces=union_cloth(cloth_parts)
++    def rgb(value):
++        return np.array([int(value[n:n+2],16)/255 for n in [0,2,4]])
++    colors=np.tile(rgb("465861"),(len(positions),1))
++    local=((positions-pelvis_target)@torso_rotation+pelvis_source)/scale
++    # Native panels follow the garment, rather than world-height thresholds.
++    def smooth(value,low,high):
++        t=np.clip((value-low)/(high-low),0,1)
++        return t*t*(3-2*t)
++    yoke=smooth(local[:,1],1.10,1.14)*(1-smooth(local[:,1],1.26,1.30))
++    yoke*=1-smooth(np.abs(local[:,0]),.40,.49)
++    yoke*=1-smooth(local[:,2],-.33,-.28)
++    colors=colors*(1-yoke[:,None])+rgb("73868b")*yoke[:,None]
++    collar=(local[:,1]>1.39)&(np.abs(local[:,0])<.29)
++    colors[collar]=rgb("26343a")
++    waist=(local[:,1]>.27)&(local[:,1]<.39)&(np.abs(local[:,0])<.43)&(positions[:,2]>-.20)
++    colors[waist]=rgb("2b3d46")
++    side_panel=(np.abs(local[:,0])>.34)&(local[:,1]>.40)&(local[:,1]<1.1)&(positions[:,2]>-.16)
++    colors[side_panel]=rgb("354852")
++    for side in [-1,1]:
++        cuff=np.linalg.norm(positions-mirror(wrist_target,side),axis=1)<.045
++        colors[cuff]=rgb("26343a")
++        knee_distance=np.linalg.norm((positions-mirror(knee_target,side))*[1,1.0,1.0],axis=1)
++        knee_panel=(knee_distance<.10)&(positions[:,1]>knee_target[1]+.015)
++        colors[knee_panel]=rgb("354852")
++    emit(positions,mesh_normals(positions,faces),positions[:,[0,1]],faces,cloth_material,"continuous_suit",colors)
++    seam_vertices,seam_faces=front_seam(positions,faces,[(0,y)for y in np.linspace(.445,.805,35)])
++    emit(seam_vertices,mesh_normals(seam_vertices,seam_faces),seam_vertices[:,[0,1]],seam_faces,
++         cloth_material,"zipper",np.tile(rgb("8a9697"),(len(seam_vertices),1)))
+     result["buffers"][0]["byteLength"] = len(payload)
+     (output / "driver.bin").write_bytes(payload)
+     (output / "driver.gltf").write_text(json.dumps(result, separators=(",", ":")) + "\n", encoding="utf-8")
+--- /dev/null
++++ b/scripts/kart_driver_geometry.py
+@@ -0,0 +1,152 @@
++"""Offline mesh operations for the static driver; numpy only, no runtime code."""
++import numpy as np
++
++
++def subdivide(vertices, faces, levels=1):
++    """Split long source triangles before bending, without shrinking their shape."""
++    for _ in range(levels):
++        edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
++        unique, inverse = np.unique(edges, axis=0, return_inverse=True)
++        mid = inverse.reshape(3, -1).T + len(vertices)
++        a, b, c = faces.T
++        ab, bc, ca = mid.T
++        faces = np.concatenate([np.c_[a, ab, ca], np.c_[ab, b, bc], np.c_[ca, bc, c], np.c_[ab, bc, ca]])
++        vertices = np.concatenate([vertices, vertices[unique].mean(axis=1)])
++    return vertices, faces
++
++
++def normals(vertices, faces):
++    face = np.cross(vertices[faces[:, 1]]-vertices[faces[:, 0]], vertices[faces[:, 2]]-vertices[faces[:, 0]])
++    result = np.zeros_like(vertices)
++    for axis in range(3):
++        np.add.at(result, faces[:, axis], face)
++    result /= np.maximum(np.linalg.norm(result, axis=1, keepdims=True), 1e-12)
++    return result
++
++
++def union_cloth(parts, step=.006):
++    """Union closed garment sections, then reconstruct one continuous surface.
++
++    The original has capped, overlapping sleeve/torso/trouser pieces. Smoothing
++    those pieces independently opens cracks. Rasterized winding followed by a
++    compact separable filter joins the actual occupied volumes instead.
++    """
++    all_points = np.concatenate([v for v, _ in parts])
++    origin = np.floor((all_points.min(0)-step*4)/step)*step
++    shape = np.ceil((all_points.max(0)+step*4-origin)/step).astype(int)+1
++    occupied = np.zeros(shape, dtype=bool)
++    for vertices, faces in parts:
++        crossing = np.zeros(shape, dtype=np.int16)
++        local = (vertices-origin)/step
++        for tri in local[faces]:
++            a, b, c = tri
++            determinant = (b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1])
++            if abs(determinant) < 1e-10:
++                continue
++            lo = np.maximum(np.ceil(tri[:, :2].min(0)).astype(int), 0)
++            hi = np.minimum(np.floor(tri[:, :2].max(0)).astype(int), shape[:2]-1)
++            x, y = np.meshgrid(np.arange(lo[0], hi[0]+1), np.arange(lo[1], hi[1]+1), indexing='ij')
++            xx, yy = x+1.37e-4, y+2.71e-4
++            u = ((b[1]-c[1])*(xx-c[0])+(c[0]-b[0])*(yy-c[1]))/determinant
++            v = ((c[1]-a[1])*(xx-c[0])+(a[0]-c[0])*(yy-c[1]))/determinant
++            inside = (u >= 0) & (v >= 0) & (u+v <= 1)
++            z = np.clip(np.ceil(u*a[2]+v*b[2]+(1-u-v)*c[2]).astype(int), 0, shape[2]-1)
++            np.add.at(crossing, (x[inside], y[inside], z[inside]), 1 if determinant > 0 else -1)
++        occupied |= np.cumsum(crossing, axis=2) != 0
++    field = occupied.astype(np.float32)
++    kernel = [(.0625, -2), (.25, -1), (.375, 0), (.25, 1), (.0625, 2)]
++    for _ in range(4):
++        for axis in range(3):
++            field = sum(weight*np.roll(field, offset, axis=axis) for weight, offset in kernel)
++    # Six consistent tetrahedra per cube avoid ambiguous marching-cube faces.
++    corners = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]])
++    samples = np.stack([field[x:shape[0]-1+x, y:shape[1]-1+y, z:shape[2]-1+z]
++                        for x, y, z in corners], axis=-1)
++    boundary = (samples.min(-1) < .45) & (samples.max(-1) >= .45)
++    bases = np.array(np.nonzero(boundary)).T
++    samples = samples[boundary]
++    triangles = []
++    for tet in [[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6],[0,5,1,6]]:
++        value = samples[:, tet]
++        for mask in range(1, 15):
++            inside = [i for i in range(4) if mask & (1 << i)]
++            outside = [i for i in range(4) if i not in inside]
++            selected = (np.sum((value >= .45)*(1 << np.arange(4)), axis=1) == mask)
++            if not selected.any():
++                continue
++            p = bases[selected, None, :]+corners[tet][None, :, :]
++            v = value[selected]
++            def edge(a, b):
++                t = (.45-v[:, a])/(v[:, b]-v[:, a])
++                return p[:, a]+t[:, None]*(p[:, b]-p[:, a])
++            if len(inside) == 1:
++                faces = [np.stack([edge(inside[0], j) for j in outside], axis=1)]
++            elif len(inside) == 3:
++                faces = [np.stack([edge(outside[0], j) for j in inside], axis=1)]
++            else:
++                a,b = inside; c,d = outside
++                ac,ad,bc,bd = edge(a,c),edge(a,d),edge(b,c),edge(b,d)
++                faces = [np.stack([ac,ad,bc],axis=1), np.stack([ad,bd,bc],axis=1)]
++            outward = p[:, outside].mean(1)-p[:, inside].mean(1)
++            for f in faces:
++                wrong = np.sum(np.cross(f[:,1]-f[:,0],f[:,2]-f[:,0])*outward,axis=1) < 0
++                f[wrong] = f[wrong][:, [0,2,1]]
++                triangles.append(f)
++    points = np.concatenate(triangles).reshape(-1,3)*step+origin
++    vertices, inverse = np.unique(points.round(7), axis=0, return_inverse=True)
++    faces = inverse.reshape(-1,3)
++    # Relax the voxel sampling only, far below a garment's thickness.
++    edges = np.unique(np.sort(np.concatenate([faces[:,[0,1]],faces[:,[1,2]],faces[:,[2,0]]]),axis=1),axis=0)
++    count = np.bincount(edges.ravel(),minlength=len(vertices))[:,None]
++    for _ in range(6):
++        average = np.zeros_like(vertices)
++        np.add.at(average, edges[:,0],vertices[edges[:,1]])
++        np.add.at(average, edges[:,1],vertices[edges[:,0]])
++        vertices = .65*vertices+.35*average/np.maximum(count,1)
++    return vertices, faces
++
++
++def front_seam(vertices, faces, samples, radius=.0015):
++    """A narrow sewn/zipper strip fitted to the reconstructed chest surface."""
++    tri = vertices[faces]
++    a,b,c = tri[:,0],tri[:,1],tri[:,2]
++    det = (b[:,1]-c[:,1])*(a[:,0]-c[:,0])+(c[:,0]-b[:,0])*(a[:,1]-c[:,1])
++    valid = np.abs(det)>1e-12
++    a,b,c,det = a[valid],b[valid],c[valid],det[valid]
++    centers=[]
++    for x,y in samples:
++        u=((b[:,1]-c[:,1])*(x-c[:,0])+(c[:,0]-b[:,0])*(y-c[:,1]))/det
++        v=((c[:,1]-a[:,1])*(x-c[:,0])+(a[:,0]-c[:,0])*(y-c[:,1]))/det
++        hit=(u>=0)&(v>=0)&(u+v<=1)
++        if not hit.any():
++            raise ValueError('Tailoring strip missed chest surface')
++        z=(u*a[:,2]+v*b[:,2]+(1-u-v)*c[:,2])[hit].min()
++        centers.append([x,y,z-radius*.55])
++    centers=np.array(centers)
++    tangent=np.gradient(centers,axis=0)
++    tangent/=np.linalg.norm(tangent,axis=1,keepdims=True)
++    right=np.cross(tangent,np.array([0,0,1]))
++    right/=np.linalg.norm(right,axis=1,keepdims=True)
++    normal=np.cross(right,tangent)
++    angle=np.arange(8)*np.pi/4
++    p=(centers[:,None,:]+radius*(right[:,None,:]*np.cos(angle)[None,:,None]+
++                               normal[:,None,:]*np.sin(angle)[None,:,None])).reshape(-1,3)
++    f=[]
++    for j in range(len(centers)-1):
++        for i in range(8):
++            a,b=j*8+i,j*8+(i+1)%8
++            f.extend([[a,b,b+8],[a,b+8,a+8]])
++    return p,np.array(f)
++
++
++def two_bone(start, end, length_a, length_b, pole):
++    axis = end-start
++    distance = np.linalg.norm(axis)
++    if distance >= length_a+length_b:
++        raise ValueError(f'Unreachable control: {distance} >= {length_a+length_b}')
++    axis /= distance
++    bend = pole-start
++    bend -= axis*np.dot(bend,axis)
++    bend /= np.linalg.norm(bend)
++    along = (length_a**2-length_b**2+distance**2)/(2*distance)
++    return start+along*axis+np.sqrt(length_a**2-along**2)*bend
+--- a/scripts/run_kart_driver_review.py
++++ b/scripts/run_kart_driver_review.py
+@@ -11,7 +11,7 @@
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-OUT = ROOT / "docs/evidence/kart-driver-fit-style-2026-11-08"
++OUT = ROOT / "docs/evidence/kart-driver-anatomy-2026-11-08"
+ 
+ 
+ def main():
+@@ -20,7 +20,7 @@
+     if not project_root.is_relative_to(ROOT):
+         raise ValueError("Driver review project must stay within this workspace")
+     OUT.mkdir(parents=True, exist_ok=True)
+-    profile = ROOT / ("build/kart-driver-fit-style-2026-11-08/profile" if project_root == ROOT else "build/kart-driver-fit-style-2026-11-08/profile-frozen")
++    profile = ROOT / ("build/kart-driver-anatomy-2026-11-08/profile" if project_root == ROOT else "build/kart-driver-anatomy-2026-11-08/profile-frozen")
+     for folder in [profile / "roaming", profile / "local"]:
+         folder.mkdir(parents=True, exist_ok=True)
+     env = dict(os.environ, APPDATA=str(profile / "roaming"),
+@@ -29,19 +29,24 @@
+     actual = subprocess.check_output([engine, "--version"], text=True).strip()
+     assert actual == (project_root / "godot-version.txt").read_text().strip(), actual
+     command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine,
+-               "--path", str(project_root / "game"), "--audio-driver", "Dummy", "--position", "10000,10000",
+-               "--script", script, *options]
++               "--path", str(project_root / "game"), "--audio-driver", "Dummy", "--position", "10000,10000"]
++    command += (["--editor", "--headless", "--import", "--quit"] if script == "@import"
++                else ["--script", script])
++    command += options
+     started = time.monotonic()
+     with (OUT / (name + ".log")).open("w", encoding="utf-8") as log:
+         process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
+                                    stderr=subprocess.STDOUT)
++        (OUT / (name + "-process.json")).write_text(json.dumps({"pid": process.pid, "command": command}), encoding="utf-8")
+         try:
+             while process.poll() is None:
+                 time.sleep(0.1)
+                 output = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
+                 if "SCRIPT ERROR:" in output:
+-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+-                                   stdout=log, stderr=subprocess.STDOUT, check=False)
++                    stopped = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                                             stdout=log, stderr=subprocess.STDOUT, check=False)
++                    if stopped.returncode:
++                        raise RuntimeError(f"Cannot stop owned failed test PID {process.pid}; explicit process cleanup required")
+                     break
+                 if time.monotonic() - started > 900:
+                     raise subprocess.TimeoutExpired(command, 900)
+--- a/game/tests/bake_tomkart_driver.gd
++++ b/game/tests/bake_tomkart_driver.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Bake the enlarged seated driver with native matte cloth; no fabric texture.
+-const WORK: String = "res://../build/kart-driver-fit-style-2026-11-08"
++const WORK: String = "res://../build/kart-driver-anatomy-2026-11-08"
+ const DEST: String = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1"
+ const GENERATED: String = "res://../docs/evidence/kart-tomkart-driver-2026-11-08/imagegen/"
+ var preview: bool = false
+@@ -33,20 +33,37 @@
+ 	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+ 	var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+ 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	if surface == 9:
++		var importer := ImporterMesh.new()
++		importer.add_surface(Mesh.PRIMITIVE_TRIANGLES,arrays)
++		importer.generate_lods(60.0,0.0,[])
++		for lod: int in range(importer.get_surface_lod_count(0)):
++			if indices.size()/3 <= 8000: break
++			indices = importer.get_surface_lod_indices(0,lod)
++		print("CONTINUOUS_SUIT ",arrays[Mesh.ARRAY_INDEX].size()/3," -> ",indices.size()/3," triangles")
++		# Recompute shading from the retained surface. Dense reconstruction
++		# normals otherwise preserve tiny sampling marks after simplification.
++		var smoothed := PackedVector3Array()
++		smoothed.resize(positions.size())
++		for triangle: int in range(0,indices.size(),3):
++			var a: int = indices[triangle]
++			var b: int = indices[triangle+1]
++			var c: int = indices[triangle+2]
++			var face: Vector3 = (positions[b]-positions[a]).cross(positions[c]-positions[a])
++			if face.dot(normals[a]+normals[b]+normals[c]) < 0: face = -face
++			for vertex: int in [a,b,c]: smoothed[vertex] += face
++		for vertex: int in indices: smoothed[vertex] = smoothed[vertex].normalized()
++		normals = smoothed
+ 	# Foot meshes share the original suit atlas, but get plain rubber boots.
+ 	var top: float = -INF
+ 	for point: Vector3 in positions: top = maxf(top,point.y)
+-	var boot: bool = top < 0.4
++	var boot: bool = surface in [7,8]
+ 	for index: int in indices:
+ 		var color := Color("465861")
+ 		if boot:
+ 			color = Color("1d292e")
+-		elif surface in [7,10] and positions[index].y > 0.77:
+-			# Quiet shoulder yokes belong to the garment geometry; photographic
+-			# folds, logos and highlights are not sampled into the new material.
+-			color = Color("929c9a")
+-		elif surface == 11 and positions[index].y > 0.89:
+-			color = Color("26343a")
++		elif surface >= 9:
++			color = arrays[Mesh.ARRAY_COLOR][index]
+ 		tool.set_color(color)
+ 		tool.set_normal(normals[index])
+ 		tool.set_uv(uv[index])
+@@ -65,7 +82,7 @@
+ 	if scene is MeshInstance3D: nodes.push_front(scene)
+ 	assert(nodes.size() == 1)
+ 	var source: ArrayMesh = nodes[0].mesh
+-	assert(source.get_surface_count() == 21)
++	assert(source.get_surface_count() == 11)
+ 	var result := ArrayMesh.new()
+ 	var tools: Dictionary = {}
+ 	var materials: Dictionary = {}
+@@ -97,7 +114,8 @@
+ 		if key == "RT_DriverSuit": tools[key].index()
+ 		tools[key].commit(result)
+ 		result.surface_set_material(result.get_surface_count()-1,materials[key])
+-	assert(result.get_faces().size()/3 == 1343)
++	assert(result.get_faces().size()/3 > 1343)
++	assert(result.get_faces().size()/3 <= 15000,"Dense reconstruction must be simplified before shipping")
+ 	assert(ResourceSaver.save(result,(WORK+"/candidate" if preview else DEST)+"/driver.res",ResourceSaver.FLAG_COMPRESS) == OK)
+ 	scene.free()
+ 	print("TOMKART_DRIVER_BAKE ",result.get_faces().size()/3," triangles; ",result.get_surface_count()," material surfaces; native matte cloth; preview=",preview)
+--- a/game/tests/review_tomkart_driver.gd
++++ b/game/tests/review_tomkart_driver.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Offline source/pose preview; never reads owner records or contacts the backend.
+-const OUT: String = "res://../docs/evidence/kart-driver-fit-style-2026-11-08"
++const OUT: String = "res://../docs/evidence/kart-driver-anatomy-2026-11-08"
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -8,7 +8,7 @@
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+ 	var before: bool = "--before" in OS.get_cmdline_user_args()
+ 	var imported := MeshInstance3D.new()
+-	var path: String = OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res" if before else "res://../build/kart-driver-fit-style-2026-11-08/candidate/driver.res"
++	var path: String = OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res" if before else "res://../build/kart-driver-anatomy-2026-11-08/candidate/driver.res"
+ 	imported.mesh = load(path)
+ 	assert(imported.mesh != null)
+ 	if DisplayServer.get_name() == "headless":
+@@ -41,7 +41,7 @@
+ 	world.add_child(camera)
+ 	camera.current = true
+ 	camera.fov = 32
+-	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["side-right",Vector3(2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
++	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["side-right",Vector3(2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)], ["feet",Vector3(1.1,.63,-1.3),Vector3(0,.27,-.83)], ["body",Vector3(1.1,.87,-.9),Vector3(0,.68,-.015)]]:
+ 		camera.position = shot[1]
+ 		camera.look_at(shot[2])
+ 		for frame: int in range(6):
+--- a/game/tests/test_tomkart_driver.gd
++++ b/game/tests/test_tomkart_driver.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+-## KTF01-KTF03: larger driver, bent seated posture, native matte suit and caches.
+-const OUT: String = "res://../docs/evidence/kart-driver-fit-style-2026-11-08"
++## KDA01-KDA04: control-fitted pose, continuous tailored suit and caches.
++const OUT: String = "res://../docs/evidence/kart-driver-anatomy-2026-11-08"
+ const DRIVER: ArrayMesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
+ const BASE = preload("res://vehicle/modular_car_base.gd")
+ var checks: int = 0
+@@ -12,12 +12,26 @@
+ 	checks += 1
+ 	if not ok: failures += 1; printerr("TOMKART_FAIL ",label)
+ 
++func geometry_signature(mesh: Mesh) -> Dictionary:
++	var faces: PackedVector3Array = mesh.get_faces()
++	var result: Dictionary = {}
++	for triangle: int in range(0,faces.size(),3):
++		var corners: Array[String] = []
++		for offset: int in range(3):
++			var point: Vector3 = faces[triangle+offset]*100000.0
++			corners.append(str(Vector3i(roundi(point.x),roundi(point.y),roundi(point.z))))
++		corners.sort()
++		var key: String = "|".join(corners)
++		result[key] = int(result.get(key,0))+1
++	return result
++
+ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+-	check(DRIVER.get_faces().size()/3 == 1343,"source geometry retained except the removed 102-triangle neck restraint")
++	check(DRIVER.get_faces().size()/3 == 7319,"continuous garment plus retained helmet, gloves, boots and fitted zipper")
+ 	check(DRIVER.get_surface_count() == 7,"seven retained source material roles")
+ 	check(DRIVER.get_aabb().position.y > 0.15 and DRIVER.get_aabb().end.y < 1.15,"driver stays above floor and within believable seated height")
+ 	check(DRIVER.get_aabb().size.x < 0.65 and DRIVER.get_aabb().size.z < 1.4,"driver fits within original kart cockpit")
++	var fitted_geometry: Dictionary = geometry_signature(DRIVER)
+ 	for surface: int in range(DRIVER.get_surface_count()):
+ 		var arrays: Array = DRIVER.surface_get_arrays(surface)
+ 		var finite: bool = true
+@@ -29,19 +43,17 @@
+ 		if cloth:
+ 			check(material.albedo_texture == null and material.roughness == 1.0 and material.metallic_specular == 0.0 and material.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON and material.specular_mode == BaseMaterial3D.SPECULAR_DISABLED,"native matte cloth with no photographic texture or highlights "+material.resource_name)
+ 		else: check(material.albedo_texture != null,"retained helmet/face texture "+material.resource_name)
+-		check(arrays[Mesh.ARRAY_TEX_UV].size() == arrays[Mesh.ARRAY_VERTEX].size(),"source UV coordinates retained "+str(surface))
++		check(arrays[Mesh.ARRAY_TEX_UV].size() == arrays[Mesh.ARRAY_VERTEX].size(),"valid UV coordinates on retained and reconstructed surfaces "+str(surface))
+ 		if material.resource_name == "RT_DriverSuit":
+ 			var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+ 			var restrained: bool = colors.size() == arrays[Mesh.ARRAY_VERTEX].size()
+ 			for color: Color in colors:
+-				var allowed: bool = false
+-				for sample: Color in [Color("465861"),Color("929c9a"),Color("26343a"),Color("1d292e")]: allowed = allowed or color.is_equal_approx(sample)
+-				restrained = restrained and allowed
+-			check(restrained,"cloth uses only the four reviewed flat garment/boot colours")
++				restrained = restrained and color.b >= color.r and color.b-color.r < 0.25 and color.r > 0.05 and maxf(color.r,maxf(color.g,color.b)) < 0.7
++			check(restrained,"restrained native slate panels, cuffs and tailoring without fabric imagery")
+ 			var knee_top: float = -INF
+ 			for point: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
+-				if absf(point.z+0.34) < 0.065 and absf(point.x) > 0.07: knee_top = maxf(knee_top,point.y)
+-			check(knee_top > 0.46,"actual knees are raised above the old nearly straight legs")
++				if absf(point.z+0.4735) < 0.065 and absf(point.x) > 0.07: knee_top = maxf(knee_top,point.y)
++			check(knee_top > 0.50,"actual knees are raised above the old nearly straight legs")
+ 		if material.resource_name == "RT_Helemt":
+ 			var old: ArrayMesh = load(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
+ 			var old_width: float = 0.0
+@@ -50,7 +62,7 @@
+ 			for original_surface: int in range(old.get_surface_count()):
+ 				if old.surface_get_material(original_surface).resource_name != "RT_Helemt": continue
+ 				for point: Vector3 in old.surface_get_arrays(original_surface)[Mesh.ARRAY_VERTEX]: old_width = maxf(old_width,absf(point.x)*2)
+-			check(is_equal_approx(new_width/old_width,0.42/0.34),"actual helmet/body scale increases 23.53 percent")
++			check(is_equal_approx(new_width/old_width,1.0),"previously enlarged helmet scale is preserved")
+ 		var atlases: Dictionary = {"RT_Helemt":"RT_Helemt_trasparent_baseColor.png"}
+ 		if atlases.has(material.resource_name):
+ 			var expected: Image = Image.load_from_file("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/textures/"+atlases[material.resource_name])
+@@ -81,7 +93,8 @@
+ 			var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
+ 			check(driver != null,"new driver in tier/kit mode %s/%s" % [simple,editable])
+ 			if driver != null:
+-				check(driver.mesh.get_faces().size()/3 == 1343,"adapted driver survives car batching")
++				check(driver.mesh.get_faces().size()/3 == 7319,"adapted driver survives car batching")
++				check(geometry_signature(driver.mesh) == fitted_geometry,"restored driver retains reviewed triangle geometry and pedal fit")
+ 				check(driver.get_parent() == car.body,"driver follows body suspension")
+ 				check(driver.mesh.get_surface_count() == 7,"car batching retains all driver materials")
+ 			check(car.find_child("TailoredRaceSuitV4",true,false) == null and car.find_child("HelmetMount",true,false) == null,"previous driver and helmet are absent")
+@@ -120,7 +133,7 @@
+ 		while not car.model_ready: await process_frame
+ 		var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
+ 		check(garage.hits == before_hits+1,"full-detail Garage template actually restored")
+-		check(driver != null and driver.mesh.get_faces().size()/3 == 1343,"Garage template contains the fitted replacement")
++		check(driver != null and driver.mesh.get_faces().size()/3 == 7319,"Garage template contains the fitted replacement")
+ 		check(car.rolling_wheels.size() == 4,"Garage template retains four articulated wheels")
+ 		car.free()
+ 	print("TOMKART_DRIVER ",checks," checks, ",failures," failures; prepared=",prepared)
+--- /dev/null
++++ b/game/tests/test_kart_driver_contact.gd
+@@ -0,0 +1,109 @@
++extends SceneTree
++## KDA01: sample the actual boot triangles against the actual authored pedals.
++const OUT: String = "res://../docs/evidence/kart-driver-anatomy-2026-11-08"
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("DRIVER_CONTACT_FAIL ",label)
++
++func run() -> void:
++	var path: String = "res://../build/kart-driver-anatomy-2026-11-08/candidate/driver.res"
++	if "--shipping" in OS.get_cmdline_user_args(): path = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res"
++	if "--before" in OS.get_cmdline_user_args(): path = OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res"
++	var driver: ArrayMesh = load(path)
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "kart"
++		car.simple_model = simple
++		car.batch_parts = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		var pedals: Array[MeshInstance3D] = []
++		var rim: MeshInstance3D
++		var seat_pan: MeshInstance3D
++		for child: Node in car.body.find_children("*","MeshInstance3D",true,false):
++			if str(child.name).begins_with("PedalPlate"): pedals.append(child)
++			if str(child.name).begins_with("SteeringRim"): rim = child
++			if str(child.name).begins_with("SeatPanPaddingV2"): seat_pan = child
++		# Godot gives the repeated right-hand node an automatic unique name.
++		if pedals.size() == 1:
++			for child: Node in car.body.find_children("*","MeshInstance3D",true,false):
++				if child != pedals[0] and child.mesh == pedals[0].mesh: pedals.append(child)
++		check(pedals.size() == 2,"two real pedal plates in quality "+str(simple))
++		var faces: PackedVector3Array = driver.get_faces()
++		check(seat_pan != null,"actual padded seat pan present")
++		if seat_pan != null:
++			var transform: Transform3D = car.body.global_transform.affine_inverse()*seat_pan.global_transform
++			var pan_height: float = INF
++			for point: Vector3 in seat_pan.mesh.get_faces(): pan_height = minf(pan_height,(transform*point).y)
++			var pelvis_height: float = INF
++			for point: Vector3 in faces:
++				if absf(point.x) < 0.18 and point.z > -0.18 and point.z < 0.20 and point.y < 0.37: pelvis_height = minf(pelvis_height,point.y)
++			check(pelvis_height >= pan_height-0.008,"pelvis lower envelope stays above seat pan")
++			check(pelvis_height <= pan_height+0.025,"pelvis lower envelope rests at seat pan")
++			measurements.append({"simple":simple,"pelvis_height":pelvis_height,"seat_pan_height":pan_height})
++		for pedal: MeshInstance3D in pedals:
++			var transform: Transform3D = car.body.global_transform.affine_inverse()*pedal.global_transform
++			var normal: Vector3 = transform.basis.z.normalized()
++			var up: Vector3 = transform.basis.y.normalized()
++			var center: Vector3 = transform.origin+normal*pedal.mesh.get_aabb().end.z
++			var side: float = signf(center.x)
++			var coverage: int = 0
++			var max_gap: float = 0.0
++			for x: float in [-0.03,0.0,0.03]:
++				for y: float in [-0.035,0.0,0.035]:
++					var sample: Vector3 = center+transform.basis.x.normalized()*x+up*y
++					var closest: float = INF
++					for triangle: int in range(0,faces.size(),3):
++						var a: Vector3 = faces[triangle]
++						if a.x*side < 0.06 or a.z > -0.76 or a.y > 0.46: continue
++						var hit: Variant = Geometry3D.ray_intersects_triangle(sample+normal*0.10,-normal,a,faces[triangle+1],faces[triangle+2])
++						if hit != null: closest = minf(closest,absf((hit-sample).dot(normal)))
++					if closest <= 0.003: coverage += 1
++					max_gap = maxf(max_gap,closest)
++			check(coverage == 9,"sole covers all nine pedal contact samples, side "+str(side)+" tier "+str(simple))
++			measurements.append({"simple":simple,"side":side,"contact_samples":coverage,"max_gap_mm":max_gap*1000 if is_finite(max_gap) else -1})
++			var sole_normal_found: bool = false
++			var min_clearance: float = INF
++			for triangle: int in range(0,faces.size(),3):
++				var a: Vector3 = faces[triangle]
++				var b: Vector3 = faces[triangle+1]
++				var c: Vector3 = faces[triangle+2]
++				if a.x*side < 0.06 or a.z > -0.76 or a.y > 0.46: continue
++				var n: Vector3 = (b-a).cross(c-a).normalized()
++				if absf(n.dot(normal)) > 0.995 and absf((a-center).dot(normal)) < 0.003: sole_normal_found = true
++				min_clearance = minf(min_clearance,(a-center).dot(normal))
++			check(sole_normal_found,"actual sole triangles parallel to pedal")
++			check(min_clearance >= -0.003,"boot does not penetrate pedal")
++		check(rim != null,"real steering rim present")
++		if rim != null:
++			var transform: Transform3D = car.body.global_transform.affine_inverse()*rim.global_transform
++			var rim_points: PackedVector3Array = rim.mesh.get_faces()
++			for index: int in range(rim_points.size()): rim_points[index] = transform*rim_points[index]
++			for side: float in [-1.0,1.0]:
++				var touching: int = 0
++				var nearest: float = INF
++				for surface: int in range(driver.get_surface_count()):
++					if driver.surface_get_material(surface).resource_name != "RT_Gloves": continue
++					for point: Vector3 in driver.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]:
++						if point.x*side < 0.06: continue
++						var distance: float = INF
++						for rim_point: Vector3 in rim_points: distance = minf(distance,point.distance_to(rim_point))
++						nearest = minf(nearest,distance)
++						if distance < 0.012: touching += 1
++				check(touching >= 3,"glove has multiple contact vertices on steering rim, side "+str(side))
++				measurements.append({"simple":simple,"hand_side":side,"rim_gap_mm":nearest*1000,"contact_vertices":touching})
++		car.free()
++	check(driver.get_aabb().position.y >= 0.157,"boot heels stay at floor level")
++	var report: Dictionary = {"checks":checks,"failures":failures,"mesh":path,"measurements":measurements}
++	FileAccess.open(OUT+"/contact-"+("before" if "--before" in OS.get_cmdline_user_args() else "final")+".json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("DRIVER_CONTACT ",JSON.stringify(report))
++	quit(1 if failures else 0)
+--- a/game/legal/kart_driver_notices.txt
++++ b/game/legal/kart_driver_notices.txt
+@@ -12,3 +12,5 @@
+ Beat my track modifications (2026-11-08): static seated kart pose, resized to fit the original seat, steering wheel and pedals; suit, glove and helmet text/brand marks removed; material roughness adjusted; geometry combined by material. No skeleton, animation or runtime posing added.
+ 
+ Owner feedback revision (2026-11-08): driver enlarged 23.53%; raised knees and 27-degree seated torso with upright head; neck restraint removed (102 triangles). Suit, gloves and boots now use native matte toon materials and flat garment colours, without the photographic suit/glove textures.
++
++Anatomy/contact revision (2026-11-08): sole planes aligned to the actual pedals; two-bone limb targets and 35-degree torso; source garment sections subdivided, reshaped, joined and remeshed into a continuous suit, then simplified offline; native garment panels, fitted centre seam and matte cuffs. Enlarged helmet retained. No rig or runtime posing added.
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -419,3 +419,8 @@
+ ## Imported kart driver fit/style feedback (2026-11-08)
+ 
+ Owner feedback supersedes the first imported driver pose/materials: anatomy scale increases 23.53%, knees bend in the original bucket and the helmet looks forward. The 102-triangle neck restraint is removed (1,343 triangles remain). Original suit/glove photographic textures retire from production in favour of native matte toon cloth with a four-colour garment/boot palette. The selected tomkart model, remaining source topology/UVs and CC BY 4.0 attribution remain. No new generated raster is used; prior helmet retouching is retained. Sources, commands, pictures and qualification: `docs/KART_DRIVER_FIT_STYLE_2026_11_08.md`.
++
++
++## Kart driver anatomy and control contact (2026-11-08)
++
++The source suit sections are now subdivided, reshaped into rounded garment sections, posed, joined volumetrically and remeshed as continuous cloth. The final static driver has 7,319 triangles / seven materials, including retained source helmet, gloves and boots plus a fitted centre seam. Both soles are flattened and rotated to the actual pedal faces; two-bone targets place the knees and elbows. Native matte garment panels/cuffs replace the earlier four-colour layout. The enlarged helmet and previous unbranded helmet retouch remain. This revision deliberately supersedes the source-topology retention and 1,343-triangle descriptions above. Attribution remains CC BY 4.0 by tomkart. No new raster generation or runtime posing is added. Evidence and limitations: `docs/KART_DRIVER_ANATOMY_2026_11_08.md`.
+--- /dev/null
++++ b/docs/KART_DRIVER_ANATOMY_2026_11_08.md
+@@ -0,0 +1,52 @@
++# Kart driver anatomy and pedal contact — 2026-11-08
++
++The owner rejects the feet missing the pedals and the appearance of the arms, legs and torso, explicitly asking for AAA quality. This revision fixes the measurable control fit and reconstructs the garment. **It does not establish AAA art quality or owner appearance acceptance.** The selected source is a very coarse, unrigged static character; the remaining helmet/glove/boot geometry and limited clothing detail remain visible limitations. Earlier fit/style test passes did not prove pedal contact or acceptable anatomy.
++
++| Requirement | Implemented change and evidence |
++| --- | --- |
++| KDA01 — feet on the pedals | Rotate the boots 72.811° from the standing sole orientation. Flatten the original tread vertices and fit the load-bearing sole patch to the existing PedalPlate face with 1 mm clearance. Native tests locate both actual pedal meshes and ray-test nine distributed samples on each plate, in both quality tiers. They also check parallel sole triangles, penetration and heel height. The rejected mesh is retained as a failing control. |
++| KDA02 — arms, legs and torso | Solve knees and elbows with two-bone targets, rather than choosing unrelated joint positions. Target thigh/shin lengths are 0.445/0.440 model metres; knee flexion is 57.608°. Torso recline is 35° with an upright helmet. Round the source torso cross-sections and narrow the forearms toward the cuffs. Preserve the already enlarged 0.42 anatomy scale and helmet width. |
++| KDA03 — continuous clothing | Subdivide the source garment before deformation, weld source positional seams, reconstruct the occupied volume of its capped sections, smooth their junctions, and remesh the union. Simplify that dense authoring intermediate offline with the engine's existing ImporterMesh operation and recompute the retained surface normals. Native slate panels, dark cuffs/waist and a surface-fitted centre seam provide garment definition without photographic fabric or lettering. No new raster generation, dependency, skeleton or runtime posing is introduced. |
++| KDA04 — integrated appearance | Bake the native resource and body shadow; rebuild prepared bases, fitted modules and Garage templates; refresh the catalogue, news, header, livery and Garage pictures. Verify actual prepared hits and actual App Garage/race views. Concurrent Super Rally/scenery changes remain preserved. |
++
++The native driver has **7,319 triangles / seven materials**: 5,918 continuous-suit triangles, a 544-triangle fitted centre seam, and 857 retained helmet/face/glove/boot triangles. The approximately 379,000-triangle volume reconstruction is an offline intermediate and is not shipped. This deliberately supersedes the rejected version's 1,343-triangle/source-topology assertions; increasing triangle count alone is not an art-quality claim. A lower-pelvis corrective aligns the actual hip reference to the limb targets while preserving head/chest height; the final lower pelvic envelope is 0.2532, about 4.2?4.3 mm above the sampled padded pan minimum. Source helmet UVs and the previously reviewed unbranded helmet image remain. CC BY 4.0 attribution by tomkart remains in Settings → Licences.
++
++Native review: [side](evidence/kart-driver-anatomy-2026-11-08/candidate-side-right.png), [body close-up](evidence/kart-driver-anatomy-2026-11-08/candidate-body.png), [pedal close-up](evidence/kart-driver-anatomy-2026-11-08/candidate-feet.png), [front](evidence/kart-driver-anatomy-2026-11-08/candidate-front.png). These are actual Godot renders of the replacement in the existing kart, with its original controls and seat.
++
++## Reproduction and scope
++
++The selected owner-supplied ZIP remains under `docs/evidence/kart-tomkart-driver-2026-11-08/source/`. `scripts/prepare_kart_driver.py` and the new numpy-only `scripts/kart_driver_geometry.py` author the static candidate. `game/tests/bake_tomkart_driver.gd` bakes its native materials and mesh. `test_kart_driver_contact.gd` supplies the new actual-surface regression; `test_tomkart_driver.gd` retains size, finite normals, material, articulation, paint-isolation and prepared-restoration checks for the revised geometry. Runtime pose/seat/controls/camera builders and canonical handling are unchanged by this task.
++
++```powershell
++python scripts/prepare_kart_driver.py docs/evidence/kart-tomkart-driver-2026-11-08/source/race_car_driver_-_low_poly.zip --output build/kart-driver-anatomy-2026-11-08/candidate
++python scripts/run_kart_driver_review.py candidate-bake res://tests/bake_tomkart_driver.gd --headless -- --preview
++python scripts/run_kart_driver_review.py candidate-contact res://tests/test_kart_driver_contact.gd --headless
++python scripts/run_kart_driver_review.py contact-before-control res://tests/test_kart_driver_contact.gd --headless -- --before
++python scripts/run_kart_driver_review.py final-preview res://tests/review_tomkart_driver.gd --rendering-method gl_compatibility
++python scripts/run_kart_driver_review.py shipping-driver-bake res://tests/bake_tomkart_driver.gd --headless
++python scripts/run_kart_driver_review.py shipping-direct res://tests/test_tomkart_driver.gd --headless
++python build/kart-driver-anatomy-2026-11-08/rebuild.py
++```
++
++Exact commands, engine version, exits and logs are retained in the evidence directory. The runner pins `4.7.2.stable.official.ed1daf0bf`, uses private offline APPDATA/LOCALAPPDATA and Dummy audio, and retains the known Windows certificate-store diagnostic. The normal dev wrapper treats that diagnostic as fatal. Native test windows are offscreen; no owner process is restarted. The runner records its own child PID and raises an explicit cleanup error when sandboxed termination is refused, instead of waiting indefinitely after a failed taskkill.
++
++## Validation and retained findings
++
++The native pedal/hand/floor/seat matrix passes **27/0**. Both feet cover all nine actual pedal samples at a maximum measured **1.0024 mm** gap in both tiers. The rejected mesh fails **14/27** checks (the earlier pedal-only control failed 12/21) and covers **zero** pedal samples. Gloves have multiple nearby steering-rim vertices; that proximity check is not an animation or grasp-quality claim. Direct geometry/material/integration checks pass **63/0**, including order-independent triangle comparisons against restored drivers (the earlier 59/0 run predates those four additional comparisons), and driving passes **72/0**. Final prepared/native/App results are recorded in `final-summary.json` beside this report's evidence.
++
++Initial failures remain available. The first new sole patch passed only seven of nine samples, with 4.252 mm maximum gap; correcting the tread plane resolves it without relaxing the 3 mm gate. The repeated right-hand pedal receives an automatic Godot node name; the test now identifies it through the same actual mesh resource as the first plate, rather than silently testing one foot. Early dense and unrefined renders are retained in `draft-1/`.
++
++PowerShell execution policy prevented the first identity invocation; the process-scoped standard Bypass invocation succeeds. A concurrent new `SuperRallyModel` reference was initially absent from Godot's class cache; a headless editor import refresh registers it, and subsequent kart bakes pass. Only the verified task-owned failed command tree was stopped. One wash invocation used a nonexistent filename; the real broad wash fixture then reaches its existing direct `HEIGHTS["super_rally"]` lookup and fails because that fixture assumes the earlier five-car catalogue. That failure and any narrower original-five-car controls are retained, without changing production weathering or weakening wash tolerances. The rebuild helper's initial header-template filename typo is retained if reached; the correct existing baker is `bake_header_simple_compact.gd`.
++
++Task-start source files, native driver and hashes are retained under `before/`. The source checkpoint records task-only before/after text and asset hashes; it does not stage or commit the shared index. Generated outputs remain subject to the existing source guards. No device query/test, APK, owner-save edit, owner-process restart, backend request or deployment is performed. Reload, owner appearance acceptance and device qualification remain. A higher-quality character asset and further art production are still required to meet the owner's AAA target.
++
++
++## Final live results and concurrent work
++
++Final live kart cache checks pass **70/0 headless** and **80/0 on each desktop renderer**. All four base modes and the Garage template actually restore, and their driver triangle geometry matches the reviewed mesh. Actual App Garage/race checks pass **16/0 on each renderer**, including current Garage geometry matching direct construction, screenshots at three window sizes, race identity and wheel articulation. The final Garage image audit passes **six exact images / 157 current source hashes**. The gallery helper restores unrelated PNGs from its immediate pre-bake copy; subsequent concurrent work rerendered those images and its current files are preserved. Four wheel shadows remain byte-exact to task start. Preservation comparisons and rerender controls remain separate. Runtime asset size is 1,435,427 bytes. The body shadow is 1,173 triangles; the wheel shadows retain their original geometry.
++
++The final pelvis corrective seats the source hip reference consistently with the leg targets. Its measured lower envelope is 0.2532, compared with pan minima 0.2489/0.2490. The initially rejected driver's same envelope was 0.1814. This additional correction and its six assertions were applied before final native/App acceptance; earlier 7,503-triangle drafts and their receipts remain in `pre-hip-correction/`.
++
++One earlier complete 520-module rebuild passed against its then-current sources. A later identity generation encountered a concurrent writer holding a Super Rally module. The existing PowerShell function continued after the read exception and wrote empty generated constants; only that known-invalid generated state and its empty project version were restored from the last valid receipt. Current shared metadata was subsequently refreshed by the concurrent work and is valid. The task helper now uses terminating PowerShell errors so that its identity stage stops before writing such a partial result. No shared build-script implementation or source guard was weakened.
++
++A stable project copy was prepared as a contingency; its Kart leaf builders match the live versions. No frozen generated binaries were copied back. Final live validation instead rebuilds only the kart's own four bases, 60 modules and Garage template against the refreshed shared metadata, then passes the native/App checks above. The shared preflight initially retains **16 stale-key failures in Electric simple modules** while that independent rebuild is in progress. After those files actually change, a fresh run passes **551 resources / 2,267 checks / zero failures**. The final six-image/157-source audit also passes. Both the initial failure and final clean receipts remain. This validates prepared dependencies at that point; no APK, export or device acceptance is claimed. Source-only patch forward/reverse verification and Python compilation are recorded with the checkpoint. Existing first-draw race hitches remain; no performance or hardware-memory gain is claimed.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- KART-DRIVER-ANATOMY-20261108 -->
++## Kart driver soles and continuous suit corrected after owner feedback (2026-11-08)
++KDA01-KDA04: Boots rotate72.811degrees onto actual pedal faces; nine samples per foot/tier measure1.0024mm clearance. Two-bone targets,35degree torso, rounded chest/cuffs and a hip corrective replace distorted joints; lower pelvis0.2532 clears padded pan0.2489/0.2490. Continuous remeshed cloth and fitted centre seam yield7319tri/seven materials; enlarged helmet/text-free matte style remain. Contact27/0 versus old27/14; direct63/0, live prepared70/0 headless80/0 each renderer and actual App16/0 each pass. Four bases/60modules/Garage/body shadow/pictures refresh; six-picture157-source audit passes. Final shared preflight551/2267/0 passes after the concurrent Electric writer finishes; initial16 stale-key failures retained. Initial sole/caps/fixture/class/import/header/identity failures retained; known-invalid generated metadata recovered, current shared identity preserved. Contingency source copy stays isolated; no frozen binary overwrites live work. [Implementation, captures, evidence, limits and source checkpoint](docs/KART_DRIVER_ANATOMY_2026_11_08.md). AAA finish and owner appearance acceptance remain unmet; reload/device qualification remain. No device query/test, APK, owner-save/process change, backend request, deployment or main-index write; concurrent work preserved.
++<!-- /KART-DRIVER-ANATOMY-20261108 -->
++
+ <!-- ASSET-REVIEW-20261108 -->
+ ## Remaining car and track asset costs reviewed (2026-11-08)
+ AOR01-AOR04: Review only; no runtime or production asset changes. Six car IDs/five chassis,24 live construction cases,290 prop/biome combinations and ten native worlds cover roads, kerbs, bridges, terrain, banks, trees and all58 object kinds. Road index prototype keeps39962 triangles/ordered positions and exact tested native pixels while buffers4795440 to1318252 bytes(-72.51%); kerbs-24.17%, Winter tree-20.24%, shared tyre stack-38.99%, fence-14.24% buffer candidates. Winter near normals have tiny codec differences; raw-preserving integration remains. Authored16-side tyres reduce wall7200 to5568 triangles(-22.67%); preserve original near detail. Volt surface batching/Forklift heavy meshes outrank blanket car reduction. Current checkout rejects car source fingerprints and ice-car LOD map; guards retained. Cars48/catalogue580/world30 each/candidate52 each/position22 total814/0;21 cache observations. Old variant-template harness, weighted-count/camera/image-grid corrections and Mobile optional-car300s timeout retained. All concurrent work and main index preserved; no export, device query/test, owner-save/process change, backend request or deployment. [Report, evidence, commands, source pins, comparisons, limits and task-only review checkpoint](docs/ASSET_OPTIMISATION_REVIEW_2026_11_08.md).
+--- /dev/null
++++ b/game/tests/test_kart_driver_contact.gd.uid
+@@ -0,0 +1 @@
++uid://der1njkr5ndxf

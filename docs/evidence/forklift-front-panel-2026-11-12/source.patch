@@ -1,0 +1,442 @@
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -28,6 +28,7 @@
+ 			_box(body,Vector3(0.25,0.009,0.018),Vector3(side*0.81,0.62,-0.41+ridge*0.079),0.004,steel,1,"StepGrip")
+ 		_arch(car,side,-config_axle(),0.43,paint,rubber)
+ 		_arch(car,side,config_axle(),0.30,paint,rubber)
++	_front_panel(car,paint)
+ 	_box(body,Vector3(1.49,0.13,2.68),Vector3(0,0.37,0.17),0.055,rubber,detail,"Chassis")
+ 	_box(body,Vector3(1.31,0.10,1.33),Vector3(0,0.81,-0.27),0.035,dark,detail,"OperatorFloor")
+ 	for index: int in range(10):
+@@ -84,6 +85,43 @@
+ 			corners.append(Vector3(side*x,y,z))
+ 		_solid_strip(tool,corners,Vector3(-side*0.065,0,0),Vector3(side,0,0),index==0,index==steps-1)
+ 	_attach(car.body,tool.commit(),paint,"FormedSideSkinLeft" if side<0.0 else "FormedSideSkinRight")
++
++static func _front_panel(car: CarVisual, paint: Material) -> void:
++	# Formed front bulkhead joins the side noses, behind the mast and hoses.
++	# Raised outer corners follow the wheel openings; the centre meets the chassis.
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var steps: int = 48 if car.simple_model else 96
++	for index: int in range(steps):
++		var outer: Array[Vector3] = []
++		var inner: Array[Vector3] = []
++		var normals: Array[Vector3] = []
++		for coordinate: Vector2 in [Vector2(0,0),Vector2(1,0),Vector2(1,1),Vector2(0,1)]:
++			var u: float = lerpf(-1.0,1.0,(index+coordinate.x)/steps)
++			var across: float = absf(u)*0.82
++			var bend: float = smoothstep(0.54,0.79,across)
++			# The return overlaps inside each side skin, 2 mm ahead of its end
++			# cap. A constant-depth backing keeps the tight bends from folding.
++			var z: float = -0.95-0.322*bend
++			var back_z: float = z+0.06
++			var wheel_dz: float = back_z+config_axle()
++			var arch: float = 0.43+sqrt(maxf(0.0,0.495*0.495-wheel_dz*wheel_dz))
++			var lower: float = lerpf(0.39,arch,smoothstep(0.53,0.61,across))
++			var y: float = lerpf(lower,1.12,coordinate.y)
++			var x: float = u*(0.818-0.045*pow((y-0.75)/0.55,2.0))
++			outer.append(Vector3(x,y,z))
++			inner.append(Vector3(x,y,back_z))
++			var t: float = clampf((across-0.54)/0.25,0.0,1.0)
++			var slope: float = -0.322*6.0*t*(1.0-t)/0.25*signf(u)
++			normals.append(Vector3(slope,0,-1).normalized())
++		_smooth_quad(tool,outer,normals)
++		_face(tool,inner,Vector3.BACK)
++		_face(tool,[outer[0],inner[0],inner[1],outer[1]],Vector3.DOWN)
++		_face(tool,[outer[3],outer[2],inner[2],inner[3]],Vector3.UP)
++		if index == 0: _face(tool,[outer[0],outer[3],inner[3],inner[0]],Vector3.LEFT)
++		if index == steps-1: _face(tool,[outer[1],inner[1],inner[2],outer[2]],Vector3.RIGHT)
++	tool.index()
++	_attach(car.body,tool.commit(),paint,"FormedFrontPanel")
+ 
+ static func _arch(car: CarVisual, side: float, z: float, tire: float, paint: Material, trim: Material) -> void:
+ 	var tool := SurfaceTool.new()
+--- a/game/tests/test_forklift_model_finish.gd
++++ b/game/tests/test_forklift_model_finish.gd
+@@ -51,7 +51,7 @@
+ func geometry(simple: bool) -> void:
+ 	var car: CarVisual = make_car(simple)
+ 	var data: Dictionary = {}
+-	for pattern: String in ["ForgedFork*","FormedSideSkin*","RolledWheelArch*"]:
++	for pattern: String in ["ForgedFork*","Formed*","RolledWheelArch*"]:
+ 		for part: MeshInstance3D in car.find_children(pattern,"MeshInstance3D",true,false): data[part.name] = solid(part,str(part.name))
+ 	var rim: MeshInstance3D = car.find_child("SteeringWheelRim",true,false)
+ 	check(rim != null,"steering rim has independent solid geometry")
+--- a/game/tests/bake_model_refinement_art.gd
++++ b/game/tests/bake_model_refinement_art.gd
+@@ -7,7 +7,12 @@
+ 	preload("res://vehicle/modular_car_base.gd").enabled = false
+ 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
+ 	preload("res://ui/garage_car_cache.gd").enabled = false
++	var only: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--vehicle="): only = argument.trim_prefix("--vehicle=")
++	assert(only.is_empty() or only in ["compact","kart","forklift","electric","hovercraft"])
+ 	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		if not only.is_empty() and id != only: continue
+ 		var viewport := SubViewport.new()
+ 		viewport.size = Vector2i(640,400)
+ 		viewport.disable_3d = true
+--- /dev/null
++++ b/game/tests/capture_forklift_front_panel.gd
+@@ -0,0 +1,44 @@
++extends SceneTree
++## Settled native front-body comparison using the production Garage world.
++var output: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	assert(not output.is_empty())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	if not prepared:
++		preload("res://vehicle/modular_car_base.gd").enabled = false
++		preload("res://vehicle/prepared_car_cache.gd").enabled = false
++		preload("res://ui/garage_car_cache.gd").enabled = false
++	root.size = Vector2i(1280,960)
++	root.content_scale_size = root.size
++	var showroom := CarShowroom.new()
++	showroom.vehicle_id = "forklift"
++	showroom.garage_mode = true
++	showroom.livery = VehicleLivery.defaults("forklift")
++	root.add_child(showroom)
++	MenuStyle.fill(showroom)
++	while not showroom.showroom_ready: await process_frame
++	var poses: Dictionary = {
++		"front": [Vector3(-0.38,1.48,-5.35),Vector3(0,1.20,-0.88)],
++		"front-quarter": [Vector3(-3.5,2.15,-4.2),Vector3(0,1.12,-0.65)],
++		"front-low": [Vector3(-1.55,0.74,-3.65),Vector3(0,0.72,-1.05)],
++		"side": [Vector3(-4.35,1.62,-0.2),Vector3(0,1.10,0)]
++	}
++	for label: String in poses:
++		var pose: Array = poses[label]
++		var transform: Transform3D = showroom.car.body.global_transform
++		showroom.camera.look_at_from_position(transform*pose[0],transform*pose[1])
++		showroom.invalidate_render()
++		if showroom.reflections != null: showroom.reflections.sync()
++		for tick: int in range(8): await process_frame
++		await RenderingServer.frame_post_draw
++		assert(showroom.showroom_viewport.get_texture().get_image().save_png(output.path_join(label+".png")) == OK)
++	showroom.free()
++	print("FORKLIFT_FRONT_CAPTURE: 4 native views; prepared=",prepared)
++	quit()
+--- /dev/null
++++ b/game/tests/capture_forklift_front_panel.gd.uid
+@@ -0,0 +1 @@
++uid://botbrvf21gbnc
+--- /dev/null
++++ b/game/tests/bake_forklift_front_catalogue.gd
+@@ -0,0 +1,2 @@
++extends "res://../scripts/bake_garage_previews.gd"
++## Reuse the shared native recipe through the pinned development entry point.
+--- /dev/null
++++ b/game/tests/bake_forklift_front_catalogue.gd.uid
+@@ -0,0 +1 @@
++uid://chcfbbfljsf8v
+--- /dev/null
++++ b/scripts/run_forklift_front_panel.py
+@@ -0,0 +1,51 @@
++"""Pinned dev entry point with private disposable profiles and concise receipts."""
++import os
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/forklift-front-panel-2026-11-12"
++WORK = ROOT / "build/forklift-front-panel-2026-11-12"
++
++
++def run(label, script, *options):
++    env = os.environ.copy()
++    profile = WORK / "profiles" / label
++    profile.mkdir(parents=True, exist_ok=True)
++    (profile / "local").mkdir(exist_ok=True)
++    env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="", PYTHONIOENCODING="utf-8")
++    def quote(value):
++        return "'"+str(value).replace("'", "''")+"'"
++
++    invocation = "& "+quote(ROOT / "scripts/dev.ps1")
++    invocation += " -Action Import" if script == "IMPORT" else " -Action TestScript -ScriptPath "+quote(script)
++    invocation += " -CommandTimeoutSeconds 600"
++    index = 0
++    while index < len(options):
++        option = options[index]
++        if option == "-TestArgument":
++            invocation += " -TestArgument @("+",".join(quote(x) for x in options[index+1:])+")"
++            break
++        assert option in ("-Graphical", "-RenderingMethod"), option
++        invocation += " "+option
++        if option == "-RenderingMethod":
++            index += 1
++            invocation += " "+quote(options[index])
++        index += 1
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", invocation]
++    OUT.mkdir(parents=True, exist_ok=True)
++    with (OUT / f"{label}.log").open("w", encoding="utf-8") as log:
++        result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    lines = (OUT / f"{label}.log").read_text(encoding="utf-8").splitlines()
++    (OUT / f"{label}-command.json").write_text(
++        json.dumps({"command": command, "exit_code": result.returncode}, indent=2), encoding="utf-8")
++    print("\n".join(lines[-14:]), flush=True)
++    if result.returncode:
++        raise SystemExit(result.returncode)
++
++
++if __name__ == "__main__":
++    run(*sys.argv[1:])
+--- /dev/null
++++ b/scripts/refresh_forklift_front_panel.py
+@@ -0,0 +1,95 @@
++"""Refresh the front panel, native art and dependent prepared assemblies."""
++import hashlib
++import json
++import subprocess
++import sys
++import time
++
++from run_forklift_front_panel import OUT, ROOT, run
++
++
++def sources():
++    files = []
++    for folder in ("game/vehicle", "game/resources", "game/ui", "game/track"):
++        files.extend(p for p in (ROOT / folder).rglob("*")
++                     if p.suffix in (".gd", ".tres", ".json", ".gdshader", ".gdshaderinc"))
++    files.extend(p for p in (ROOT / "game/assets/vehicles").rglob("*")
++                 if p.is_file() and p.suffix in (".res", ".png")
++                 and "modular_car_bases_v1" not in p.parts and "modular_kits_v1" not in p.parts)
++    files.extend(p for p in (ROOT / "game/assets/liveries").rglob("*")
++                 if p.suffix in (".png", ".svg", ".json"))
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
++
++
++def main():
++    OUT.mkdir(parents=True, exist_ok=True)
++    run("shadow-bake", "res://tests/bake_forklift_racing_shadows.gd")
++    run("profile-art", "res://tests/bake_model_refinement_art.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", "--vehicle=forklift")
++    run("livery-art", "res://tests/bake_livery_previews.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", "--vehicle=forklift")
++    run("news-art", "res://tests/bake_news_car_photos.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", "--vehicle=forklift",
++        "--evidence-root=res://../docs/evidence/forklift-front-panel-2026-11-12/news")
++    before = sources()
++    (OUT / "refresh-inputs.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++    run("all-bases", "res://tests/bake_modular_car_bases.gd")
++    for car in ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally"):
++        run("kits-"+car, "res://tests/bake_modular_car_kits.gd", "-TestArgument", "--vehicle="+car)
++    run("all-garage", "res://tests/bake_garage_cars.gd")
++    run("header-template", "res://tests/bake_header_simple_compact.gd")
++    run("garage-pictures", "res://tests/bake_forklift_front_catalogue.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility")
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    (OUT / "refresh-source-receipt.json").write_text(
++        json.dumps({"input_count": len(before), "changed": changed}, indent=2), encoding="utf-8")
++    assert not changed, "Authored sources changed during the prepared refresh"
++    run("prepared-preflight", "res://tests/check_prepared_assets.gd")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT,
++                       check=True, stdout=log, stderr=subprocess.STDOUT)
++    print("FORKLIFT_FRONT_REFRESH: stable sources and both preflights passed", flush=True)
++
++
++def repair():
++    before = sources()
++    stable_samples = 0
++    for attempt in range(15):
++        time.sleep(20)
++        current = sources()
++        stable_samples = stable_samples+1 if before == current else 0
++        before = current
++        print("REPAIR_INPUT_STABILITY", stable_samples, flush=True)
++        if stable_samples >= 2: break
++    assert stable_samples >= 2, "Concurrent model sources are still changing"
++    prior = json.loads((OUT / "refresh-inputs.json").read_text())
++    changed = {p for p in before.keys() | prior.keys() if before.get(p) != prior.get(p)}
++    (OUT / "repair-input-diff.json").write_text(json.dumps(sorted(changed), indent=2), encoding="utf-8")
++    assert all(p.startswith("game/assets/vehicles/challenger_hellcat_v1/")
++               or p == "game/ui/rivalry_simple_car.gd" for p in changed), changed
++    (OUT / "repair-inputs.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++    for stage, script in (("bases", "bake_modular_car_bases"), ("kits", "bake_modular_car_kits"),
++                          ("garage", "bake_garage_cars")):
++        run("repair-super-"+stage, "res://tests/"+script+".gd", "-TestArgument", "--vehicle=super_rally")
++    run("repair-profile-art", "res://tests/bake_model_refinement_art.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", "--vehicle=forklift")
++    run("repair-news-art", "res://tests/bake_news_car_photos.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", "--vehicle=forklift",
++        "--evidence-root=res://../docs/evidence/forklift-front-panel-2026-11-12/news")
++    run("repair-garage-pictures", "res://tests/bake_forklift_front_catalogue.gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility")
++    after = sources()
++    drift = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    (OUT / "repair-source-receipt.json").write_text(json.dumps(
++        {"input_count": len(before), "rebuilt_cars": ["super_rally"], "changed": drift}, indent=2), encoding="utf-8")
++    assert not drift, "Authored sources changed during repair"
++    run("prepared-preflight", "res://tests/check_prepared_assets.gd")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT,
++                       check=True, stdout=log, stderr=subprocess.STDOUT)
++    print("FORKLIFT_FRONT_REPAIR: preserved concurrent sources; both preflights passed", flush=True)
++
++
++if __name__ == "__main__":
++    repair() if "--repair" in sys.argv else main()
+--- /dev/null
++++ b/scripts/verify_forklift_front_panel.py
+@@ -0,0 +1,16 @@
++"""Focused existing regressions and prepared native comparison captures."""
++from run_forklift_front_panel import run
++
++
++if __name__ == "__main__":
++    run("import", "IMPORT")
++    for label, method, folder in (("native-gl", "gl_compatibility", "after"),
++                                  ("native-mobile", "mobile", "mobile")):
++        run(label, "res://tests/capture_forklift_front_panel.gd", "-Graphical",
++            "-RenderingMethod", method, "-TestArgument", "--prepared",
++            "--output=res://../docs/evidence/forklift-front-panel-2026-11-12/"+folder)
++    run("prepared-comparison", "res://tests/test_forklift_prepared_kits.gd")
++    run("garage-race", "res://tests/test_forklift_garage.gd")
++    run("driving", "res://tests/test_driving.gd")
++    run("wash", "res://tests/test_car_wash.gd")
++    run("production-parse", "res://tests/check_model_refinement_parse.gd")
+--- /dev/null
++++ b/docs/FORKLIFT_FRONT_PANEL_2026_11_12.md
+@@ -0,0 +1,92 @@
++# Forklift front body panel — 2026-11-12
++
++FFP01 closes the exposed front of the body identified in the owner's screenshot.
++A body-coloured formed bulkhead connects the two side noses behind the mast.
++Its recessed centre clears the hydraulic routing, and the raised lower corners
++follow the front wheel openings. The existing paint material colours the panel.
++FFP02 preserves the mast, forks, wheels, steering, operator fittings and handling.
++FFP03 refreshes the native shadows, photographs and prepared assemblies.
++
++| Native Garage view | Before | After |
++|---|---|---|
++| Front | [Original](evidence/forklift-front-panel-2026-11-12/before/front.png) | [Corrected](evidence/forklift-front-panel-2026-11-12/after/front.png) |
++| Front quarter | [Original](evidence/forklift-front-panel-2026-11-12/before/front-quarter.png) | [Corrected](evidence/forklift-front-panel-2026-11-12/after/front-quarter.png) |
++| Low front | [Original](evidence/forklift-front-panel-2026-11-12/before/front-low.png) | [Corrected](evidence/forklift-front-panel-2026-11-12/after/front-low.png) |
++
++The production source change is `_front_panel()` and its construction call in
++`game/vehicle/forklift_model.gd`. Its 48/96 segments add 388/772 triangles in
++reduced/full geometry. A 60 mm backing gives the tight bends real thickness;
++the ends sit inside the side skins, 2 mm ahead of their previous end caps.
++The existing mesh-finish regression now includes every `Formed*` mesh in its
++closed-volume, winding and outward-normal checks. The original draft exposed
++four failures here; the corrected panel passes all 101 checks. Both receipts
++are retained in the evidence folder.
++
++The existing profile-art baker gains a vehicle filter. Two small native entry
++points provide fixed front comparison views and reuse the shared catalogue
++recipe. The three scoped Python runners use the pinned `scripts/dev.ps1`
++entry point, private disposable profiles and an empty backend URL.
++
++Actual commands:
++
++```text
++python scripts/run_forklift_front_panel.py before res://tests/capture_forklift_front_panel.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --output=res://../docs/evidence/forklift-front-panel-2026-11-12/before
++python scripts/run_forklift_front_panel.py geometry-final res://tests/test_forklift_model_finish.gd -TestArgument --evidence-dir=res://../docs/evidence/forklift-front-panel-2026-11-12/finish-final
++python scripts/refresh_forklift_front_panel.py
++python scripts/refresh_forklift_front_panel.py --repair
++python scripts/verify_forklift_front_panel.py
++python scripts/run_forklift_front_panel.py scoped-preflight res://tests/check_prepared_assets.gd -TestArgument --exclude-vehicle=compact --exclude-vehicle=kart --exclude-vehicle=electric --exclude-vehicle=hovercraft --exclude-vehicle=super_rally
++python scripts/check_garage_previews.py --vehicles=forklift
++python scripts/run_forklift_front_panel.py import-final IMPORT
++```
++
++The shared dependency rules require a coherent refresh of the other prepared
++car assemblies after model/livery changes. Their authored sources are preserved.
++The initial news-photo baker wrote its default legacy framing receipt; the new
++receipt was copied here and that task-start-clean legacy file restored exactly.
++The runner now accepts multiple native arguments, including a scoped evidence
++destination. Concurrent Kart picture changes are preserved.
++
++The full refresh guard rejected concurrent Challenger paint-buffer and Rivalry
++renderer changes. The first repair scope check then detected two additional
++Challenger contour-buffer changes before writing anything. After stable input
++samples, only the affected Super Rally bases, kits and Garage model were rebuilt;
++Forklift profile/news art and the shared catalogue were refreshed against the
++current sources. That first 21,062-input repair fence passes with zero drift. Its
++preflight passes 2,267 checks on 551 resources, and all six catalogue photographs
++have 157 current source hashes. Of 24 immediate pre-gallery unrelated image
++controls, 21 remain byte-exact; the Super Rally catalogue, header and news images
++reflect its concurrent body changes. Editor import passes, and all 53 Forklift image imports match their
++new source bytes.
++
++A final audit then detected another concurrent update of the four Challenger
++paint/contour buffers. The first repair receipt is retained separately. A second
++scoped repair is rejected when those four buffers change again; no whole-project
++readiness is claimed while that writer remains active. These native inputs route
++only to Super Rally in the existing dependency manifest. The Forklift sources,
++prepared geometry and qualified behavior remain unchanged. Final qualification
++therefore uses the strict Forklift prepared-resource scope and its own catalogue
++image, preserving the concurrent Challenger source work.
++
++| Final validation | Actual result |
++|---|---|
++| Closed geometry, winding and normals in both detail variants | 101 checks, 0 failures |
++| Saved Garage model, Compatibility / desktop Vulkan Mobile | Four fixed native views each; inspected front and wheel clearance |
++| Every Forklift prepared kit versus procedural sources | 1,726 checks, 0 failures |
++| Garage selection, all 56 part choices, equip/reload and actual race/ghost | 131 checks, 0 failures; headless |
++| Driving / washing | 72 / 1,655 checks, 0 failures |
++| Production parser | 554 scripts, 0 failures |
++| First full preflight / catalogue provenance | 551 resources, 2,267 checks, 0 failures / six pictures, 157 source hashes; superseded for global readiness by later concurrent Challenger writes |
++| Final Forklift scoped preflight / catalogue provenance | 110 resources, 453 checks, 0 failures / one picture, 157 current source hashes |
++| Refreshed texture imports | All 53 match their source image bytes |
++
++All eight task-start car-configuration controls and the main Git index remain
++byte-exact. The final source audit records the four concurrent Challenger buffer
++changes and unchanged Forklift inputs. The source-only checkpoint
++and native-file hash inventory are retained beside the logs and comparisons;
++generated project/profile copies are not retained as evidence. Build retention
++cleanup is run at completion.
++
++Reload and owner appearance acceptance remain. No physical-device test, APK,
++owner-save/process change, backend request, deployment or main-index write was
++performed. Desktop native views do not establish device performance.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,9 @@
++<!-- FORKLIFT-FRONT-PANEL-20261112 -->
++## Forklift front bodywork closed behind the mast (2026-11-12)
++
++FFP01-FFP03: Owner identifies open front between the side frames. Fitted body-colour bulkhead joins their noses behind mast/hoses and clears front wheels; +388/+772 reduced/full triangles. Geometry101/0, prepared comparisons1726/0, Garage/race131/0, driving72/0, wash1655/0, production parser554/0, four prepared native views per desktop renderer and53 image imports pass. Final Forklift scope110-resource453/0 and one-picture157-source checks pass; eight configurations/main index exact. Initial full551-resource2267/0 refresh is superseded for global readiness by continuing concurrent Challenger buffer writes; guarded repair attempts and owner sources are preserved.21/24 immediate unrelated PNG controls exact; three concurrent Challenger pictures preserved. Checked14-file source-only checkpoint and native hashes retained. [Changes, commands, native comparisons and limits](docs/FORKLIFT_FRONT_PANEL_2026_11_12.md). Reload/owner and device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index write.
++<!-- /FORKLIFT-FRONT-PANEL-20261112 -->
++
+ <!-- KART-RACE-DRIVER-SCALE-20261112 -->
+ ## Kart driver enlarged relative to the kart in races (2026-11-12)
+ KRS01-KRS03: Owner clarifies driver size relative to kart. Helmet20% larger, taller/broader upper torso and fuller refitted sleeves retain exact grips, lower body, back support and camera/kart scale. Actual frozen-race projection gains20% each dimension; crown+106.3mm model-space. Native12480tri/six roles/six poses unchanged. Anatomy41/0 rejects old41/3;1102 supported vertices/glove packets fixed, cockpit286/0, contact27/0, turning270/0, fuel790/0, prepared98/0 and actual App29/0 each renderer, module1160/0, parser554/0 and driving72/0 pass. Concurrent Forklift/Challenger/Rivalry writes reject broad fences; final audit excluding changing Super Rally passes468-resource1925/0 and five-picture157-source checks, without whole-tree readiness claim. Eleven-file checkpoint is exact forward/reverse/whitespace clean;14 camera/runtime/configuration controls exact. [Native before/after race, source, commands, retained diagnostics and limits](docs/KART_DRIVER_RACE_SCALE_2026_11_12.md). Relaunch/owner visual/device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index staging. Active-work pin removed and retention cleanup applied; direct private-output deletion blocked by tool policy.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,9 @@
++<!-- FORKLIFT-FRONT-PANEL-20261112 -->
++## Forklift front bodywork closed behind the mast (2026-11-12)
++
++FFP01-FFP03: Owner identifies open front between the side frames. Fitted body-colour bulkhead joins their noses behind mast/hoses and clears front wheels; +388/+772 reduced/full triangles. Geometry101/0, prepared comparisons1726/0, Garage/race131/0, driving72/0, wash1655/0, production parser554/0, four prepared native views per desktop renderer and53 image imports pass. Final Forklift scope110-resource453/0 and one-picture157-source checks pass; eight configurations/main index exact. Initial full551-resource2267/0 refresh is superseded for global readiness by continuing concurrent Challenger buffer writes; guarded repair attempts and owner sources are preserved.21/24 immediate unrelated PNG controls exact; three concurrent Challenger pictures preserved. Checked14-file source-only checkpoint and native hashes retained. [Changes, commands, native comparisons and limits](docs/FORKLIFT_FRONT_PANEL_2026_11_12.md). Reload/owner and device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index write.
++<!-- /FORKLIFT-FRONT-PANEL-20261112 -->
++
+ <!-- KART-RACE-DRIVER-SCALE-20261112 -->
+ ## Kart driver enlarged relative to the kart in races (2026-11-12)
+ KRS01-KRS03: Owner clarifies driver size relative to kart. Helmet20% larger, taller/broader upper torso and fuller refitted sleeves retain exact grips, lower body, back support and camera/kart scale. Actual frozen-race projection gains20% each dimension; crown+106.3mm model-space. Native12480tri/six roles/six poses unchanged. Anatomy41/0 rejects old41/3;1102 supported vertices/glove packets fixed, cockpit286/0, contact27/0, turning270/0, fuel790/0, prepared98/0 and actual App29/0 each renderer, module1160/0, parser554/0 and driving72/0 pass. Concurrent Forklift/Challenger/Rivalry writes reject broad fences; final audit excluding changing Super Rally passes468-resource1925/0 and five-picture157-source checks, without whole-tree readiness claim. Eleven-file checkpoint is exact forward/reverse/whitespace clean;14 camera/runtime/configuration controls exact. [Native before/after race, source, commands, retained diagnostics and limits](docs/KART_DRIVER_RACE_SCALE_2026_11_12.md). Relaunch/owner visual/device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index staging. Active-work pin removed and retention cleanup applied; direct private-output deletion blocked by tool policy.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,9 @@
++<!-- FORKLIFT-FRONT-PANEL-20261112 -->
++## Forklift front bodywork closed behind the mast (2026-11-12)
++
++FFP01-FFP03: Owner identifies open front between the side frames. Fitted body-colour bulkhead joins their noses behind mast/hoses and clears front wheels; +388/+772 reduced/full triangles. Geometry101/0, prepared comparisons1726/0, Garage/race131/0, driving72/0, wash1655/0, production parser554/0, four prepared native views per desktop renderer and53 image imports pass. Final Forklift scope110-resource453/0 and one-picture157-source checks pass; eight configurations/main index exact. Initial full551-resource2267/0 refresh is superseded for global readiness by continuing concurrent Challenger buffer writes; guarded repair attempts and owner sources are preserved.21/24 immediate unrelated PNG controls exact; three concurrent Challenger pictures preserved. Checked14-file source-only checkpoint and native hashes retained. [Changes, commands, native comparisons and limits](FORKLIFT_FRONT_PANEL_2026_11_12.md). Reload/owner and device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index write.
++<!-- /FORKLIFT-FRONT-PANEL-20261112 -->
++
+ <!-- KART-RACE-DRIVER-SCALE-20261112 -->
+ ## Kart driver enlarged relative to the kart in races (2026-11-12)
+ KRS01-KRS03: Owner clarifies driver size relative to kart. Helmet20% larger, taller/broader upper torso and fuller refitted sleeves retain exact grips, lower body, back support and camera/kart scale. Actual frozen-race projection gains20% each dimension; crown+106.3mm model-space. Native12480tri/six roles/six poses unchanged. Anatomy41/0 rejects old41/3;1102 supported vertices/glove packets fixed, cockpit286/0, contact27/0, turning270/0, fuel790/0, prepared98/0 and actual App29/0 each renderer, module1160/0, parser554/0 and driving72/0 pass. Concurrent Forklift/Challenger/Rivalry writes reject broad fences; final audit excluding changing Super Rally passes468-resource1925/0 and five-picture157-source checks, without whole-tree readiness claim. Eleven-file checkpoint is exact forward/reverse/whitespace clean;14 camera/runtime/configuration controls exact. [Native before/after race, source, commands, retained diagnostics and limits](KART_DRIVER_RACE_SCALE_2026_11_12.md). Relaunch/owner visual/device acceptance remain; no device query/test, APK, owner-save/process change, backend request, deployment or main-index staging. Active-work pin removed and retention cleanup applied; direct private-output deletion blocked by tool policy.

@@ -10,7 +10,7 @@ const SIZE := Vector2i(176,112)
 const FILE_LIMIT: int = 14
 var records: LocalRecords
 var allowed: Callable
-# App admits captures in settled idle menus or the ready selected Garage.
+# App admits captures in settled idle menus after the live Garage is hidden.
 # Standalone tools retain their explicitly supplied `allowed` capture policy.
 var capture_allowed: Callable
 var directory: String
@@ -80,6 +80,11 @@ func _committed() -> void:
 	# Stop displaying an obsolete saved design during the debounce/read window.
 	for vehicle: String in VehicleCatalog.IDS: changed.emit(vehicle)
 	_debounce.start()
+
+func request_pictures(owner_records: LocalRecords) -> void:
+	# A bounded memory entry may have been evicted since the last save/scan.
+	# Opening the picker is fresh demand; recover it from disk or queue a capture.
+	if owner_records != null and owner_records == records: _scan()
 
 func _scan() -> void:
 	if records == null: return
@@ -232,8 +237,8 @@ func _process(_delta: float) -> void:
 				_cover_ready = false
 				_capture_announced = true
 				capture_started.emit(str(job.vehicle))
-				# The Garage's loading picture must actually draw before even the
-				# renderer resource is loaded or its native model is constructed.
+				# Finish the settled menu's next draw before loading the renderer
+				# resource or constructing its native model.
 				RenderingServer.frame_post_draw.connect(_cover_drawn,CONNECT_ONE_SHOT)
 			break
 	if idle(): set_process(false)

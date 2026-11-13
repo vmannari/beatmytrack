@@ -135,11 +135,13 @@ def eligible_versions(session, active, vehicle):
 def selected_slots(session, request, active, vehicle, test_population, *, timestamp=None, use_circuit=True):
     from .rivalry_planning import planned_versions
     timestamp = now() if timestamp is None else timestamp
-    if use_circuit and vehicle == "compact" and not test_population:
+    if use_circuit and not test_population:
+        from .world_circuit import car_event
         from .world_ranking_models import Circuit
         circuit = session.scalar(select(Circuit).where(Circuit.week_start == week_window(timestamp)[0]))
-        if circuit is not None and circuit.contract_key in compatible_contract_keys(active, vehicle):
-            return circuit.tracks
+        event = car_event(session, circuit, vehicle) if circuit else None
+        if event is not None and event.contract_key in compatible_contract_keys(active, vehicle):
+            return event.tracks
     chosen = planned_versions(session, active, vehicle, timestamp)
     if len(chosen) < TRACK_COUNT:
         return []
@@ -273,12 +275,11 @@ def snapshot(session, group, player_id, timestamp=None, *, facts=None):
         entry = pinned["entry"]
         version = facts["versions"].get(pinned["version_id"])
         available = bool(version and version["available"] and version["owner_id"] not in blocked)
-        if version is not None:
-            if version["deleted_at"] is not None:
-                # Refresh redacted source hashes as well as names for retained
-                # cohort snapshots; their board/score pins remain unchanged.
-                entry = {**entry, "creator": "Removed account", "content_hash": version["content_hash"],
-                    "redacted_track_hash": version["redacted_track_hash"], "canonical_track_hash": version["canonical_track_hash"]}
+        if version is not None and version["deleted_at"] is not None:
+            # Refresh redacted source hashes as well as names for retained
+            # cohort snapshots; their board/score pins remain unchanged.
+            entry = {**entry, "creator": "Removed account", "content_hash": version["content_hash"],
+                "redacted_track_hash": version["redacted_track_hash"], "canonical_track_hash": version["canonical_track_hash"]}
         if not available:
             # Keep score/board pins while withdrawing objectionable public art/text.
             entry = {**entry, "name": "Unavailable track", "creator": "Unavailable creator", "points": []}
@@ -374,15 +375,22 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
     start, end, _, _ = week_window(timestamp)
     circuit_id = None
     launch = request.app.state.settings.world_ranking_launch_week
-    if launch and start >= launch and payload.vehicle_id == "compact" and not payload.test_population:
+    if launch and start >= launch and not payload.test_population:
+        from .world_circuit import car_event, lock_weights
         from .world_ranking_models import Circuit
         circuit = session.scalar(select(Circuit).where(Circuit.week_start == start))
         if circuit is None:
             raise HTTPException(503, "CIRCUIT_PREPARING")
-        if circuit.contract_key not in contracts:
-            raise HTTPException(409, "CIRCUIT_BUILD_PINNED_UNTIL_NEXT_WEEK")
-        contract = circuit.contract_key
-        circuit_id = circuit.id
+        event = car_event(session, circuit, payload.vehicle_id)
+        if event is None and circuit.policy != "compact-circuit-v1":
+            raise HTTPException(503, "CIRCUIT_PREPARING")
+        if event is not None:
+            if event.contract_key not in contracts:
+                raise HTTPException(409, "CIRCUIT_BUILD_PINNED_UNTIL_NEXT_WEEK")
+            if hasattr(event, "weights_locked") and not event.weights_locked:
+                lock_weights(session, circuit)
+            contract = event.contract_key
+            circuit_id = circuit.id
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
         RivalryMember.week_start == start, RivalryMember.contract_key.in_(contracts))
         .order_by(RivalryMember.joined_at.desc(), RivalryMember.group_id).limit(1))
@@ -614,11 +622,3 @@ def snapshot_response(request, session, group, player_id):
     return response(request, session, group, player_id, now())
 
 
-def conditional_snapshot(request, value):
-    from fastapi.responses import JSONResponse, Response
-    stable = {key: data for key, data in value.items() if key not in ("server_now", "remaining_seconds")}
-    tag = '"' + digest(stable) + '"'
-    headers = {"ETag": tag, "Cache-Control": "private, no-cache, must-revalidate", "Vary": "Authorization, Accept-Encoding", "X-Server-Time": str(value["server_now"])}
-    if request.headers.get("if-none-match") == tag:
-        return Response(status_code=304, headers=headers)
-    return JSONResponse(value, headers=headers)

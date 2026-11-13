@@ -110,18 +110,19 @@ func result_vote_updates(client: VoteClient, cloud: Node, store: LocalRecords) -
 	await frames()
 	var reads: int = client.reads
 	var row := TrackRating.new()
+	row.hide_when_unavailable = true
 	row.records = store
 	row.cloud_client = client
 	row.cloud_sync = cloud
 	row.cloud_version = saving.version
 	row.finish_vote = saving
 	root.add_child(row)
-	check(filled(row,4) and row.value() == 0,"results display the selected stars immediately while the confirmed score remains zero")
+	check(row.visible and filled(row,4) and row.value() == 0,"results display the selected stars immediately while the confirmed score remains zero")
 	check(row.locked and client.reads == reads,"pending results share the existing vote without a duplicate rating GET")
 	client.hold_save = false
 	await frames()
 	check(not is_instance_valid(saving) and row.value() == 4 and filled(row,4),"visible results retain confirmed stars after the background vote exits")
-	check(not row.locked and row.caption.text == "Rate the track","saved results remain editable with one stable label")
+	check(row.visible and not row.locked and row.caption.text == "Rate the track","saved results remain visible and editable with one stable label")
 	row.queue_free()
 	await frames()
 	for state: String in ["unqualified","unavailable","signed-out"]:
@@ -130,17 +131,56 @@ func result_vote_updates(client: VoteClient, cloud: Node, store: LocalRecords) -
 		var player: Dictionary = client.player.duplicate()
 		if state == "signed-out": client.player = {}
 		row = TrackRating.new()
+		row.hide_when_unavailable = true
 		row.records = store
 		row.cloud_client = client
 		row.cloud_sync = cloud
 		row.cloud_version = "label-version"
 		root.add_child(row)
 		await frames()
-		check(row.caption.text == "Rate the track" and row.locked,"rating label stays stable when "+state)
+		check(not row.visible and row.locked,"results hide the unavailable rating label and stars when "+state)
 		row.queue_free()
 		client.player = player
 		await frames()
 	client.fail_read = false
+	client.score = 0
+	client.eligible = true
+	client.hold_read = true
+	row = TrackRating.new()
+	row.hide_when_unavailable = true
+	row.records = store
+	row.cloud_client = client
+	row.cloud_sync = cloud
+	row.cloud_version = "eligibility-version"
+	root.add_child(row)
+	check(not row.visible,"results hide the rating while eligibility is unknown")
+	client.hold_read = false
+	await frames()
+	check(row.visible and not row.locked,"results reveal rating after server eligibility is confirmed")
+	client.hold_save = true
+	row.choose(3)
+	await frames()
+	check(row.visible and row.locked and filled(row,3),"results retain the selected rating during an inline save")
+	client.hold_save = false
+	await frames()
+	client.eligible = false
+	row._load_cloud_vote()
+	await frames()
+	check(not row.visible,"results hide the rating when a later read denies eligibility")
+	client.eligible = true
+	cloud.status = "Race verified"
+	cloud.changed.emit()
+	await frames()
+	check(row.visible and not row.locked,"verification makes a previously unavailable results rating visible")
+	var signed_in_player: Dictionary = client.player.duplicate()
+	client.player = {}
+	client.identity_changed.emit()
+	check(not row.visible and row.locked,"sign-out immediately hides the results rating")
+	var rating_listener: Callable = row._identity_changed
+	row.queue_free()
+	client.player = signed_in_player
+	await frames()
+	check(not client.get_signal_connection_list("identity_changed").any(func(connection: Dictionary) -> bool: return connection.callable == rating_listener),"closed results disconnect their rating identity listener")
 
 func handoff_races(client: VoteClient, cloud: Node) -> void:
 	client.score = 0
@@ -362,6 +402,27 @@ func run() -> void:
 	click(game.race_cues.rating_panel.find_child("SkipRating",true,false) as Button)
 	await frames()
 	check(game.paused and app.root_ui.visible and client.saves == 2 and not is_instance_valid(vote),"actual Skip continues immediately and abandons an unselected vote")
+	# Own publications reach the same results page without offering a rating.
+	client.eligible = false
+	game.native_track.metadata.cloud_creator_id = str(client.player.id)
+	await app._retry_race()
+	game.set_physics_process(false)
+	await frames()
+	check(not game.cloud_rating.should_prompt(),"own-track retry suppresses the finish rating prompt")
+	drive(game)
+	for tick: int in range(240):
+		if game.paused: break
+		game._physics_process(1.0/120.0)
+	await frames()
+	summary = app.root_ui.find_child("RaceResults",true,false)
+	summary.continue_requested.emit()
+	await frames()
+	result_row = app.root_ui.find_child("RaceComplete",true,false).find_child("TrackRating",true,false)
+	check(result_row.locked and not result_row.is_visible_in_tree(),"own-track Race Complete hides the unavailable rating label and stars")
+	await capture("results-own-track-1280x720")
+	root.size = Vector2i(960,540)
+	await capture("results-own-track-960x540")
+	root.size = Vector2i(1280,720)
 	# Local disk failure rolls back in-memory stars and proceeds in the same call.
 	var local := FailedRecords.new()
 	var row := TrackRating.new()

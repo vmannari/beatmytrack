@@ -42,7 +42,7 @@ def no_improvement(session, ticket, board, result, *, submitted_at=None):
     for the player's first or improved verified result in those competitions.
     Missing/uncertain facts always leave the race on the verification path.
     """
-    if result is None or board.manifest.get("purpose") == "creator_test":
+    if result is None or board.manifest.get("purpose") in ("creator_test", "daily_laps"):
         return False
     ticks, laps = result
     bests = session.execute(select(PersonalBest.time_ticks, LapPersonalBest.time_ticks)

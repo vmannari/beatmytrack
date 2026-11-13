@@ -25,6 +25,9 @@ func run() -> void:
 	preload("res://vehicle/prepared_car_cache.gd").enabled = true
 	preload("res://vehicle/prepared_car_cache.gd").remember(car)
 	var error: Error = preload("res://ui/header_simple_cache.gd").bake(car,revision)
+	if error == OK:
+		error = preload("res://tests/support/car_refinement_lods.gd").new().bake(preload("res://ui/header_simple_cache.gd").DIRECTORY+"compact.scn","compact",0.5)
+	if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(preload("res://ui/header_simple_cache.gd").DIRECTORY+"compact.scn","compact")
 	print("HEADER_SIMPLE_BAKE: ",error)
 	car.free()
 	quit(0 if error == OK else 1)

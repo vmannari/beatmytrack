@@ -30,6 +30,10 @@ func run() -> void:
 	assert(pixels.save_png("res://assets/menu/header_cars_v1/kart.png") == OK)
 	canvas.queue_free()
 	await process_frame
+	if "--header-only" in OS.get_cmdline_user_args():
+		print("KART_FINISHING_ART: refreshed header kart picture")
+		quit()
+		return
 	var showroom := CarShowroom.new()
 	showroom.vehicle_id = "kart"
 	showroom.read_only = true

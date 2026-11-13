@@ -1,8 +1,8 @@
 extends RefCounted
-## Optional stock-kit simple Compact header geometry; fail closed on source or engine changes.
+## Stock-kit reduced Compact header geometry; fail closed on source or engine changes.
 const Cache=preload("res://vehicle/prepared_car_cache.gd")
 const DIRECTORY: String="res://assets/menu/header_car_templates_v1/"
-const SCHEMA: String="header-simple-rest-v2"
+const SCHEMA: String="header-reduced-rest-v4"
 const Build = preload("res://core/build_identity.gd")
 static var enabled: bool=true
 static var hits: int=0
@@ -16,8 +16,8 @@ static func valid_data(data: Dictionary, car: CarVisual, revision: String) -> bo
 	return data.get("schema","")==SCHEMA and data.get("revision","")==revision and data.get("engine",[])==engine_key() and data.get("key",[])==geometry_key(car)
 
 static func geometry_key(car: CarVisual) -> Array:
-	var config: HandlingConfig=VehicleCatalog.config(car.vehicle_id)
-	return [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+	var config: HandlingConfig=VehicleCatalog.config(car.model_id)
+	return [SCHEMA,car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
 static func geometry_sources() -> Dictionary:
 	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes("compact")
@@ -28,10 +28,10 @@ static func geometry_revision() -> String:
 	return preload("res://vehicle/modular_car_base.gd").build_revision("compact")
 
 static func restore(car: CarVisual) -> bool:
-	if not enabled or not car.simple_model or car.vehicle_id!="compact" or car.customisation!=VehicleCustomisation.defaults(): return false
+	if not enabled or not car.simple_model or car.model_id!="compact" or car.customisation!=VehicleCustomisation.defaults(): return false
 	var revision: String = geometry_revision()
 	if revision.length()!=64 or not revision.is_valid_hex_number(): return false
-	var path: String=DIRECTORY+car.vehicle_id+".scn"
+	var path: String=DIRECTORY+car.model_id+".scn"
 	if not ResourceLoader.exists(path): return false
 	var scene: PackedScene=load(path) as PackedScene
 	if scene==null: return false
@@ -76,7 +76,7 @@ static func restore(car: CarVisual) -> bool:
 	return true
 
 static func bake(car: CarVisual, revision: String) -> Error:
-	if car.vehicle_id!="compact" or not car.simple_model or car.customisation!=VehicleCustomisation.defaults() or revision.length()!=64 or not revision.is_valid_hex_number(): return ERR_INVALID_PARAMETER
+	if car.model_id!="compact" or not car.simple_model or car.customisation!=VehicleCustomisation.defaults() or revision.length()!=64 or not revision.is_valid_hex_number(): return ERR_INVALID_PARAMETER
 	var entry: Dictionary={}
 	for candidate: Dictionary in Cache.entries:
 		if candidate.key==Cache.key_for(car): entry=candidate;break
@@ -92,7 +92,7 @@ static func bake(car: CarVisual, revision: String) -> Error:
 			saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(index))
 			saved.surface_set_material(index,node.mesh.surface_get_material(index))
 		node.mesh=saved
-	var data: Dictionary={"schema":SCHEMA,"revision":revision,"engine":engine_key(),"sources":geometry_sources(),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
+	var data: Dictionary={"schema":SCHEMA,"revision":revision,"engine":engine_key(),"sources":geometry_sources(),"key":geometry_key(car),"vehicle":car.model_id,"editable":car.editable_kits,
 		"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,
 		"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field]=entry[field]
@@ -108,6 +108,6 @@ static func bake(car: CarVisual, revision: String) -> Error:
 	var error: Error=scene.pack(holder)
 	if error==OK:
 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
-		error=ResourceSaver.save(scene,DIRECTORY+car.vehicle_id+".scn",ResourceSaver.FLAG_COMPRESS)
+		error=ResourceSaver.save(scene,DIRECTORY+car.model_id+".scn",ResourceSaver.FLAG_COMPRESS)
 	holder.free()
 	return error

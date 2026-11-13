@@ -58,12 +58,6 @@ static func _beam(root: Node3D, a: Vector3, b: Vector3, width: float, material: 
 	var beam: MeshInstance3D = GarageEnvironment.box(root,(a+b)*0.5,Vector3(width,a.distance_to(b),width),material)
 	beam.quaternion = Quaternion(Vector3.UP,(b-a).normalized())
 
-static func _bottle(root: Node3D, at: Vector3, height: float) -> void:
-	GarageFurnishings.bottle(root,at,height)
-
-static func _toolbox(root: Node3D, at: Vector3) -> void:
-	GarageFurnishings.case_model(root,at)
-
 static func _poster(root: Node3D) -> void:
 	var poster := Node3D.new()
 	poster.name = "GarageLeftPoster"

@@ -2,7 +2,9 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-217-desert-road-relief"
+const VERSION: String = "track-kit-219-packed-assets"
+const VERTEX_PACKING = preload("res://rendering/mesh_vertex_packing.gd")
+var scenery_lods: bool = true # False is an offline full-detail comparison control.
 var piece_road_materials: bool = false
 var desert_relief: RefCounted
 const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
@@ -110,7 +112,6 @@ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
 const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
 const ROAD_CACHE_MAX_ENTRIES: int = 8
 static var _road_mesh_cache: Array[Dictionary] = []
-static var _pending_road_bakes: Dictionary = {}
 
 static func race_roads_need_preparation(track: NativeTrack) -> bool:
 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return false
@@ -1219,29 +1220,12 @@ func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack, geo
 		if has_meta(name): metadata[name] = get_meta(name)
 	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes,"geometry_key":geometry_key}
 	_admit_road_entry(entry)
-	var id: String = ROAD_DISK_CACHE.identity(key)
-	if persist_road_meshes and ((not _menu_slices and not editor_preview) or _pending_road_bakes.has(id)):
+	if persist_road_meshes and not _menu_slices and not editor_preview:
 		ROAD_DISK_CACHE.write_entry(entry)
-		_pending_road_bakes.erase(id)
 
 
-static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree = null) -> void:
-	if owner_tree != null:
-		preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
-		return
-	# Synchronous legacy helper retained for offline tools and cache fixtures.
-	# Saving can reuse the completed editor road, or its pending sliced build.
-	# Never rebuild scenery synchronously in the Save handler.
-	if track == null or ROAD_DISK_CACHE.directory.is_empty(): return
-	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
-	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
-	for entry: Dictionary in _road_mesh_cache:
-		if entry.key == key:
-			ROAD_DISK_CACHE.write_entry(entry)
-			_pending_road_bakes.erase(ROAD_DISK_CACHE.identity(key))
-			return
-	if _pending_road_bakes.size() >= 8: _pending_road_bakes.erase(_pending_road_bakes.keys()[0])
-	_pending_road_bakes[ROAD_DISK_CACHE.identity(key)] = true
+static func request_saved_road_bake(track: NativeTrack, owner_tree: SceneTree) -> void:
+	preload("res://track/road_cache_bakes.gd").start(track,owner_tree)
 
 
 static func _admit_road_entry(entry: Dictionary) -> void:
@@ -1583,6 +1567,10 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	var mesh: ArrayMesh = _road_upload_mesh if _road_upload_mesh != null else ArrayMesh.new()
 	if _road_upload_mesh == null: mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
 	if not prepared_relief.is_empty(): mesh.set_meta("desert_road_relief",prepared_relief)
+	# Night sections still need the unindexed corner stream below. Desert's
+	# final deformation retains its indexed input and original surface layout.
+	if theme_id not in ["night_city","desert"]:
+		mesh = await VERTEX_PACKING.pack_cooperative(mesh,_yield_build if _menu_slices else Callable())
 	instance.mesh = mesh
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if theme_id == "desert" and gravel else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var material_key: Array = [color,gravel,grass,kerb,asphalt_surface,edge_fringe,road_marking,solid,grass_shoulder]
@@ -1629,7 +1617,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	instance.material_override = material
 	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if theme_id == "desert" and gravel else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	if theme_id == "night_city" and partition_night_ground and _road_section_key.is_empty():
-		_add_lit_road_parts(instance)
+		await _add_lit_road_parts(instance)
 		instance.free()
 	else:
 		add_child(instance)
@@ -1663,7 +1651,7 @@ func _add_lit_road_parts(source: MeshInstance3D) -> void:
 	for cell: Vector2i in groups:
 		var part := MeshInstance3D.new()
 		part.name = "LitRoadSection"
-		part.mesh = (groups[cell] as SurfaceTool).commit()
+		part.mesh = await VERTEX_PACKING.pack_cooperative((groups[cell] as SurfaceTool).commit(),_yield_build if _menu_slices else Callable())
 		part.material_override = source.material_override
 		part.cast_shadow = source.cast_shadow
 		add_child(part)
@@ -2006,6 +1994,11 @@ func _build_placed_objects(track: NativeTrack) -> void:
 	var egypt_tool := SurfaceTool.new(); egypt_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var egypt_count: int = 0
 	var winter_craft_tool:=SurfaceTool.new(); winter_craft_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if scenery_lods and not editor_preview:
+		winter_craft_tool.set_meta("scenery_lods_enabled",true)
+		ink_tool.set_meta("scenery_lods_enabled",true)
+		for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+			if object.kind == "container": tool.set_meta("scenery_lods_enabled",true); break
 	var winter_craft_count: int=0
 	var night_tool:=SurfaceTool.new(); night_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var night_count: int=0
@@ -2131,6 +2124,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		tool.index()
 		var mesh := MeshInstance3D.new()
 		mesh.mesh = PropGeometry.commit(tool)
+		_spatial_prop_objects(mesh,tool)
 		if _capture_editor_prop_arrays:
 			mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
 			mesh.set_meta("editor_prop_hidden",tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
@@ -2147,6 +2141,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		ink_tool.index()
 		var ink_mesh := MeshInstance3D.new()
 		ink_mesh.mesh = PropGeometry.commit(ink_tool)
+		_spatial_prop_objects(ink_mesh,ink_tool)
 		if _capture_editor_prop_arrays:
 			ink_mesh.set_meta("editor_prop_arrays",ink_tool.commit_to_arrays())
 			ink_mesh.set_meta("editor_prop_hidden",ink_tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
@@ -2167,6 +2162,15 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		if theme_id != "winter": stack.index()
 		var stack_mesh: ArrayMesh = stack.commit()
 		if theme_id == "winter": stack_mesh = CreatorPropVisual.WINTER_FINISH.apply(stack_mesh,"tyre_stack")
+		stack_mesh = VERTEX_PACKING.pack(stack_mesh)
+		if scenery_lods and not editor_preview:
+			var distant:=SurfaceTool.new();distant.begin(Mesh.PRIMITIVE_TRIANGLES)
+			_tyre(distant,Vector3.ZERO,16);_tyre(distant,Vector3.UP*0.30,16)
+			distant.generate_normals()
+			if theme_id != "winter": distant.index()
+			var detail: ArrayMesh=distant.commit()
+			if theme_id=="winter":detail=CreatorPropVisual.WINTER_FINISH.apply(detail,"tyre_stack")
+			stack_mesh=VERTEX_PACKING.with_detail(stack_mesh,VERTEX_PACKING.pack(detail),0.028)
 		tyre_instances = preload("res://track/tyre_batches.gd").new()
 		var instances := MultiMesh.new()
 		instances.transform_format = MultiMesh.TRANSFORM_3D
@@ -2184,12 +2188,12 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		update_tyres(VehicleState.new(),track.tyre_origins)
 
 
-func _tyre(tool: SurfaceTool, center: Vector3) -> void:
+func _tyre(tool: SurfaceTool, center: Vector3, radial: int = 20) -> void:
 	# Rounded carcass, open bead, moulded shoulder and restrained tread cuts.
 	var profile: Array = [Vector2(0.24,0.025),Vector2(0.38,0.025),Vector2(0.455,0.045),Vector2(0.48,0.095),Vector2(0.48,0.225),Vector2(0.455,0.275),Vector2(0.36,0.29),Vector2(0.24,0.285),Vector2(0.23,0.11),Vector2(0.24,0.025)]
 	var colors: Array = [Color("2e3737"),Color("394342"),Color("3a4342"),Color("303938"),Color("3a4342"),Color("505956"),Color("454e4b"),Color("242f2e"),Color("242f2e")]
-	CreatorPropVisual._lathe(tool,self,center,1,0,profile,colors)
-	PropGeometry.ring(tool,center+Vector3.UP*0.290,Vector3.UP,0.395,0.38,0.006,Color("636b61"),24)
+	CreatorPropVisual._lathe(tool,self,center,1,0,profile,colors,false,radial)
+	PropGeometry.ring(tool,center+Vector3.UP*0.290,Vector3.UP,0.395,0.38,0.006,Color("636b61"),24 if radial==20 else 16)
 	for i: int in range(24):
 		var a: float = TAU*i/24
 		var b: float = a+0.028
@@ -2422,6 +2426,7 @@ func _build_kerbs(track: NativeTrack, prepared_arrays: Array = []) -> void:
 	var mesh := MeshInstance3D.new()
 	var surface_mesh: ArrayMesh = _road_upload_mesh if _road_upload_mesh != null else ArrayMesh.new()
 	if _road_upload_mesh == null: surface_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
+	surface_mesh = await VERTEX_PACKING.pack_cooperative(surface_mesh,_yield_build if _menu_slices else Callable())
 	mesh.mesh = surface_mesh
 	if _share_road_materials and _road_materials.has("kerb"):
 		mesh.material_override = _road_materials["kerb"]

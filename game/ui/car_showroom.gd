@@ -25,6 +25,7 @@ var preview_live_lighting: bool = false
 var cooperative_build: bool = false
 var showroom_ready: bool = false
 var garage_mode: bool = false
+var simple_model: bool = true
 var turntable: Node3D
 var roof: Node3D
 var reflections: GarageReflections
@@ -111,6 +112,7 @@ func _ready() -> void:
 	viewport.add_child(world)
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
+	car.simple_model = simple_model
 	car.garage_template = garage_mode
 	car.editable_kits = garage_mode and VehicleCustomisation.supported(vehicle_id)
 	car.livery = livery
@@ -121,7 +123,9 @@ func _ready() -> void:
 	while not car.model_ready:
 		await get_tree().process_frame
 		if not is_inside_tree() or is_queued_for_deletion(): return
-	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only and not preview_live_lighting)
+	if garage_mode:
+		turntable = GarageEnvironment.build(world, car, read_only and not preview_live_lighting)
+		_configure_car_shadows()
 	else: ShowroomStudio.build(world,car)
 	if garage_mode: roof = world.find_child("GarageRoof",true,false)
 	if garage_mode and not read_only: record_station = world.find_child("GarageRecordStation",true,false)
@@ -151,6 +155,16 @@ func _ready() -> void:
 	if not read_only and not garage_mode: _cache_pick_meshes(car)
 	showroom_ready = true
 
+func _configure_car_shadows() -> void:
+	if not garage_mode or not is_instance_valid(showroom_viewport): return
+	var key: DirectionalLight3D = showroom_viewport.find_child("GarageKey",true,false)
+	if key == null: return
+	if not key.has_meta("default_car_shadow_normal_bias"):
+		key.set_meta("default_car_shadow_normal_bias",key.shadow_normal_bias)
+	# The imported nose has tightly spaced curved panels. A larger normal
+	# offset prevents their self-shadow mottling while retaining every caster.
+	key.shadow_normal_bias = 8.0 if vehicle_id == "super_rally" else float(key.get_meta("default_car_shadow_normal_bias"))
+
 func refresh_thumbnail() -> void:
 	if not is_instance_valid(showroom_viewport): return
 	var screen: Transform2D = get_viewport().get_stretch_transform() * get_screen_transform()
@@ -171,11 +185,13 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	var previous_car: CarVisual = car
 	var world: Node3D = camera.get_parent()
 	vehicle_id = id
+	_configure_car_shadows()
 	livery = paint.duplicate(true)
 	condition = wear.duplicate(true)
 	customisation = parts.duplicate(true) if VehicleCustomisation.valid(parts,id) else VehicleCustomisation.defaults()
 	car = CarVisual.new()
 	car.vehicle_id = id
+	car.simple_model = simple_model
 	car.garage_template = garage_mode
 	car.editable_kits = garage_mode and VehicleCustomisation.supported(id)
 	car.livery = livery
@@ -245,6 +261,7 @@ func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
 	var previous: CarVisual = car
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
+	car.simple_model = simple_model
 	car.livery = livery
 	car.customisation = customisation
 	previous.get_parent().add_child(car)
@@ -266,6 +283,12 @@ func finish_kit_transition() -> void:
 	if kit_transition!=null: kit_transition.restore()
 	kit_transition = null
 	invalidate_render()
+
+func apply_model_quality(reduced: bool) -> void:
+	if simple_model==reduced: return
+	simple_model=reduced
+	if is_instance_valid(car): replace_car(vehicle_id,livery,weathering.snapshot(),customisation)
+	refresh_thumbnail()
 
 func _prepare_car_reveal(reveal: GarageCarReveal, model: CarVisual, deck: Node3D) -> void:
 	reveal.prepare(model)
@@ -294,7 +317,7 @@ func finish_car_transition() -> void:
 
 func _orbit() -> void:
 	if wash_effect != null: wash_effect.reset()
-	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if VehicleCatalog.chassis_id(vehicle_id) == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
 	if garage_mode:
 		distance = (8.5 if read_only else 5.5 * 1.48) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
 		if garage_distance == 0.0: garage_distance = distance
@@ -479,7 +502,9 @@ func _clear_gesture() -> void:
 	if is_instance_valid(super_wash_effect):
 		var active: bool = super_wash_effect.visible
 		super_wash_effect.reset()
-		if active: invalidate_render()
+		if active:
+			invalidate_render()
+			condition_changed.emit()
 	_wall_pointer = -2
 	_wall_press = Vector2.INF
 	washing = false
@@ -543,8 +568,22 @@ func play_super_wash() -> void:
 	if not is_instance_valid(super_wash_effect):
 		super_wash_effect = preload("res://ui/garage_super_wash.gd").new()
 		super_wash_effect.prepare(car)
+		super_wash_effect.swept.connect(_super_wash_swept)
+		super_wash_effect.finished.connect(_super_wash_finished)
 	super_wash_effect.play()
 	invalidate_render()
+
+func _super_wash_swept(front: float) -> void:
+	if not weathering.installed: return
+	var frame: Transform3D = weathering._body.global_transform.affine_inverse() * car.global_transform
+	super_wash_effect.clean_through(weathering,(frame * Vector3(0,0,front)).z,frame.basis.z.length() * 0.23)
+
+func _super_wash_finished() -> void:
+	# Only the completed nose-to-tail pass clears deposits and all hidden cells.
+	weathering.reset()
+	weathering.restore({})
+	invalidate_render()
+	condition_changed.emit()
 
 func _dispose_super_wash() -> void:
 	if is_instance_valid(super_wash_effect): super_wash_effect.queue_free()

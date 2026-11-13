@@ -1,5 +1,7 @@
 extends SceneTree
 const CACHE = preload("res://track/road_mesh_disk_cache.gd")
+const ROADS = preload("res://editor/road_preparation.gd")
+const BAKES = preload("res://track/road_cache_bakes.gd")
 var checks: int = 0
 var failures: int = 0
 
@@ -30,6 +32,12 @@ func signature(node: Node) -> Array:
 			data.append([uniform.name,value])
 		result.append(data)
 	return result
+
+func wait_for_bake() -> void:
+	var deadline: int = Time.get_ticks_msec()+30000
+	while (BAKES.job != null or BAKES.pending_track != null) and Time.get_ticks_msec() < deadline:
+		await process_frame
+	check(BAKES.job == null and BAKES.pending_track == null,"saved-road worker finishes within deadline")
 
 func run() -> void:
 	CACHE.directory = "user://road_cache_test_"+TrackLibrary.unique_id()
@@ -74,17 +82,26 @@ func run() -> void:
 		DirAccess.remove_absolute(path+".sha256")
 		check(CACHE.read_entry(key).is_empty(),"interrupted checksum commit is a cache miss")
 		NativeTrackVisual._road_mesh_cache.clear()
-		NativeTrackVisual.request_saved_road_bake(track)
+		var geometry_key: String = ROADS.key_for(track)
+		var expected_packet: Dictionary = ROADS.prepare(track,true)
+		check(not expected_packet.get("parts",[]).is_empty(),theme+" numeric road fixture is nonempty")
+		NativeTrackVisual.request_saved_road_bake(track,self)
 		var editor := NativeTrackVisual.new()
 		editor.editor_preview = true
 		editor.theme_id = theme
 		editor.colors = TrackTheme.palette(theme)
 		root.add_child(editor)
 		await editor._build_creator_roads(track)
-		check(not CACHE.read_entry(key).is_empty(),"saved editor road is baked when pending geometry completes")
-		DirAccess.remove_absolute(path+".sha256")
-		NativeTrackVisual.request_saved_road_bake(track)
-		check(not CACHE.read_entry(key).is_empty(),"save immediately bakes an already completed editor road")
+		await wait_for_bake()
+		var saved: Dictionary = CACHE.read_arrays(key,geometry_key)
+		check(not saved.is_empty(),"saved editor road is baked by the production worker")
+		check(saved.get("parts") == expected_packet.get("parts") and saved.get("metadata") == expected_packet.get("metadata"),theme+" numeric road geometry and metadata survive save/load exactly")
+		var arrays_path: String = CACHE.directory.path_join(CACHE.identity(key)+".arrays")
+		DirAccess.remove_absolute(arrays_path+".sha256")
+		check(CACHE.read_arrays(key,geometry_key).is_empty(),"interrupted numeric checksum commit is a cache miss")
+		NativeTrackVisual.request_saved_road_bake(track,self)
+		await wait_for_bake()
+		check(not CACHE.read_arrays(key,geometry_key).is_empty(),"save rebakes an already completed editor road")
 		editor.free()
 		await process_frame
 	var unrelated: String = CACHE.directory.path_join("player-file.json")

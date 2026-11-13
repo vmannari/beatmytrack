@@ -13,10 +13,27 @@ from .track_models import digest
 def build(session, context, population, player, *, limit, cursor, around, candidate, artificial):
     public_id = digest({"version_id": context["version_id"], **context["manifest"]})
     test_id = digest({"version_id": context["version_id"], **context["manifest"], "test_population": True})
+    from .daily_verified_laps import overlay
+    _, indexed = comparison_statements(session, [public_id, test_id] if artificial else [public_id],
+                                        public_id, test_id, artificial) if population.own is None else (None, None)
+    population, indexed = overlay(session, context, population, indexed)
     owner = player.id if player else ""
+    if owner and population.own is not None:
+        # Read only the authenticated driver's accepted PB while the shared
+        # snapshot catches up; client comparison ticks never enter this map.
+        _, latest = comparison_statements(session, [public_id, test_id] if artificial else [public_id],
+                                         public_id, test_id, artificial, player_id=owner)
+        verified = session.scalar(select(latest.c.time_ticks))
+        previous = population.own.get(owner)
+        if verified is not None and (previous is None or verified < previous):
+            from .histogram_population import HistogramPopulation
+            population = HistogramPopulation.from_rows({**population.own, owner: verified}.items(),
+                                                       population.stored_grid)
     own = population.own.get(owner) if population.own is not None else None
     # Nearby pages reserve one slot for the candidate drawn by the client.
     neighbours = max(0, limit-1)
+    context = {**context, "generation": digest({"snapshot": context["generation"],
+        "ticks": list(population.ticks), "counts": list(population.counts)})}
     anchor = None
     if cursor:
         anchor = decode_cursor(cursor)
@@ -40,8 +57,7 @@ def build(session, context, population, player, *, limit, cursor, around, candid
             Player.id.in_(identities), Player.disabled.is_(False), Player.deleted_at.is_(None)))}
         raw = [(ticks, identity, *names[identity]) for ticks, identity in rows if identity in names]
     else:
-        _, laps = comparison_statements(session, [public_id, test_id] if artificial else [public_id],
-                                        public_id, test_id, artificial)
+        laps = indexed
         query = select(laps.c.time_ticks, laps.c.player_id, Player.display_name, Player.country_code).join(
             Player, Player.id == laps.c.player_id).where(Player.deleted_at.is_(None))
         if owner:
@@ -61,7 +77,7 @@ def build(session, context, population, player, *, limit, cursor, around, candid
         names = {row.id: (row.display_name, row.country_code) for row in session.execute(
             select(Player.id, Player.display_name, Player.country_code).where(Player.id == owner))}
     count = population.cumulative[-1]
-    leader = population.ticks[0]
+    leader = population.ticks[0] if population.ticks else 0
 
     def row(ticks, identity, name, country):
         faster = population.cumulative[bisect_left(population.ticks, ticks)]

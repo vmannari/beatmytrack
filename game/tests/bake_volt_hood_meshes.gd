@@ -8,6 +8,7 @@ func run() -> void:
 	M.use_baked=false
 	M.meshes.clear()
 	var car:=CarVisual.new()
+	car.simple_model = false # Offline source geometry.
 	car.vehicle_id="electric"
 	car.paint_materials={"body":CompactFinish.paint(Color("b8bbb9"))}
 	for simple: bool in [false,true]:

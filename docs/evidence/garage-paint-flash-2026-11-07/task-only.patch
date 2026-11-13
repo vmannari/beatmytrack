@@ -1,0 +1,368 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2196,13 +2196,12 @@
+ 	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
+ 	return await _garage_preloader.prepare_pictures(current)
+ 
+-var _header_capture_cover: Control
+ var _header_capture_navigation: int = -1
+ 
+ func _header_car_work_allowed() -> bool:
+ 	return startup_complete and _publishing_slots_foreground and not is_instance_valid(game) and _background_work_allowed() and screen != "restoring"
+ 
+-func _header_car_capture_allowed(vehicle: String) -> bool:
++func _header_car_capture_allowed(_vehicle: String) -> bool:
+ 	if not _header_car_work_allowed() or not _initial_menu_presented or editor_memory.pressure_requested: return false
+ 	if is_instance_valid(header_car_cache) and header_car_cache.capture_active() and _header_capture_navigation != _navigation_generation: return false
+ 	if menu_page_motion != null and menu_page_motion.is_running(): return false
+@@ -2211,34 +2210,15 @@
+ 	if is_instance_valid(_garage_preloader.studio): return false
+ 	if screen in ["account","tracks","rivalry","challenges","settings","profile"]:
+ 		return not is_instance_valid(_retained_garage) or not _retained_garage.is_visible_in_tree()
+-	if screen != "garage": return false
+-	if not is_instance_valid(_retained_garage) or _retained_garage.records != records or not _retained_garage.is_visible_in_tree(): return false
+-	var pictures: Node = _retained_garage.get("_preview_service")
+-	if is_instance_valid(pictures) and pictures.renderer != null: return false
+-	var showroom: Control = _retained_garage.showroom
+-	if not is_instance_valid(showroom) or not showroom.showroom_ready or showroom.vehicle_id != vehicle: return false
+-	if _retained_garage.progressive_entry and showroom.preparing: return false
+-	return true
+-
+-func _header_car_capture_started(vehicle: String) -> void:
+-	_header_car_capture_finished()
++	# A paint save already updates the live car. Keep it visible and interactive;
++	# optional header rendering waits until the Garage has left the screen.
++	return false
++
++func _header_car_capture_started(_vehicle: String) -> void:
+ 	_header_capture_navigation = _navigation_generation
+-	if screen != "garage" or not _header_car_capture_allowed(vehicle): return
+-	var showroom: Control = _retained_garage.showroom
+-	showroom._clear_gesture()
+-	_header_capture_cover = load("res://ui/garage_loading_car.gd").new()
+-	_header_capture_cover.name = "HeaderPicturePreparation"
+-	_header_capture_cover.vehicle_id = vehicle
+-	showroom.add_child(_header_capture_cover)
+-	MenuStyle.fill(_header_capture_cover)
+-	_header_capture_cover.mouse_filter = Control.MOUSE_FILTER_STOP
+ 
+ func _header_car_capture_finished() -> void:
+ 	_header_capture_navigation = -1
+-	if is_instance_valid(_header_capture_cover):
+-		if _header_capture_cover.get_parent() != null: _header_capture_cover.get_parent().remove_child(_header_capture_cover)
+-		_header_capture_cover.queue_free()
+-	_header_capture_cover = null
+ 
+ func _header_car_picture_ready(vehicle: String) -> void:
+ 	if not is_instance_valid(account_button): return
+--- a/game/ui/header_car_appearance_cache.gd
++++ b/game/ui/header_car_appearance_cache.gd
+@@ -10,7 +10,7 @@
+ const FILE_LIMIT: int = 14
+ var records: LocalRecords
+ var allowed: Callable
+-# App admits captures in settled idle menus or the ready selected Garage.
++# App admits captures in settled idle menus after the live Garage is hidden.
+ # Standalone tools retain their explicitly supplied `allowed` capture policy.
+ var capture_allowed: Callable
+ var directory: String
+@@ -232,8 +232,8 @@
+ 				_cover_ready = false
+ 				_capture_announced = true
+ 				capture_started.emit(str(job.vehicle))
+-				# The Garage's loading picture must actually draw before even the
+-				# renderer resource is loaded or its native model is constructed.
++				# Finish the settled menu's next draw before loading the renderer
++				# resource or constructing its native model.
+ 				RenderingServer.frame_post_draw.connect(_cover_drawn,CONNECT_ONE_SHOT)
+ 			break
+ 	if idle(): set_process(false)
+--- a/game/tests/test_header_capture_fences.gd
++++ b/game/tests/test_header_capture_fences.gd
+@@ -66,7 +66,7 @@
+ 	root.add_child(garage)
+ 	app._retained_garage = garage
+ 	app.screen = "garage"
+-	check(app._header_car_capture_allowed("compact"),"ready visible matching Garage is an eligible opportunity")
++	check(not app._header_car_capture_allowed("compact"),"ready visible Garage keeps its painted car instead of starting optional header work")
+ 	check(not app._header_car_capture_allowed("kart"),"different vehicle cannot use the opportunity")
+ 	var pictures := Pictures.new()
+ 	root.add_child(pictures)
+@@ -89,7 +89,11 @@
+ 	garage.showroom.showroom_ready = true
+ 	garage.hide()
+ 	check(not app._header_car_capture_allowed("compact"),"hidden retained Garage is ineligible")
++	app.screen = "tracks"
++	check(app._header_car_capture_allowed("compact"),"settled menu can finish the picture after Garage is hidden")
+ 	garage.show()
++	check(not app._header_car_capture_allowed("compact"),"outgoing visible Garage blocks capture until navigation settles")
++	app.screen = "garage"
+ 	garage.records = LocalRecords.new("user://capture-fences/other.json")
+ 	check(not app._header_car_capture_allowed("compact"),"different Garage owner is ineligible")
+ 	garage.records = app.records
+--- a/game/tests/test_deferred_header.gd
++++ b/game/tests/test_deferred_header.gd
+@@ -4,9 +4,9 @@
+ var app: Node
+ var checks: int = 0
+ var failures: int = 0
+-var cover_starts: int = 0
+-var cover_draws: int = 0
+-var capture_cover_draws: int = 0
++var capture_starts: int = 0
++var menu_draws: int = 0
++var capture_menu_draws: int = 0
+ var cancel_next: bool = false
+ var output: String
+ func _initialize() -> void: run.call_deferred()
+@@ -27,17 +27,16 @@
+ 	await RenderingServer.frame_post_draw
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"native view "+label)
+ func capture_started(_vehicle: String) -> void:
+-	cover_starts += 1
+-	check(is_instance_valid(app._header_capture_cover) and app._header_capture_cover.is_visible_in_tree(),"production capture has a visible cover")
+-	check(app.header_car_cache.canvas==null,"cover is installed before renderer construction")
+-	capture_cover_draws = cover_draws
+-	if cancel_next: app._show_screen.call_deferred("tracks")
++	capture_starts += 1
++	check(app.screen!="garage" and not app._retained_garage.is_visible_in_tree(),"production capture waits until Garage has left the screen")
++	check(app.header_car_cache.canvas==null,"settled menu draw precedes renderer construction")
++	capture_menu_draws = menu_draws
++	if cancel_next: app._show_screen.call_deferred("garage")
+ func after_draw() -> void:
+ 	if not is_instance_valid(app): return
+-	if is_instance_valid(app._header_capture_cover):
+-		cover_draws += 1
+-		if app.header_car_cache.canvas!=null:
+-			check(cover_draws>capture_cover_draws+1,"cover drew before the first native construction")
++	menu_draws += 1
++	if app.header_car_cache.canvas!=null:
++		check(menu_draws>capture_menu_draws+1,"settled menu drew before the first native construction")
+ func run() -> void:
+ 	create_timer(180,true,false,true).timeout.connect(func() -> void: printerr("DEFERRED_HEADER_TIMEOUT"); quit(1))
+ 	output = OS.get_environment("BMT_GRAPHICS_EVIDENCE")
+@@ -93,17 +92,21 @@
+ 		RenderingServer.frame_post_draw.connect(after_draw)
+ 		app._show_screen("garage")
+ 		var deadline: int = Time.get_ticks_msec()+100000
+-		while cache.captures==0 and Time.get_ticks_msec()<deadline:
++		while (not app._retained_garage.showroom.showroom_ready or app._retained_garage.showroom.get("preparing")==true) and Time.get_ticks_msec()<deadline:
+ 			await frames(1)
+-			if cache._stage=="cover" and cache._cover_ready: await shot("garage-cover")
++		await create_timer(1.1).timeout
++		check(cache.captures==0 and cache.canvas==null and capture_starts==0,"ready Garage keeps optional native header work deferred")
++		await shot("garage-live")
++		app._show_screen("tracks")
++		deadline = Time.get_ticks_msec()+60000
++		while cache.captures==0 and Time.get_ticks_msec()<deadline: await frames(1)
+ 		await wait_reads()
+ 		await frames(10)
+-		check(cache.captures==1 and Icons.ready("compact",records),"covered ready Garage produces one exact saved picture")
+-		check(cover_starts==1 and cover_draws>0 and cache.peak_worlds==1,"one bounded native world after a drawn cover")
+-		check(cache.canvas==null and not is_instance_valid(app._header_capture_cover),"completed capture releases its world and cover")
+-		check(not app._header_car_capture_allowed("forklift"),"unrelated car cannot trigger cold capture in the visible Garage")
++		check(cache.captures==1 and Icons.ready("compact",records),"settled menu produces one exact saved picture after leaving Garage")
++		check(capture_starts==1 and menu_draws>0 and cache.peak_worlds==1,"one bounded native world after a settled menu draw")
++		check(cache.canvas==null,"completed capture releases its world")
+ 		check(picture().preview.texture==Icons.texture("compact",records) and not picture()._placeholder.visible,"finished picture replaces the silhouette")
+-		await shot("garage-ready")
++		await shot("menu-header-ready")
+ 		var first: PackedByteArray = Icons.texture("compact",records).get_image().get_data()
+ 		Icons.customized.clear()
+ 		cache.bind_records(null)
+@@ -117,9 +120,9 @@
+ 		check(records.save_records()==OK,"save next isolated appearance")
+ 		check(picture().preview.texture==null and picture()._placeholder.visible,"commit immediately clears obsolete saved paint")
+ 		deadline = Time.get_ticks_msec()+10000
+-		while app.screen=="garage" and Time.get_ticks_msec()<deadline: await frames(1)
++		while app.screen=="tracks" and Time.get_ticks_msec()<deadline: await frames(1)
+ 		await frames(12)
+-		check(app.screen=="tracks" and cache.captures==1 and cache.canvas==null and not is_instance_valid(app._header_capture_cover),"navigation during cover cancels before renderer construction")
++		check(app.screen=="garage" and cache.captures==1 and cache.canvas==null,"returning to Garage cancels optional capture before renderer construction")
+ 		check(not Icons.ready("compact",records),"cancelled appearance cannot publish stale pixels")
+ 		RenderingServer.frame_post_draw.disconnect(after_draw)
+ 	# Rebinding drops queued work from the old account.
+@@ -133,7 +136,7 @@
+ 	check(cache.idle() and cache.canvas==null and cache.records==other,"account replacement drops deferred old-owner work")
+ 	check(not Icons.customized.has(old_key),"old owner never publishes after replacement")
+ 	check(picture().preview.texture==Icons.texture("compact"),"new stock account displays its own bundled picture")
+-	var result: Dictionary = {"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"cover_starts":cover_starts,"cover_draws":cover_draws}
++	var result: Dictionary = {"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"capture_starts":capture_starts,"menu_draws":menu_draws}
+ 	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
+ 	app.queue_free()
+ 	app = null
+--- a/game/tests/profile_header_garage_regression.gd
++++ b/game/tests/profile_header_garage_regression.gd
+@@ -62,9 +62,11 @@
+ 	while Time.get_ticks_msec()<deadline:
+ 		await frame()
+ 		var showroom: Control = app._retained_garage.showroom
+-		if showroom.showroom_ready and showroom.get("preparing")!=true and Icons.ready("compact",records) and not is_instance_valid(app._header_capture_cover): break
+-	result.garage_and_header_ms = Time.get_ticks_msec()-entering
+-	check(Icons.ready("compact",records),"exact custom header ready")
++		if showroom.showroom_ready and showroom.get("preparing")!=true: break
++	result.garage_ready_ms = Time.get_ticks_msec()-entering
++	result.entry_header_ready = Icons.ready("compact",records)
++	if "--expect-ready" in OS.get_cmdline_user_args(): check(Icons.ready("compact",records),"exact custom header remains ready from the preceding idle menu")
++	check(not app.header_car_cache.capture_active(),"live Garage defers optional header capture")
+ 	check(app._retained_garage.showroom.showroom_ready and app._retained_garage.showroom.get("preparing")!=true,"interactive Garage ready")
+ 	check(app.header_car_cache.peak_worlds<=1,"single bounded header world")
+ 	if "--expect-ready" in OS.get_cmdline_user_args(): check(not ResourceLoader.has_cached("res://garage/parking_hall_drive.tscn"),"ordinary Garage entry leaves Test drive scene unloaded")
+@@ -74,7 +76,7 @@
+ 		while app.menu_page_motion!=null and app.menu_page_motion.is_running(): await frame()
+ 		await RenderingServer.frame_post_draw
+ 		root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("garage.png"))
+-		Icons.texture("compact",records).get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("header.png"))
++		if Icons.ready("compact",records): Icons.texture("compact",records).get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("header.png"))
+ 		if "--picker" in OS.get_cmdline_user_args():
+ 			app.account_button.get_node("MenuCarPicker").show_popup()
+ 			await RenderingServer.frame_post_draw
+--- /dev/null
++++ b/game/tests/test_garage_paint_flash.gd
+@@ -0,0 +1,146 @@
++extends SceneTree
++## Actual offline App: saving paint must keep the ready Garage visible.
++const Icons = preload("res://ui/header_car_icons.gd")
++var app: Node
++var page: GaragePage
++var checks: int = 0
++var failures: int = 0
++var cover_frames: int = 0
++var garage_captures: int = 0
++var watching: bool = false
++var output: String
++
++class MenuApp extends "res://core/app.gd":
++	func _show_screen(next: String) -> void:
++		super._show_screen("tracks" if not startup_complete and next=="account" else next)
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("PAINT_FLASH_FAIL: ",label)
++
++func frames(count: int = 4) -> void:
++	for tick: int in range(count):
++		app._publishing_slots_foreground = true
++		await process_frame
++
++func observe() -> void:
++	if not watching or not is_instance_valid(app) or app.screen!="garage": return
++	var cover: Node = app.find_child("HeaderPicturePreparation",true,false)
++	if is_instance_valid(cover) and cover.is_visible_in_tree(): cover_frames += 1
++
++func capture_started(_vehicle: String) -> void:
++	if watching and app.screen=="garage": garage_captures += 1
++
++func shot(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+90000
++	while Time.get_ticks_msec()<deadline:
++		if not page.showroom.get("preparing") and page._menu_motion==null and not page._workbench_focus_pending and (page.showroom.camera_motion==null or not page.showroom.camera_motion.is_running()): break
++		await frames(1)
++	check(page.showroom.showroom_ready and not page.showroom.get("preparing"),"actual Garage studio is ready")
++	await frames(8)
++
++func wait_reads() -> void:
++	var deadline: int = Time.get_ticks_msec()+10000
++	while not app.header_car_cache.reads_idle() and Time.get_ticks_msec()<deadline: await frames(1)
++	check(app.header_car_cache.reads_idle(),"cheap header disk reads finish")
++
++func run() -> void:
++	create_timer(170,true,false,true).timeout.connect(func() -> void: print("PAINT_FLASH_TIMEOUT"); quit(1))
++	output = OS.get_environment("BMT_GRAPHICS_EVIDENCE")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	root.gui_embed_subwindows = true
++	Icons.customized.clear()
++	VehicleCatalog.selected = "compact"
++	app = MenuApp.new()
++	app.records = LocalRecords.new("user://paint-flash/records.json")
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new("user://paint-flash/tracks")
++	app.cloud_root_override = "user://paint-flash/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await frames(1)
++	GameSoundtrack.instance().music_enabled = false
++	GameSoundtrack.instance().menu_player.stop()
++	GameSoundtrack.instance().menu_player.stream = null
++	check(not app.online.configured,"private offline App")
++	app._show_screen("garage")
++	page = app._retained_garage
++	await settle()
++	page.open_car(VehicleCatalog.IDS.find("compact"))
++	page._set_customise_tab("colours")
++	await settle()
++	# An actual deliberate paint interaction starts the normal idle countdown.
++	app._garage_preloader.last_input = Time.get_ticks_msec()
++	var car: CarVisual = page.showroom.car
++	var viewport: SubViewport = page.showroom.showroom_viewport
++	var camera: Transform3D = page.showroom.camera.transform
++	watching = true
++	RenderingServer.frame_pre_draw.connect(observe)
++	app.header_car_cache.capture_started.connect(capture_started)
++	page.livery_menu._palette_colour(Color("c52d43"))
++	var first_key: String = Icons.appearance_key("compact",app.records)
++	page.livery_menu._palette_colour(Color("245fd2"))
++	var saved_paint: Dictionary = page.draft.duplicate(true)
++	var key: String = Icons.appearance_key("compact",app.records)
++	check(first_key!=key and VehicleLivery.for_car(app.records.settings,"compact")==saved_paint,"rapid palette choices save the newest paint")
++	await create_timer(1.05).timeout
++	await frames()
++	await shot("paint-applied")
++	check(page.showroom.paint_transition==null and page.showroom.car.livery==saved_paint,"repaint finishes on the exact saved finish")
++	await wait_reads()
++	# This is well past both the save debounce and deliberate-input idle gate.
++	await create_timer(1.25).timeout
++	await frames()
++	await shot("paint-stays-visible")
++	check(not app._header_car_capture_allowed("compact"),"ready Garage defers optional native header generation")
++	check(garage_captures==0 and cover_frames==0,"no header capture or loading preview replaces the painted Garage")
++	check(app.header_car_cache.canvas==null and app.header_car_cache.captures==0,"saving paint adds no native header world in Garage")
++	check(page.showroom.car==car and page.showroom.showroom_viewport==viewport and page.showroom.camera.transform.is_equal_approx(camera),"paint keeps the original car, world and view")
++	check(page.showroom.car.livery==saved_paint and VehicleLivery.for_car(app.records.settings,"compact")==saved_paint,"idle refresh preserves the applied and saved paint")
++	var yaw: float = page.showroom.yaw
++	page.showroom.rotate_view(Vector2(32,0))
++	check(page.showroom.yaw!=yaw,"ready painted car remains turnable")
++	for section: String in ["care","cars"]:
++		page._show_section(section)
++		await settle()
++		check(not app._header_car_capture_allowed("compact"),"ready Garage stays uncovered in "+section)
++	check(not Icons.customized.has(first_key),"superseded paint never publishes a header image")
++	watching = false
++	app._show_screen("tracks")
++	while app.menu_page_motion!=null and app.menu_page_motion.is_running(): await frames(1)
++	await frames(8)
++	check(not page.is_visible_in_tree(),"leaving Garage parks its live showroom")
++	if DisplayServer.get_name()!="headless":
++		var deadline: int = Time.get_ticks_msec()+60000
++		while not Icons.ready("compact",app.records) and Time.get_ticks_msec()<deadline: await frames(1)
++		check(Icons.ready("compact",app.records) and app.header_car_cache.captures==1,"settled menu generates exactly one newest saved header picture")
++		var header: Control = app.account_button.get_node("MenuProfileCar")
++		check(header.preview.texture==Icons.texture("compact",app.records) and not header._placeholder.visible,"header receives the exact saved appearance")
++		await shot("header-updated-after-leaving")
++		check(not Icons.customized.has(first_key),"deferred work discards superseded paint")
++		# Cheap exact PNG reuse remains available inside Garage.
++		Icons.customized.clear()
++		app.header_car_cache.bind_records(null)
++		app._show_screen("garage")
++		app.header_car_cache.bind_records(app.records)
++		await wait_reads()
++		check(Icons.ready("compact",app.records) and app.header_car_cache.disk_hits==1 and app.header_car_cache.captures==1,"Garage reuses the saved PNG without native work")
++		check(page.showroom.car.livery==saved_paint,"returning Garage retains the painted car")
++		await shot("garage-return")
++	var report: Dictionary = {"checks":checks,"failures":failures,"cover_frames":cover_frames,"garage_capture_starts":garage_captures,"captures":app.header_car_cache.captures,"disk_hits":app.header_car_cache.disk_hits,"renderer":RenderingServer.get_current_rendering_method()}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	RenderingServer.frame_pre_draw.disconnect(observe)
++	app.queue_free()
++	app = null
++	for tick: int in range(12): await process_frame
++	print("GARAGE_PAINT_FLASH: ",JSON.stringify(report))
++	quit(1 if failures else 0)

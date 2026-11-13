@@ -23,6 +23,7 @@ var vote_reload_pending: bool = false
 var cloud_scope: String = ""
 var finish_vote: Node
 var instant_finish: bool = false
+var hide_when_unavailable: bool = false
 var status_hint: String = ""
 
 func _scope() -> String:
@@ -56,6 +57,8 @@ func _ready() -> void:
 	refresh()
 	if not cloud_version.is_empty():
 		cloud_scope = _scope()
+		if hide_when_unavailable and cloud_client != null and cloud_client.has_signal("identity_changed"):
+			cloud_client.identity_changed.connect(_identity_changed)
 		if cloud_sync != null: cloud_sync.changed.connect(_sync_changed)
 		# Share the in-flight finish choice; a separate GET can only see its
 		# pre-save score and would miss the later background confirmation.
@@ -68,11 +71,18 @@ func _ready() -> void:
 			_load_cloud_vote()
 
 func _exit_tree() -> void:
+	if is_instance_valid(cloud_client) and cloud_client.has_signal("identity_changed") and cloud_client.identity_changed.is_connected(_identity_changed):
+		cloud_client.identity_changed.disconnect(_identity_changed)
 	if is_instance_valid(finish_vote):
 		if finish_vote.changed.is_connected(_finish_vote_changed): finish_vote.changed.disconnect(_finish_vote_changed)
 		if finish_vote.tree_exiting.is_connected(_finish_vote_exiting): finish_vote.tree_exiting.disconnect(_finish_vote_exiting)
 	if is_instance_valid(cloud_sync) and cloud_sync.changed.is_connected(_sync_changed):
 		cloud_sync.changed.disconnect(_sync_changed)
+
+func _identity_changed() -> void:
+	if _scope() == cloud_scope: return
+	locked = true
+	refresh()
 
 func _finish_vote_changed() -> void:
 	if _scope() != cloud_scope: return
@@ -123,6 +133,10 @@ func _load_cloud_vote() -> void:
 		call_deferred("_load_cloud_vote")
 
 func refresh() -> void:
+	if hide_when_unavailable and not cloud_version.is_empty():
+		# Keep an existing choice visible while its background save completes.
+		var selected_finish: bool = is_instance_valid(finish_vote) and finish_vote._same_account() and finish_vote.selected_score > 0
+		visible = _scope() == cloud_scope and (not locked or vote_saving or selected_finish)
 	if is_instance_valid(caption): caption.tooltip_text = status_hint
 	var displayed_score: int = value()
 	# Pending stars show the player's choice without persisting an unconfirmed

@@ -1,0 +1,424 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2991,7 +2991,9 @@
+ func _feature_resource(path: String) -> Object:
+ 	if not _feature_resources.has(path):
+ 		var began: int = Time.get_ticks_usec()
++		_deep_mark("feature_begin",{"path":path})
+ 		_install_feature_resource(path,load(path))
++		_deep_mark("feature_end",{"path":path})
+ 		feature_load_ms[path] = (Time.get_ticks_usec()-began)/1000.0
+ 	return _feature_resources.get(path)
+ 
+@@ -3089,3 +3091,7 @@
+ var _initial_menu_presented: bool = false
+ func _initial_menu_drawn() -> void:
+ 	_initial_menu_presented = true
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -285,24 +285,37 @@
+ 	if profile_enabled: preparation_costs.weathering_us = Time.get_ticks_usec()-preparation_mark
+ 	if not await _preparation_checkpoint(): return
+ 	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
++	_deep_mark("trails_begin")
+ 	trails = SkidTrails.new()
+ 	trails.visible = not handling.air_cushion
+ 	trails.wheelbase = handling.wheelbase
+ 	trails.track_width = handling.track_width
++	_deep_mark("trails_add")
+ 	world.add_child(trails)
++	_deep_mark("trails_end")
++	_deep_mark("particles_create_begin")
+ 	sand_dust = SandDustEffect.new()
+ 	sand_dust.visible = not handling.air_cushion
+ 	sand_dust.wheelbase = handling.wheelbase
+ 	sand_dust.track_width = handling.track_width
+ 	sand_dust.collision_radius = handling.collision_radius
++	_deep_mark("particles_add_begin")
+ 	world.add_child(sand_dust)
++	_deep_mark("particles_add_end")
++	_deep_mark("particles_track_begin")
+ 	sand_dust.prepare_track(native_track)
++	_deep_mark("particles_track_end")
+ 	if native_track != null and native_track.metadata.get("theme", "pine") == "winter":
+ 		await sand_dust.configure_snow_surface(track_ground,cooperative_preparation,_preparation_is_current)
+ 		if not _preparation_is_current(): return
++	_deep_mark("audio_create_begin")
+ 	vehicle_audio = VehicleAudio.new()
++	_deep_mark("audio_add_begin")
+ 	add_child(vehicle_audio)
++	_deep_mark("audio_add_end")
++	_deep_mark("audio_configure_begin")
+ 	vehicle_audio.configure(vehicle_id,handling,car)
++	_deep_mark("audio_configure_end")
+ 	if profile_enabled: preparation_costs.effects_audio_wall_us = Time.get_ticks_usec()-preparation_mark
+ 	if not await _preparation_checkpoint(): return
+ 	if cooperative_preparation and DisplayServer.get_name() != "headless":
+@@ -1444,3 +1457,7 @@
+ 	hud.touch.enabled = not paused
+ 	trails.show()
+ 	sand_dust.show()
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
+--- a/game/core/features/race.gd
++++ b/game/core/features/race.gd
+@@ -170,7 +170,9 @@
+ 	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+ 	var daily_preparation: RefCounted
+ 	if not daily_request.is_empty(): daily_preparation = DailyPreparation.begin(app,track,selected_vehicle,daily_request,loading)
++	_deep_mark("selected_wait_begin")
+ 	if not await app._await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
++	_deep_mark("selected_wait_end")
+ 	var daily_rules: RefCounted
+ 	if not daily_request.is_empty():
+ 		loading.stage("Loading lap limits?")
+@@ -232,6 +234,7 @@
+ 	await app._present_race_loading()
+ 	if not app._race_loading_matches(loading_id): return
+ 	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
++	_deep_mark("roads_begin")
+ 	var prepared_roads: Dictionary = {}
+ 	var road_job: RefCounted = road_overlap.take() if road_overlap != null else null
+ 	if road_job == null and NativeTrackVisual.race_roads_need_preparation(track):
+@@ -251,6 +254,7 @@
+ 		prepared_roads = road_job.result if road_job.result is Dictionary else {}
+ 		NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(prepared_roads.get("receipt",{}))
+ 		prepared_roads.erase("receipt")
++	_deep_mark("roads_end")
+ 	app.returning_to_editor = from_editor
+ 	app.challenge_racing = rivalry_issued.has("challenge_code")
+ 	app.challenge_practice = offline_only and app.screen == "challenges" and not app.challenges.selected.is_empty()
+@@ -314,6 +318,7 @@
+ 		var vote: Variant = app.game.get("cloud_rating")
+ 		if is_instance_valid(vote): vote.abandon()
+ 		app.game.set("cloud_rating", null))
++	_deep_mark("game_begin")
+ 	app.add_child(app.game)
+ 	var prepared_game: Node = app.game
+ 	while is_instance_valid(prepared_game) and app.game == prepared_game and not prepared_game.preparation_complete:
+@@ -322,15 +327,18 @@
+ 			app._discard_preparing_game(prepared_game)
+ 			return
+ 	if not is_instance_valid(prepared_game) or app.game != prepared_game: return
++	_deep_mark("game_end")
+ 	if is_instance_valid(prepared_game.world_render_preparation):
+ 		loading.stage("Preparing your drive...")
+ 		var stage_current: Callable = app._race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
++		_deep_mark("graphics_begin")
+ 		if not await prepared_game.world_render_preparation.prepare(app._present_race_loading,stage_current):
+ 			if app.is_queued_for_deletion(): return
+ 			app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+ 			if is_instance_valid(prepared_game): app._discard_preparing_game(prepared_game)
+ 			app._close_race_loading(loading_id)
+ 			return
++	_deep_mark("graphics_end")
+ 	app.game.opponent_ghost = app.rivalry_racing or app.challenge_racing or (offline_only and app.screen == "challenges")
+ 	if app.rivalry_racing:
+ 		app.game.ghost_mode = "race" if not app.rivalry_recording.is_empty() else "off"
+@@ -349,6 +357,7 @@
+ 	# Render the prepared world once with the countdown/input still frozen.
+ 	app.game.call("_process", 0.0)
+ 	loading.stage("Preparing start…")
++	_deep_mark("finish_setup_begin")
+ 	var prepared_finish: VehicleWeathering = app.game.get("car_weathering")
+ 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
+ 	var prepared_personal_ghost: PersonalGhost = app.game.get("personal_ghost")
+@@ -360,6 +369,7 @@
+ 		prepared_personal_ghost.position = app.game.get("car").position+Vector3.UP*0.05
+ 		prepared_personal_ghost.rotation = app.game.get("car").rotation
+ 		prepared_personal_ghost.show()
++	_deep_mark("bridge_setup_begin")
+ 	var bridge_preparation = preload("res://track/bridge_render_preparation.gd")
+ 	var prepared_bridges: Array[Dictionary] = []
+ 	if DisplayServer.get_name() != "headless": prepared_bridges = bridge_preparation.begin(app.game.get("track_ground"), app.game.get("camera"))
+@@ -367,18 +377,22 @@
+ 	var prepared_hazards: Array[Dictionary] = []
+ 	if DisplayServer.get_name() != "headless": prepared_hazards = bridge_preparation.begin_groups(app.game.get("track_ground"), app.game.get("camera"), ["race_hazard_rendering"])
+ 	var hazard_meshes: int = prepared_hazards.size()
++	_deep_mark("trail_setup_begin")
+ 	var trail_preparation = preload("res://vehicle/trail_render_preparation.gd")
+ 	var prepared_trail: MultiMeshInstance3D = trail_preparation.begin(app.game.get("trails"), app.game.get("camera"), track, app.game.get("sim").state)
+ 	var trail_warmed: bool = prepared_trail != null
+ 	var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")
++	_deep_mark("effects_begin")
+ 	var preparation_started: int = Time.get_ticks_usec()
+ 	var effect_current: Callable = app._race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+ 	var prepared_effects: Dictionary = await effect_preparation.prepare(app.game.get_node("World"),app.game.get("sand_dust"),app.game.get("camera"),app.game.get("impact_cracks"),app,app._present_race_loading,effect_current)
++	_deep_mark("effects_return")
+ 	var effects_drawn: bool = bool(prepared_effects.get("complete",false))
+ 	var effect_counts: Dictionary = {"particles":prepared_effects.particles,"batches":prepared_effects.batches,"damage_meshes":prepared_effects.damage_meshes,"canvas":prepared_effects.canvas,"reused":int(prepared_effects.get("reused",0))}
+ 	var finish_drawn: bool = false
+ 	if effects_drawn and effect_current.is_valid() and effect_current.call() and is_instance_valid(prepared_game) and app.game == prepared_game:
+ 		finish_drawn = await app._present_race_loading()
++	_deep_mark("finish_draw_return")
+ 	var night_preparation: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+ 	if effects_drawn and is_instance_valid(prepared_game) and app.game == prepared_game:
+ 		night_preparation = await app._prepare_night_lighting(loading_id, prepared_game)
+@@ -392,6 +406,7 @@
+ 	effect_preparation.end(prepared_effects)
+ 	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
+ 	# Always restore after the bounded draw wait, including cancellation/focus loss.
++	_deep_mark("restore_finish")
+ 	prepared_finish.end_render_warmup()
+ 	if not effects_drawn:
+ 		if app.is_queued_for_deletion(): return
+@@ -408,6 +423,7 @@
+ 		night_preparation.elapsed_ms += clean_night.elapsed_ms
+ 		night_preparation.truncated = maxi(night_preparation.truncated, clean_night.truncated)
+ 		night_preparation.light_limit = night_preparation.light_limit or clean_night.light_limit
++	_deep_mark("clean_draw_begin")
+ 	if (finish_warmed or night_preparation.contexts > 0) and app._race_loading_matches(loading_id) and is_instance_valid(prepared_game) and app.game == prepared_game:
+ 		app.game.call("_process", 0.0)
+ 		# The exact clean/livery finish is visible before releasing the loading cover.
+@@ -425,6 +441,7 @@
+ 		app._close_race_loading(loading_id)
+ 		app._leave_race()
+ 		return
++	_deep_mark("clean_draw_end")
+ 	app.game.set("weathering_prepared", finish_drawn)
+ 	app.game.set("bridge_prepared", finish_drawn and bridge_meshes > 0)
+ 	app.game.set("bridge_preparation_meshes", bridge_meshes)
+@@ -441,6 +458,7 @@
+ 	app._telemetry_begin_attempt(track)
+ 	if app.race_ad_breaks != null and not tutorial_lesson and not app.returning_to_editor and not bool(app.game.get("attempt_practice")): app.race_ad_breaks.prepare()
+ 	app.cloud_starting = false
++	_deep_mark("race_end")
+ 	app._close_race_loading(loading_id)
+ 
+ 
+@@ -945,3 +963,7 @@
+ 	app.cloud.add_child(vote)
+ 	app.game.set("cloud_rating",vote)
+ 
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
+--- a/game/race/world_render_preparation.gd
++++ b/game/race/world_render_preparation.gd
+@@ -49,6 +49,7 @@
+ 	var world: Node = _world.get_ref() if _world != null else null
+ 	var context: String = Graphics.context(_view(),world,camera)
+ 	while not pending.is_empty():
++		_deep_mark("world_batch_begin",{"pending":pending.size()})
+ 		if not current.is_valid() or not current.call(): return false
+ 		_material_keys.clear()
+ 		var epoch: int = Graphics.generation
+@@ -90,9 +91,11 @@
+ 			# participates in the next real draw, preserving the retry contract.
+ 			_key_cursor += 1
+ 		if submitted.is_empty(): continue
++		_deep_mark("world_draw_begin",_deep_groups(submitted))
+ 		var began: int = Time.get_ticks_usec()
+ 		_active_margins = margins
+ 		var drawn: bool = await draw.call()
++		_deep_mark("world_draw_end",{"drawn":drawn})
+ 		for entry: Dictionary in margins:
+ 			var node: Object = entry.node.get_ref()
+ 			if is_instance_valid(node): node.extra_cull_margin = entry.margin
+@@ -132,6 +135,7 @@
+ 		# Rescan unresolved groups after a failed draw, mutation or invalidation.
+ 		_key_cursor = 0
+ 		context = Graphics.context(_view(),world,camera)
++		_deep_mark("world_batch_end")
+ 	_material_keys.clear()
+ 	_pending_keys.clear()
+ 	_key_cursor = 0
+@@ -160,3 +164,27 @@
+ 
+ func _exit_tree() -> void:
+ 	release()
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
++
++func _deep_groups(groups: Array) -> Dictionary:
++	var result: Array = []
++	for group: Dictionary in groups:
++		var names: Array = []; var materials: Array = []
++		for item: Dictionary in group.sources:
++			var node: Object = item.node.get_ref()
++			if not is_instance_valid(node): continue
++			names.append(str(node.get_path()))
++			if node is MeshInstance3D:
++				for i: int in range(node.mesh.get_surface_count()):
++					var material: Material = node.get_active_material(i)
++					var description: String = material.get_class() if material != null else "none"
++					if material is ShaderMaterial and material.shader != null: description += ":"+material.shader.resource_path
++					if material is ShaderMaterial and material.has_meta("surface_dynamic_material"):
++						var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material") as ShaderMaterial
++						if dynamic != null and dynamic.shader != null: description += " [source="+dynamic.shader.resource_path+"]"
++					if description not in materials: materials.append(description)
++		result.append({"key":group.key,"nodes":names,"materials":materials})
++	return {"groups":result}
+--- a/game/rendering/graphics_preparation.gd
++++ b/game/rendering/graphics_preparation.gd
+@@ -68,7 +68,7 @@
+ 	warmed[key] = true
+ 	submissions += 1
+ 
+-static func context(view: Viewport, world: Node, camera: Camera3D) -> String:
++static func _deep_original_context(view: Viewport, world: Node, camera: Camera3D) -> String:
+ 	if view == null or world == null or camera == null: return ""
+ 	if world.is_inside_tree(): watch(world.get_tree())
+ 	var flags: Array = ["graphics-context-1",RenderingServer.get_current_rendering_method(),
+@@ -139,7 +139,7 @@
+ 		elif property[1]: result.append([name,value != null])
+ 	return result
+ 
+-static func geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++static func _deep_original_geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
+ 	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
+ 	var parts: Array = ["graphics-program-1",node.get_class(),node.cast_shadow,node.layers,node.gi_mode,
+ 		node.visibility_range_fade_mode,_material_key(node.material_overlay,materials)]
+@@ -153,7 +153,7 @@
+ 			parts.append([mesh.surface_get_format(surface),mesh.surface_get_primitive_type(surface)] if mesh is ArrayMesh else _features(mesh))
+ 	return str(parts).sha256_text()
+ 
+-static func _material_key(material: Material, cache: Dictionary = {}) -> String:
++static func _deep_original__material_key(material: Material, cache: Dictionary = {}) -> String:
+ 	if material == null: return "none"
+ 	var id: int = material.get_instance_id()
+ 	if cache.has(id): return cache[id]
+@@ -190,3 +190,25 @@
+ 		var node: Object = sample.node.get_ref()
+ 		if is_instance_valid(node) and node.is_visible_in_tree() and receipt_key(node,ticket.context) == sample.key:
+ 			complete(ticket.context,sample.key,ticket.epoch)
++
++static func context(view: Viewport, world: Node, camera: Camera3D) -> String:
++	var started: int = Time.get_ticks_usec()
++	var result: String = _deep_original_context(view,world,camera)
++	_deep_cost("context",Time.get_ticks_usec()-started)
++	return result
++
++static func geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++	var started: int = Time.get_ticks_usec()
++	var result: String = _deep_original_geometry_key(node,materials)
++	_deep_cost("geometry_key",Time.get_ticks_usec()-started)
++	return result
++
++static func _material_key(material: Material, cache: Dictionary = {}) -> String:
++	var started: int = Time.get_ticks_usec()
++	var result: String = _deep_original__material_key(material,cache)
++	_deep_cost("_material_key",Time.get_ticks_usec()-started)
++	return result
++
++static func _deep_cost(label: String, usec: int) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.cost(label,usec)
+--- a/game/ui/rivalry_victory_car.gd
++++ b/game/ui/rivalry_victory_car.gd
+@@ -51,10 +51,12 @@
+ 	car.build_budget_us = build_budget_us
+ 	if cooperative_build: viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+ 	if podium_presentation: car.rotation.y = PI
++	if podium_presentation: _deep_mark("podium_car_begin",{"widget":str(name)})
+ 	world.add_child(car)
+ 	while not car.model_ready:
+ 		await get_tree().process_frame
+ 		if not is_inside_tree() or is_queued_for_deletion(): return
++	if podium_presentation: _deep_mark("podium_car_end",{"widget":str(name)})
+ 	var weathering := VehicleWeathering.new()
+ 	weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
+ 	weathering.restore(condition)
+@@ -62,6 +64,16 @@
+ 		preload("res://ui/rivalry_podium_studio.gd").build(world,car)
+ 	else:
+ 		_legacy_lighting(world)
++	if podium_presentation: _deep_mark("podium_studio_end",{"widget":str(name)})
++	if podium_presentation:
++		var mode: String = OS.get_environment("BMT_DEEP_LIGHTING")
++		if mode == "no_sky":
++			var environment: WorldEnvironment = world.get_node("PodiumReflectionEnvironment")
++			environment.environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
++			environment.environment.sky = null
++		elif mode == "no_rim": world.get_node("GarageRim").hide()
++		elif mode == "no_shadows": world.get_node("GarageKey").shadow_enabled = false
++
+ 	var camera := Camera3D.new()
+ 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+ 	camera.size = 2.8 if vehicle_id == "pickup" else 1.9 if vehicle_id == "kart" else 2.4
+@@ -89,6 +101,7 @@
+ 	visibility_changed.connect(_refresh)
+ 	if podium_presentation: get_viewport().size_changed.connect(_refresh)
+ 	_refresh()
++	if podium_presentation: _deep_mark("podium_ready",{"widget":str(name)})
+ 	presentation_ready = true
+ 	if podium_presentation and DisplayServer.get_name() != "headless": preload("res://ui/rivalry_podium_studio.gd").prepare(weakref(self))
+ 
+@@ -110,7 +123,7 @@
+ 		light.light_energy = light_data[2]
+ 		world.add_child(light)
+ 
+-func _refresh() -> void:
++func _deep_original__refresh() -> void:
+ 	if not is_inside_tree() or not is_instance_valid(viewport): return
+ 	var dimensions: Vector2 = size
+ 	if podium_presentation:
+@@ -121,7 +134,7 @@
+ 	if fit_to_frame: _fit_camera()
+ 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+ 
+-func _fit_camera() -> void:
++func _deep_original__fit_camera() -> void:
+ 	var camera: Camera3D = viewport.get_camera_3d()
+ 	if camera == null: return
+ 	var aspect: float = float(viewport.size.x)/maxi(1,viewport.size.y)
+@@ -149,3 +162,23 @@
+ 			camera.size = maxf(bounds_2d.size.y,bounds_2d.size.x/aspect)*1.08
+ 			camera.h_offset = bounds_2d.get_center().x
+ 			camera.v_offset = bounds_2d.get_center().y
++
++func _fit_camera() -> void:
++	var started: int = Time.get_ticks_usec()
++	_deep_original__fit_camera()
++	var trace: Node = get_tree().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.cost("podium_fit_camera",Time.get_ticks_usec()-started)
++
++func _refresh() -> void:
++	var started: int = Time.get_ticks_usec()
++	_deep_original__refresh()
++	var trace: Node = get_tree().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.cost("podium_refresh",Time.get_ticks_usec()-started)
++	if podium_presentation and is_instance_valid(viewport) and OS.has_environment("BMT_DEEP_PODIUM_COUNT"):
++		var rank: int = int(str(name).get_slice("_",1))
++		if rank > int(OS.get_environment("BMT_DEEP_PODIUM_COUNT")): viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
++
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -208,7 +208,8 @@
+ 	var empty_message: Label = find_child("RivalryEmptyStatus",true,false) as Label
+ 	if empty_message != null: empty_message.text = error if not error.is_empty() else "Finding this week's rivalry…" if busy else "Race as often as you like. Find your next rival."
+ 
+-func _build_content() -> void:
++func _deep_original__build_content() -> void:
++	_deep_mark("page_build_begin")
+ 	content_builds += 1
+ 	var row := HBoxContainer.new()
+ 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -1265,3 +1266,14 @@
+ 
+ func _finale(parent: Control) -> void:
+ 	_championship(parent,true)
++
++func _build_content() -> void:
++	var started: int = Time.get_ticks_usec()
++	_deep_original__build_content()
++	var trace: Node = get_tree().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.cost("page_build_content",Time.get_ticks_usec()-started)
++	_deep_mark("page_build_end")
++
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)

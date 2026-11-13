@@ -4,6 +4,7 @@ extends RefCounted
 ## Shared opaque materials batch on the sprung body and four rolling pivots.
 static var cached_tire: ArrayMesh
 static var cached_simple_tire: ArrayMesh
+static var rally_tire_normals: Dictionary = {}
 static var rear_tiles: Dictionary = {}
 const FRONT_CACHE_ENTRIES: int = 8
 const FRONT_CACHE_BYTES: int = 2 * 1024 * 1024
@@ -47,6 +48,28 @@ static func tire(parent: Node3D, material: Material, simple: bool = false) -> vo
 	_attach_tire(parent,resource)
 
 static func _attach_tire(parent: Node3D,resource: ArrayMesh) -> void:
+	var car: Node = parent
+	while car!=null and not car is CarVisual: car = car.get_parent()
+	if car is CarVisual and car.vehicle_id=="compact":
+		if not rally_tire_normals.has(resource):
+			var arrays: Array = resource.surface_get_arrays(0)
+			var points: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+			var profile: Array[Vector2] = [Vector2(-0.14,0.23),Vector2(-0.14,0.32),Vector2(-0.105,0.363),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.105,0.363),Vector2(0.14,0.32),Vector2(0.14,0.23)]
+			for index: int in range(points.size()):
+				var radial := Vector2(points[index].y,points[index].z)
+				var coordinate := Vector2(points[index].x,radial.length())
+				var closest: int = 0
+				for station: int in range(profile.size()):
+					if coordinate.distance_squared_to(profile[station])<coordinate.distance_squared_to(profile[closest]): closest = station
+				var tangent: Vector2 = (profile[mini(closest+1,profile.size()-1)]-profile[maxi(0,closest-1)]).normalized()
+				var direction: Vector2 = radial.normalized()
+				normals[index] = Vector3(-tangent.y,tangent.x*direction.x,tangent.x*direction.y).normalized()
+			arrays[Mesh.ARRAY_NORMAL] = normals
+			var smooth := ArrayMesh.new()
+			smooth.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+			rally_tire_normals[resource] = smooth
+		resource = rally_tire_normals[resource]
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = resource
 	var tire_finish := ShaderMaterial.new()

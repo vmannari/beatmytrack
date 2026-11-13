@@ -1,7 +1,7 @@
 extends "res://backend/runner.gd"
 ## UFO-inspired behavior contracts and exact replay preservation for old models.
 const BEFORE = preload("res://tests/fixtures/hovercraft_ufo_before.tres")
-const OUTPUT: String = "res://../docs/evidence/hovercraft-ufo-feel-2026-10-28/"
+const OUTPUT: String = "res://../build/hover-slide51/historical-ufo/"
 var checks: int = 0
 var failures: int = 0
 var metrics: Dictionary = {}
@@ -30,10 +30,10 @@ func advance(sim: VehicleSimulation, count: int, steer: float = 0.0, throttle: f
 func run() -> void:
 	OS.set_environment("BMT_API_URL","")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
-	var config: HandlingConfig = VehicleCatalog.config("hovercraft")
+	var config: HandlingConfig = load("res://tests/fixtures/hover_slide51_reference/hovercraft.tres")
 	check(config.version == "hovercraft-4" and config.vector_thrust and config.air_cushion,"dedicated versioned vector-thrust model")
 	check(config.snapshot().vector_thrust and not BEFORE.snapshot().has("vector_thrust"),"new behavior is opt-in and historical handling hashes retain their shape")
-	check(manifest().vehicles.hovercraft.config_hash == JSON.stringify(config.snapshot(),"",true).sha256_text(),"client and native worker pin the new tune")
+	check(manifest().vehicles.hovercraft.config_hash == JSON.stringify(VehicleCatalog.config("hovercraft").snapshot(),"",true).sha256_text(),"client and native worker pin the new tune")
 	var comparison: Array = []
 	for handling: HandlingConfig in [BEFORE,config]:
 		var parked: VehicleSimulation = moving(handling)

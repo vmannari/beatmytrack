@@ -127,7 +127,7 @@ func run() -> void:
 	app.rivalry.test_population = true
 	app.online.client.player = service.player
 	app.online.client._access_token = "isolated-fixture"
-	for vehicle: String in ["pickup","electric","kart"]:
+	for vehicle: String in ["forklift","electric","kart"]:
 		VehicleCatalog.selected = vehicle
 		app.rivalry._remember_snapshot(snapshot(vehicle,vehicle+"-saved",40))
 	VehicleCatalog.selected = "compact"
@@ -138,25 +138,32 @@ func run() -> void:
 	app.rivalry.changed.connect(record_publication)
 	publications.clear()
 	await capture("compact-before")
+	page().track_requested.emit(2)
+	await settle()
+	check(app.rivalry_section == "detail" and page().section == "detail","track selection opens Rivalry detail")
+	app._select_header_vehicle(VehicleCatalog.IDS.find("compact"))
+	check(app.rivalry_section == "detail" and page().section == "detail","selecting the current car preserves track detail")
 	service.appearance_held = true
-	app._select_header_vehicle(VehicleCatalog.IDS.find("pickup"))
+	app._select_header_vehicle(VehicleCatalog.IDS.find("forklift"))
+	check(app.rivalry_section == "overview" and page().section == "overview","changing car from track detail immediately returns to the Rivalry overview")
 	var appearance: Reply = service.pending[-2]
 	var membership: Reply = service.latest()
-	check(app.rivalry.busy and appearance.path == "/appearance" and membership.path == "/rivalry/current?vehicle_id=pickup&test_population=true", "membership starts while appearance sync is still held")
+	check(app.rivalry.busy and appearance.path == "/appearance" and membership.path == "/rivalry/current?vehicle_id=forklift&test_population=true", "membership starts while appearance sync is still held")
 	await loading("previous car is cleared while both requests are pending")
-	await capture("pickup-appearance-loading")
-	await loading("saved pickup scores stay hidden during membership fetch")
+	await capture("forklift-appearance-loading")
+	await loading("saved forklift scores stay hidden during membership fetch")
 	service.appearance_held = false
-	membership.finish({"ok":true,"data":snapshot("pickup","pickup-intermediate",60,false)})
+	membership.finish({"ok":true,"data":snapshot("forklift","forklift-intermediate",60,false)})
 	check(service.latest().path == "/rivalry/join","automatic enrollment follows intermediate membership")
 	await loading("intermediate membership stays hidden until enrollment finishes")
-	await capture("pickup-enrollment-loading")
-	service.latest().finish({"ok":true,"data":snapshot("pickup","pickup-final",100)})
-	await final_board("pickup-final",100,"selected car publishes its final server standings")
+	await capture("forklift-enrollment-loading")
+	service.latest().finish({"ok":true,"data":snapshot("forklift","forklift-final",100)})
+	await final_board("forklift-final",100,"selected car publishes its final server standings")
+	check(app.rivalry_section == "overview" and page().section == "overview","new car standings stay on the Rivalry overview")
 	check(not appearance.done,"standings become usable without waiting for appearance synchronization")
 	appearance.finish({"ok":true,"data":{}})
-	check(publications == ["pickup-final/100"],"switch publishes exactly one standings set: "+str(publications))
-	await capture("pickup-final")
+	check(publications == ["forklift-final/100"],"switch publishes exactly one standings set: "+str(publications))
+	await capture("forklift-final")
 	# Same-car background refreshes keep usable standings and stable controls.
 	var before: int = page().content_builds
 	var scroll: ScrollContainer = page().standings_scroll
@@ -164,8 +171,8 @@ func run() -> void:
 	await settle()
 	check(page().find_child("RivalryDriversPanel",true,false) != null and page().content_builds == before and page().standings_scroll == scroll,
 		"same-car background refresh keeps the existing board and controls")
-	service.latest().finish({"ok":true,"data":snapshot("pickup","pickup-final",101)})
-	await final_board("pickup-final",101,"same-car refresh applies updated server scores")
+	service.latest().finish({"ok":true,"data":snapshot("forklift","forklift-final",101)})
+	await final_board("forklift-final",101,"same-car refresh applies updated server scores")
 	check(page().content_builds == before,"ordinary score refresh updates the retained page in place")
 	# Old and new requests for the same vehicle must remain distinct.
 	publications.clear()

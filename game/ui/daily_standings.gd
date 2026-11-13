@@ -11,6 +11,12 @@ var day: int
 var ends_at: int
 var server_now: int
 var flying_laps: bool = false
+var best_seconds: float = 0.0
+var records: LocalRecords
+var _attempt_scope: String
+var _attempt_vehicle: String
+var _candidate: float = 0.0
+var _comparison_leader: float = 0.0
 var busy: bool = false
 var _sample_msec: int
 var _serial: int = 0
@@ -30,6 +36,7 @@ var _tick_rate: int = 120
 var _population: int = -1
 var _shade: CanvasLayer
 var _body: VBoxContainer
+var _footer: Label
 
 func _init() -> void:
 	# App observes node-added before _ready, so opt out before it can attach shared chrome.
@@ -38,7 +45,7 @@ func _init() -> void:
 func _ready() -> void:
 	name = "DailyStandings"
 	title = "Today's standings"
-	size = Vector2i(900,680)
+	size = Vector2i(1000,620)
 	wrap_controls = false
 	borderless = true
 	transparent_bg = true
@@ -48,6 +55,8 @@ func _ready() -> void:
 	theme = MenuStyle.theme()
 	add_theme_stylebox_override("panel",MenuStyle.popup_panel(20))
 	_sample_msec = Time.get_ticks_msec()
+	_attempt_scope = _owner_scope()
+	_attempt_vehicle = vehicle
 	get_ok_button().get_parent().hide()
 	get_label().hide()
 	confirmed.connect(queue_free)
@@ -55,9 +64,9 @@ func _ready() -> void:
 	var body := VBoxContainer.new()
 	_body = body
 	# Wrap text at its actual width before the native dialog measures its contents.
-	body.custom_minimum_size.x = 800
+	body.custom_minimum_size.x = 600
 	body.size = Vector2(844,480)
-	body.add_theme_constant_override("separation",8)
+	body.add_theme_constant_override("separation",10)
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(body)
 	var title_row := HBoxContainer.new()
@@ -68,6 +77,7 @@ func _ready() -> void:
 	symbol.custom_minimum_size = Vector2(32,32)
 	symbol.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	symbol.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	title_row.add_theme_constant_override("separation",14)
 	title_row.add_child(symbol)
 	var title_label: Label = MenuStyle.label("Today's standings",32)
 	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -97,15 +107,16 @@ func _ready() -> void:
 	identity.add_child(_cars)
 	var context := HBoxContainer.new()
 	body.add_child(context)
-	var caption: Label = MenuStyle.label("Best flying laps" if flying_laps else "Today's verified races (UTC)",16,true)
+	var caption: Label = MenuStyle.label("Verified best flying laps" if flying_laps else "Today's verified races (UTC)",16,true)
 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	context.add_child(caption)
-	context.add_child(MenuStyle.label(Time.get_date_string_from_unix_time(day*86400),16,true))
+	context.add_child(MenuStyle.user_label(Time.get_date_string_from_unix_time(day*86400)+" / UTC",14,true))
 	_status = MenuStyle.label("Loading verified scores…",18,true)
 	_status.name = "DailyStandingsStatus"
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	context.add_child(_status)
+	body.add_child(HSeparator.new())
 	var headings := MarginContainer.new()
 	headings.add_theme_constant_override("margin_left",10)
 	headings.add_theme_constant_override("margin_right",10+MenuStyle.SCROLLBAR_LANE)
@@ -116,7 +127,7 @@ func _ready() -> void:
 	scroll.custom_minimum_size = Vector2(580,80)
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	body.add_child(scroll)
 	_rows = VBoxContainer.new()
 	_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -125,11 +136,14 @@ func _ready() -> void:
 	_own = VBoxContainer.new()
 	_own.name = "DailyOwnResult"
 	_own.add_theme_constant_override("separation",6)
+	body.add_child(HSeparator.new())
 	body.add_child(_own)
-	var footer: Label = MenuStyle.label("One best flying lap per driver and car." if flying_laps else "One best time per driver and car.",15,true)
+	var footer: Label = MenuStyle.label("Verified track bests · one per driver and car." if flying_laps else "One best time per driver and car.",15,true)
+	_footer = footer
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(footer)
 	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation",12)
 	body.add_child(actions)
 	_previous = MenuStyle.button("Previous",func() -> void:
 		if busy or _page == 0: return
@@ -142,7 +156,11 @@ func _ready() -> void:
 		_page += 1
 		load_page())
 	_refresh = MenuStyle.button("Refresh",_restart)
-	for button: Button in [_previous,_next,_refresh]: actions.add_child(button)
+	for button: Button in [_previous,_next]: actions.add_child(button)
+	var action_space := Control.new()
+	action_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(action_space)
+	actions.add_child(_refresh)
 	if client.has_signal("identity_changed"): client.identity_changed.connect(_restart)
 	if is_instance_valid(cloud) and cloud.has_signal("race_verified"): cloud.race_verified.connect(_verified)
 	about_to_popup.connect(_opening)
@@ -155,7 +173,8 @@ func _fit() -> void:
 	if not is_inside_tree() or not visible: return
 	var extent: Vector2i = Vector2i(get_parent().get_viewport().get_visible_rect().size)
 	min_size = Vector2i.ZERO
-	size = Vector2i(900,680).min(extent-Vector2i(32,32))
+	var height: int = mini(660,420+maxi(2,_rows.get_child_count())*48)
+	size = Vector2i(960,height).min(extent-Vector2i(32,32))
 	position = (extent-size)/2
 	_body.position = Vector2(20,20)
 	_body.size = Vector2(size)-Vector2(40,40)
@@ -175,6 +194,17 @@ func _opening() -> void:
 func _scope() -> String:
 	return str([client.base_url() if client.has_method("base_url") else "",client.player.get("id","") if client.signed_in() else "",vehicle,version,day])
 
+func _owner_scope() -> String:
+	return str([client.base_url() if client.has_method("base_url") else "",client.player.get("id","") if client.signed_in() else ""])
+
+func _attempt_seconds() -> float:
+	if not flying_laps or _owner_scope() != _attempt_scope: return 0.0
+	if records != null:
+		var progress := preload("res://persistence/daily_progress.gd")
+		var saved: Dictionary = progress.best(progress.load_entries(records),day,version,vehicle)
+		return float(saved.get("best_ms",0))/1000.0
+	return best_seconds if vehicle == _attempt_vehicle else 0.0
+
 func _select_vehicle(index: int) -> void:
 	vehicle = VehicleCatalog.IDS[index]
 	vehicle_selected.emit(index)
@@ -185,6 +215,7 @@ func _restart() -> void:
 	busy = false
 	_page = 0
 	_cursors = [""]
+	_comparison_leader = 0.0
 	client.cancel_public_reads(get_instance_id())
 	load_page()
 
@@ -206,6 +237,7 @@ func load_page() -> void:
 	var scope: String = _scope()
 	_clear(_rows)
 	_clear(_own)
+	_candidate = _attempt_seconds()
 	(_rows.get_parent() as ScrollContainer).scroll_vertical = 0
 	_next_cursor = ""
 	_population = -1
@@ -213,6 +245,7 @@ func load_page() -> void:
 	for button: Button in [_previous,_next,_refresh]: button.disabled = true
 	var path: String = "/track-of-the-day/standings?day=%d&version_id=%s&vehicle_id=%s&limit=10" % [day,version.uri_encode(),vehicle.uri_encode()]
 	if flying_laps: path = path.replace("/standings?","/lap-standings?")
+	if _candidate > 0.0: path += "&lap_ticks=%d" % clampi(roundi(_candidate*120.0),1,216000)
 	if not _cursors[_page].is_empty(): path += "&cursor="+_cursors[_page].uri_encode()
 	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
 	if not is_inside_tree() or serial != _serial or scope != _scope() or _expired: return
@@ -229,18 +262,26 @@ func load_page() -> void:
 		server_now = int(data.server_now)
 		_sample_msec = Time.get_ticks_msec()
 		_status.text = GameText.message("%d verified racers\n\n").strip_edges() % int(data.population)
-		for item: Dictionary in data.items:
-			_rows.add_child(_row(item,str(item.player_id) == str(client.player.get("id","")) and client.signed_in()))
-		if data.items.is_empty(): _status.text = "No flying laps yet." if flying_laps else "No verified times today."
-		if client.signed_in():
+		if _candidate > 0.0:
+			_render_comparison(data)
+		else:
+			for item: Dictionary in data.items:
+				_rows.add_child(_row(item,str(item.player_id) == str(client.player.get("id","")) and client.signed_in()))
+		if data.items.is_empty() and _candidate <= 0.0: _status.text = "No flying laps yet." if flying_laps else "No verified times today."
+		_footer.visible = _candidate <= 0.0
+		if _candidate > 0.0: pass # The comparison owns the pinned player summary.
+		elif client.signed_in():
 			_own.add_child(MenuStyle.label("Your best lap" if flying_laps else "Your best today",16,true))
 			if data.get("player") is Dictionary: _own.add_child(_row(data.player,true,true))
 			else: _own.add_child(MenuStyle.label("No verified lap yet." if flying_laps else "Complete a verified race to appear here.",16,true))
 		else: _own.add_child(MenuStyle.label("Sign in to record a verified time.",16,true))
 		_next_cursor = str(data.next_cursor) if data.get("next_cursor") is String else ""
+	_previous.visible = _page > 0 or not _next_cursor.is_empty()
+	_next.visible = _previous.visible
 	_previous.disabled = _page == 0
 	_next.disabled = _next_cursor.is_empty()
 	_refresh.disabled = false
+	_fit.call_deferred()
 	if _dirty:
 		_dirty = false
 		_restart.call_deferred()
@@ -253,9 +294,63 @@ func _valid(data: Dictionary) -> bool:
 		or int(data.server_now) < day*86400 or int(data.server_now) >= ends_at): return false
 	for item: Variant in data.items:
 		if not _valid_row(item,int(data.population)): return false
+	if _candidate > 0.0:
+		var comparison: Variant = data.get("comparison")
+		if not comparison is Dictionary or not _whole(comparison.get("position")) or not _whole(comparison.get("candidate_ticks")): return false
+		if comparison.candidate_ticks != clampi(roundi(_candidate*120.0),1,216000) or comparison.get("population") != data.population or comparison.position < 1 or comparison.position > data.population: return false
 	return data.get("player") == null or (client.signed_in()
 		and _valid_row(data.player,int(data.population))
 		and str(data.player.player_id) == str(client.player.get("id","")))
+
+func _render_comparison(data: Dictionary) -> void:
+	# The attempt stays a comparison marker while its accepted best updates independently.
+	var ticks: int = clampi(roundi(_candidate*120.0),1,216000)
+	var own: Dictionary = data.get("player",{}) if data.get("player") is Dictionary else {}
+	var rows: Array = []
+	var leader: int = ticks
+	for source: Dictionary in data.items:
+		leader = mini(leader,int(source.time_ticks)-int(source.gap_ticks))
+		if client.signed_in() and source.player_id == client.player.get("id",""): continue
+		var item: Dictionary = source.duplicate(true)
+		item.rank = int(item.rank)+int(ticks < int(item.time_ticks))-int(not own.is_empty() and int(own.time_ticks) < int(item.time_ticks))
+		rows.append(item)
+	if _page == 0:
+		_comparison_leader = _candidate
+		for item: Dictionary in rows: _comparison_leader = minf(_comparison_leader,float(item.time_ticks)/_tick_rate)
+	for item: Dictionary in rows: item["comparison_gap"] = maxf(0.0,float(item.time_ticks)/_tick_rate-_comparison_leader)
+	var attempt := {"player_id":"","display_name":tr("You"),"rank":int(data.comparison.position),"time_ticks":ticks,"gap_ticks":maxi(0,ticks-leader),"country_code":str(client.player.get("country_code","")) if client.signed_in() else "","attempt":true,"comparison_gap":maxf(0.0,_candidate-_comparison_leader)}
+	# Show the comparison marker on its matching page; always retain it below the list.
+	var last_page: bool = data.get("next_cursor") == null or data.get("next_cursor") == ""
+	var first_page_match: bool = _page == 0 and (last_page or (not rows.is_empty() and attempt.rank <= int(rows.back().rank)))
+	var middle_page_match: bool = not rows.is_empty() and attempt.rank >= int(rows.front().rank) and attempt.rank <= int(rows.back().rank)
+	var last_page_match: bool = last_page and (rows.is_empty() or attempt.rank >= int(rows.front().rank))
+	if first_page_match or middle_page_match or last_page_match:
+		rows.append(attempt)
+	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.time_ticks) < int(b.time_ticks))
+	for item: Dictionary in rows: _rows.add_child(_row(item,item.get("attempt",false)))
+	var summary := HBoxContainer.new()
+	_own.add_child(summary)
+	var position_column := VBoxContainer.new()
+	position_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	summary.add_child(position_column)
+	position_column.add_child(MenuStyle.label("Your position",16,true))
+	var position_label := MenuStyle.user_label("#%d / %d" % [int(attempt.rank),int(data.population)],28)
+	position_label.name = "DailyComparisonPosition"
+	position_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	position_column.add_child(position_label)
+	var time_column := VBoxContainer.new()
+	summary.add_child(time_column)
+	var time_caption: Label = MenuStyle.label("Best flying lap",16,true)
+	time_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	time_column.add_child(time_caption)
+	var time_label: Label = MenuStyle.user_label(preload("res://race/daily_elimination.gd").time_text(_candidate),28)
+	time_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	time_column.add_child(time_label)
+	var note: Label = MenuStyle.label("This attempt compared with verified best laps.",14,true)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_own.add_child(note)
+	_status.text = tr("Lap comparison")
 
 func _valid_row(item: Variant, population: int) -> bool:
 	return (item is Dictionary and item.get("player_id") is String and item.get("display_name") is String
@@ -301,13 +396,20 @@ func _row(item: Dictionary, own: bool, sticky: bool = false) -> PanelContainer:
 		style.set_border_width_all(1)
 		style.border_color = MenuStyle.ACCENT
 	style.set_corner_radius_all(5)
-	if sticky: style.content_margin_right = 10+MenuStyle.SCROLLBAR_LANE
+	if sticky:
+		style.content_margin_right = 10+MenuStyle.SCROLLBAR_LANE
+		style.content_margin_top = 12
+		style.content_margin_bottom = 12
 	panel.add_theme_stylebox_override("panel",style)
 	var gap: String = "+%.3f" % (float(item.gap_ticks)/_tick_rate) if int(item.gap_ticks) > 0 else "—"
-	var columns: HBoxContainer = _columns([str(int(item.rank)),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/_tick_rate),gap],false,str(item.get("country_code","")))
+	if item.has("comparison_gap"): gap = "+%.3f" % float(item.comparison_gap) if float(item.comparison_gap) > 0.0005 else "\u2014"
+	var seconds: float = _candidate if item.get("attempt",false) else float(item.time_ticks)/_tick_rate
+	var columns: HBoxContainer = _columns([str(int(item.rank)),str(item.display_name),preload("res://race/daily_elimination.gd").time_text(seconds) if flying_laps else MenuStyle.time_text(seconds),gap],false,str(item.get("country_code","")))
 	panel.add_child(columns)
 	for label: Label in columns.find_children("*","Label",true,false):
 		if own: label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	if int(item.rank) <= 3 and not own:
+		columns.get_child(0).add_theme_color_override("font_color",[MenuStyle.ACCENT,Color("c7d6df"),Color("d5a17a")][int(item.rank)-1])
 	columns.get_child(1).tooltip_text = str(item.display_name)
 	return panel
 
@@ -316,7 +418,7 @@ func _process(_delta: float) -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(_status) and _population > 0 and not _expired:
-		_status.text = GameText.message("%d verified racers\n\n").strip_edges() % _population
+		_status.text = tr("Lap comparison") if _candidate > 0.0 else GameText.message("%d verified racers\n\n").strip_edges() % _population
 
 func _expire() -> void:
 	_expired = true

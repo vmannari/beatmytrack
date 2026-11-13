@@ -15,13 +15,15 @@ static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 	var chrome := CompactFinish.alloy(Color("b9c4c3"))
 	chrome.metallic = 0.90
 	chrome.roughness = 0.21
-	var bowl := CompactFinish.alloy(Color("d3d9d4"))
-	bowl.metallic = 0.42
-	bowl.roughness = 0.20
+	var bowl := CompactFinish.alloy(Color("aab7b8"))
+	bowl.metallic = 0.78
+	bowl.roughness = 0.25
+	var shade := CompactFinish.alloy(Color("28343a"))
+	shade.roughness = 0.43
 	var lens := ShaderMaterial.new()
 	lens.shader = preload("res://vehicle/compact_headlamp.gdshader")
 	var suffix: String = "_simple" if car.simple_model else ""
-	for kind: String in ["Gaskets","Bezels","Reflectors","Lenses"]:
+	for kind: String in ["Gaskets","Bezels","Reflectors","OpticalShades","Lenses"]:
 		var key: String = "FrontLamp"+kind+suffix
 		if not meshes.has(key):
 			var tool := SurfaceTool.new()
@@ -34,8 +36,11 @@ static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 					"Bezels":
 						complete = await _revolve(tool,side,[Vector2(0.119,-0.039),Vector2(0.126,-0.034),Vector2(0.128,-0.027),Vector2(0.125,-0.023),Vector2(0.119,-0.024)],48 if not car.simple_model else 32,true,true,cooperate)
 					"Reflectors":
-						complete = await _revolve(tool,side,[Vector2(0,-0.015),Vector2(0.050,-0.018),Vector2(0.100,-0.027),Vector2(0.119,-0.036)],32 if not car.simple_model else 24,false,true,cooperate)
+						complete = await _revolve(tool,side,[Vector2(0,0.004),Vector2(0.050,-0.006),Vector2(0.100,-0.024),Vector2(0.119,-0.036)],32 if not car.simple_model else 24,false,true,cooperate)
 						if complete: complete = await _revolve(tool,side,[Vector2(0,-0.045),Vector2(0.012,-0.042),Vector2(0.018,-0.036),Vector2(0.018,-0.032),Vector2(0,-0.032)],15 if not car.simple_model else 12,true,true,cooperate)
+					"OpticalShades":
+						complete = await _revolve(tool,side,[Vector2(0.109,-0.034),Vector2(0.117,-0.037),Vector2(0.118,-0.033),Vector2(0.110,-0.030)],32 if not car.simple_model else 24,true,true,cooperate)
+						if complete: complete = await _revolve(tool,side,[Vector2(0.019,-0.038),Vector2(0.027,-0.034),Vector2(0.026,-0.028),Vector2(0.019,-0.028)],24 if not car.simple_model else 16,true,true,cooperate)
 					"Lenses":
 						complete = await _revolve(tool,side,[Vector2(0,-0.054),Vector2(0.064,-0.050),Vector2(0.104,-0.043),Vector2(0.117,-0.037)],32 if not car.simple_model else 24,false,true,cooperate)
 				if not complete: return
@@ -45,7 +50,7 @@ static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 		var part := MeshInstance3D.new()
 		part.name = "FrontLamp"+kind
 		part.mesh = meshes[key]
-		part.material_override = {"Gaskets":gasket,"Bezels":chrome,"Reflectors":bowl,"Lenses":lens}[kind]
+		part.material_override = {"Gaskets":gasket,"Bezels":chrome,"Reflectors":bowl,"OpticalShades":shade,"Lenses":lens}[kind]
 		if kind=="Lenses": part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		car.body.add_child(part)
 

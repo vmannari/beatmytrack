@@ -101,17 +101,17 @@ static func stock_rim(car: CarVisual, parent: Node3D, side: float, graphite: Mat
 
 static func handle(car: CarVisual, side: float, z: float, _paint: Material, trim: Material) -> void:
 	# A small, flush body-colour pull inside a fine perimeter seam.
-	M.ribbon(car.body, "RefHandleOutline" + str(side) + str(z), func(t: float) -> Vector3:
+	M.fitted_line(car.body, "RefHandleOutline" + str(side) + str(z), car.body.find_child("ReferenceSide"+str(side).replace(".","_"),false,false), func(t: float) -> Vector3:
 		var angle: float = TAU * t
 		var c: float = cos(angle)
 		var s: float = sin(angle)
 		var zz: float = z + 0.080 * signf(c) * pow(absf(c), 0.35)
 		var yy: float = BODY.shoulder(z) - 0.082 + 0.016 * signf(s) * pow(absf(s), 0.35)
-		return BODY.side_point(side, zz, yy) + Vector3(side * 0.0025, 0, 0), 64, 0.0011, trim, car.simple_model)
-	M.ribbon(car.body, "RefHandlePull" + str(side) + str(z), func(t: float) -> Vector3:
+		return BODY.side_point(side, zz, yy), 96, 0.0022, trim, Vector3(side,0,0), car.simple_model)
+	M.fitted_line(car.body, "RefHandlePull" + str(side) + str(z), car.body.find_child("ReferenceSide"+str(side).replace(".","_"),false,false), func(t: float) -> Vector3:
 		var zz: float = z + lerpf(-0.045, 0.045, t)
 		var yy: float = BODY.shoulder(z) - 0.089 - 0.002 * sin(PI * t)
-		return BODY.side_point(side, zz, yy) + Vector3(side * 0.0025, 0, 0), 16, 0.0008, trim, car.simple_model)
+		return BODY.side_point(side, zz, yy), 16, 0.0016, trim, Vector3(side,0,0), car.simple_model)
 
 static func mirror(car: CarVisual, side: float, paint: Material, trim: Material, glass: Material) -> void:
 	# A low stalk carries a body-coloured aerodynamic shell with a dark lower rim.

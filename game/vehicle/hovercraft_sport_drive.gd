@@ -49,16 +49,16 @@ static func _duct(parent: Node3D, center: Vector3, side: float, paint: Material,
 			return center+Vector3(sin(u*TAU)*radius,cos(u*TAU)*radius,lerpf(-0.20,0.21,v)),
 		func(u: float,_v: float) -> Vector3: return Vector3(-sin(u*TAU),-cos(u*TAU),0),dark_metal,simple)
 	for end: float in [-1.0,1.0]:
-		var z: float = -0.242 if end < 0.0 else 0.238
-		Surface.ring(parent,"SportDuctRim%d_%d"%[int(side),int(end)],center+Vector3(0,0,z),0.312,0.006,metal,simple)
+		var z: float = -0.248 if end < 0.0 else 0.244
+		Surface.ring(parent,"SportDuctRim%d_%d"%[int(side),int(end)],center+Vector3(0,0,z),0.311,0.005,metal,simple)
 		# Radial guards sit well clear of the moving blades.
-		var spokes: int = 8
+		var spokes: int = 6
 		for spoke: int in range(spokes):
 			var angle: float = TAU*(spoke+0.5)/spokes
 			Surface.tube(parent,"SportGuard%d_%d_%d"%[int(side),int(end),spoke],
 				func(u: float) -> Vector3: return center+Vector3(sin(angle),cos(angle),0)*lerpf(0.05,0.293,u)+Vector3(0,0,z),
 				0.004,1,dark_metal,simple)
-	for end_z: float in [-0.242,0.238]:
+	for end_z: float in [-0.248,0.244]:
 		Surface.ring(parent,"SportGuardRing%d_%d"%[int(side),roundi(end_z*1000)],center+Vector3(0,0,end_z),0.15,0.004,seam,simple)
 
 static func _housing(parent: Node3D, center: Vector3, side: float, paint: Material, accent: Material, seam: Material, metal: Material, dark: Material, simple: bool, style: String) -> void:

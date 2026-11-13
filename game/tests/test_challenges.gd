@@ -196,7 +196,7 @@ func _finished_sheet_tests(sample: Dictionary) -> void:
 		var rect: Rect2 = sheet._car_page.get_global_rect()
 		check(rect.position.x >= 0 and rect.position.y >= 0 and rect.end.x <= root.get_visible_rect().size.x+1 and rect.end.y <= root.get_visible_rect().size.y+1,"custom sheet stays within the viewport")
 		check(sheet.get_parent() == root,"creation is an embedded menu control")
-		sheet._choose_attempt_limit(3)
+		preload("res://tests/support/challenge_rules_input.gd").choose(sheet,{"tries":3})
 		check("3 tries per driver" in sheet._rule_details.text,"summary reflects selected tries")
 		await _capture("finished-page",dimensions)
 		client.answer = {"ok":false,"error":"NETWORK_ERROR"}
@@ -277,7 +277,7 @@ func _page_tests() -> void:
 		check(app.root_ui.find_child("MenuHeader",true,false) != null,"creation keeps the original top navigation")
 		create._source = {"status":"verified","run_id":"fixture","ms":88110}
 		create._checking = false
-		create._choose_attempt_limit(3)
+		preload("res://tests/support/challenge_rules_input.gd").choose(create,{"tries":3})
 		create._update()
 		await process_frame
 		await process_frame
@@ -290,7 +290,7 @@ func _page_tests() -> void:
 		var actions: Control = create.find_child("ChallengeCreateActions",true,false)
 		check(actions.get_global_rect().position.y >= create._formats.get_global_rect().end.y,"primary actions follow the format posters")
 		check(create._custom_button.is_visible_in_tree(),"custom challenge is a separate subtle action")
-		create._choose_mode(1)
+		preload("res://tests/support/challenge_rules_input.gd").choose(create,{"mode":1})
 		check(create._summary_time.text == "Fastest time wins" and not create._time.visible,"group preview has no timed target")
 		await _capture("menu-create-group",dimensions)
 		create._choose_format("duel")

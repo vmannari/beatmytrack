@@ -142,7 +142,7 @@ func run() -> void:
 	current().confirm_button.pressed.emit()
 	current().set("deadline",Time.get_ticks_msec())
 	await settle()
-	check(current().heading.text == "Publication not confirmed","lost upload confirmation has an honest uncertain outcome")
+	check(current().heading.text == "Publishing track…" and current().message_label.text.contains("haven't received confirmation") and current().activity.visible,"lost upload reply remains pending without claiming success or failure")
 	await capture("confirmation-missing")
 	flow.job = {"state":"failed","failure":"No publishing slots left. Add slots, then Retry. Your track remains saved."}
 	flow.changed.emit()

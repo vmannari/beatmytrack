@@ -1,0 +1,799 @@
+diff --git a/game/tests/profile_deep_loading.gd b/game/tests/profile_deep_loading.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_deep_loading.gd
+@@ -0,0 +1,186 @@
++extends SceneTree
++## Diagnostic-only observer. No game-class references that prewarm feature graphs.
++class TraceSink extends Node:
++	var events: Array = []
++	var frames: Array = []
++	var costs: Dictionary = {}
++	var phase: String = "startup"
++	var frame_begin: int = 0
++	var render_begin: int = 0
++	var overflow: int = 0
++	func mark(label: String, data: Dictionary = {}) -> void:
++		if events.size() >= 12000: overflow += 1; return
++		events.append({"us":Time.get_ticks_usec(),"phase":phase,"label":label,"data":data})
++	func cost(label: String, usec: int) -> void:
++		var key: String = phase+":"+label
++		if not costs.has(key): costs[key] = {"calls":0,"total_us":0,"max_us":0}
++		costs[key].calls += 1; costs[key].total_us += usec
++		costs[key].max_us = maxi(costs[key].max_us,usec)
++	func begin_frame() -> void:
++		frame_begin = Time.get_ticks_usec()
++	func before_render() -> void:
++		render_begin = Time.get_ticks_usec()
++	func after_render() -> void:
++		if frames.size() >= 20000: overflow += 1; return
++		var ended: int = Time.get_ticks_usec()
++		frames.append({"begin_us":frame_begin,"render_begin_us":render_begin,"end_us":ended,"phase":phase})
++
++var trace: TraceSink
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++var mode: String = "rivalry"
++var theme: String = "pine"
++
++func instrument_contact() -> void:
++	# Timers in the loaded diagnostic resource preserve the file-based asset
++	# fingerprints and the original outline/cache algorithm and return paths.
++	var script: GDScript = load("res://vehicle/visible_contact_audio.gd")
++	var source: String = script.source_code.replace("\r\n","\n")
++	var start: int = source.find("func configure(car:")
++	var end: int = source.find("\nfunc reset()",start)
++	check(start >= 0 and end > start,"outline instrumentation function anchors")
++	if start < 0 or end <= start: return
++	var body: String = source.substr(start,end-start)
++	var replacements: Array = [
++		["\tvar points := PackedVector2Array()",'\t_deep_contact("outline_begin")\n\tvar points := PackedVector2Array()'],
++		["\t\tfor index: int in range(prepared_outlines.size()):",'\t\tvar ids: Array = []; var poses: Array = []\n\t\tfor item: Variant in key:\n\t\t\tif item is Array: ids.append(item[0]); poses.append(item[1])\n\t\t_deep_contact("outline_key",{"entries":prepared_outlines.size(),"hash":var_to_bytes(key).hex_encode().sha256_text(),"mesh_ids":ids,"poses_sha256":var_to_bytes([car.scale,poses]).hex_encode().sha256_text()})\n\t\tfor index: int in range(prepared_outlines.size()):'],
++		["\t\t\toutline = entry.outline",'\t\t\t_deep_contact("outline_cache_hit")\n\t\t\toutline = entry.outline'],
++		["\t\t\treturn",'\t\t\t_deep_contact("outline_end",{"sha256":var_to_bytes(outline).hex_encode().sha256_text()})\n\t\t\treturn'],
++		["\tfor node: Node in parts:",'\t_deep_contact("outline_cache_miss",{"parts":parts.size()})\n\tfor node: Node in parts:'],
++		["\t\t\tvar arrays: Array = part.mesh.surface_get_arrays(surface)",'\t\t\t_deep_contact("surface_read_begin",{"node":str(part.name),"mesh":part.mesh.get_instance_id(),"surface":surface})\n\t\t\tvar arrays: Array = part.mesh.surface_get_arrays(surface)\n\t\t\t_deep_contact("surface_read_end")'],
++		["\tif prepared:\n\t\tvar bytes:",'\t_deep_contact("outline_hull_done",{"points":points.size(),"hull":outline.size()})\n\tif prepared:\n\t\tvar bytes:'],
++		["\n\treset()",'\n\treset()\n\t_deep_contact("outline_end",{"sha256":var_to_bytes(outline).hex_encode().sha256_text()})']
++	]
++	for item: Array in replacements:
++		check(body.count(item[0]) == 1,"exact outline anchor "+str(item[0]).left(70))
++		if body.count(item[0]) != 1: return
++		body = body.replace(item[0],item[1])
++	source = source.substr(0,start)+body+source.substr(end)+"\nfunc _deep_contact(label: String, data: Dictionary = {}) -> void:\n\tvar trace: Node = Engine.get_main_loop().root.get_node_or_null(\"DeepTrace\")\n\tif trace != null: trace.mark(label,data)\n"
++	trace.mark("outline_memory_instrumentation",{"original_file_sha256":FileAccess.get_sha256("res://vehicle/visible_contact_audio.gd"),"instrumented_source_sha256":source.sha256_text()})
++	script.source_code = source
++	check(script.reload() == OK,"outline resource reloads before any race is constructed")
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("DEEP_FAIL ",label)
++func foreground() -> void:
++	if not is_instance_valid(app): return
++	app._publishing_slots_foreground = true
++	if is_instance_valid(app._garage_preloader):
++		app._garage_preloader.idle_ms = 100000000
++		app._garage_preloader.foreground = false
++func drawn() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++func persist() -> void:
++	var result: Dictionary = {"mode":mode,"theme":theme,"checks":checks,"failures":failures,"rows":rows,"events":trace.events,"frames":trace.frames,"costs":trace.costs,"overflow":trace.overflow,"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"podium_count":OS.get_environment("BMT_DEEP_PODIUM_COUNT"),"network_disabled":not app.online.configured if is_instance_valid(app) else true}
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result))
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--case="): mode = argument.trim_prefix("--case=")
++		if argument.begins_with("--theme="): theme = argument.trim_prefix("--theme=")
++	root.size = Vector2i(1280,720)
++	trace = TraceSink.new(); trace.name = "DeepTrace"; root.add_child(trace)
++	process_frame.connect(trace.begin_frame)
++	RenderingServer.frame_pre_draw.connect(trace.before_render)
++	RenderingServer.frame_post_draw.connect(trace.after_render)
++	process_frame.connect(foreground)
++	create_timer(240,true,false,true).timeout.connect(func() -> void:
++		printerr("DEEP_TIMEOUT"); failures += 1; persist(); quit(1))
++	trace.mark("app_load_begin")
++	var script: Script = load("res://core/app.gd")
++	trace.mark("app_load_end")
++	app = script.new()
++	app.name = "CircuitApp"
++	app.records = load("res://persistence/local_records.gd").new("user://deep/records.json")
++	app.records.settings.music_enabled = false
++	app.library = load("res://persistence/track_library.gd").new("user://deep/tracks")
++	app.cloud_root_override = "user://deep/cloud"
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(not app.online.configured,"offline private App")
++	await drawn()
++	trace.mark("startup_ready")
++	if mode == "rivalry": await rivalry()
++	else:
++		if OS.get_environment("BMT_DEEP_CONTACT") == "1": instrument_contact()
++		if failures > 0:
++			persist(); app.queue_free(); app = null
++			for _i: int in range(5): await process_frame
++			quit(1); return
++		await race()
++	trace.phase = "teardown"
++	check(trace.overflow == 0,"bounded trace retains every observation")
++	persist()
++	app.queue_free(); app = null
++	script = null
++	load("res://soundtrack/audio_world.gd").instance().queue_free()
++	for _i: int in range(18): await process_frame
++	print("DEEP_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
++func rivalry() -> void:
++	app.rivalry.model = load("res://race/weekly_rivalry.gd").new(true)
++	for cycle: int in range(2):
++		trace.phase = "rivalry-"+str(cycle)
++		var began: int = Time.get_ticks_usec()
++		trace.mark("entry_begin")
++		await app._show_screen("rivalry")
++		trace.mark("handler_return")
++		await drawn()
++		trace.mark("first_draw_complete")
++		var page: Node = app.content.find_child("WeeklyRivalryPage",true,false)
++		var deadline: int = Time.get_ticks_msec()+60000
++		while is_instance_valid(page) and not page.ready_for_display() and Time.get_ticks_msec()<deadline: await process_frame
++		check(page != null and page.ready_for_display(),"Rivalry actual standings and cars ready")
++		for _i: int in range(4): await drawn()
++		trace.mark("entry_ready")
++		var cars: Array = []
++		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
++			cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.viewport.size.x,car.viewport.size.y],"mode":car.viewport.render_target_update_mode,"model_ready":car.car.model_ready})
++		check(cars.size() == 3,"all three production podium widgets retained")
++		var row: Dictionary = {"cycle":cycle,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"cars":cars,"feature_load_ms":app.feature_load_ms.duplicate(true)}
++		rows.append(row); print("DEEP_ROW ",JSON.stringify(row))
++		if cycle == 0 and DisplayServer.get_name() != "headless": root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_OUTPUT").path_join("rivalry.png"))
++		await app._show_screen("account")
++		await drawn()
++func race() -> void:
++	trace.phase = "track-selection"
++	var retained_scene: Resource
++	if OS.get_environment("BMT_DEEP_RETAIN_SCENE") == "1":
++		var static_before: int = OS.get_static_memory_usage()
++		var video_before: float = Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)
++		retained_scene = load("res://assets/vehicles/modular_car_bases_v1/compact_simple_fixed.scn")
++		trace.mark("retain_prepared_scene",{"static_delta_bytes":OS.get_static_memory_usage()-static_before,"video_delta_bytes":Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)-video_before})
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	doc.theme = theme
++	var began: int = Time.get_ticks_usec()
++	var track: Resource = load("res://editor/track_compiler.gd").compile(doc)
++	check(track != null,"Star fixture compiles")
++	trace.mark("track_compiled",{"ms":(Time.get_ticks_usec()-began)/1000.0})
++	track.metadata.cloud_version = "owned-deep-investigation"
++	for cycle: int in range(2):
++		trace.phase = "race-"+str(cycle)
++		await app._show_screen("tracks")
++		app.selected_track = track
++		app.records.settings.camera_mode = "overhead"
++		trace.mark("race_begin")
++		began = Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		trace.mark("race_ready")
++		check(is_instance_valid(app.game),"race installed")
++		if not is_instance_valid(app.game): continue
++		var game: Node = app.game
++		game.set_physics_process(false); game.hitch_diagnostics.persist_enabled = false
++		check(game.preparation_complete,"construction complete")
++		check(game.sim.state.tick == 0 and game.countdown_ticks == 360,"tick zero and full countdown")
++		check(game.track_session.target_laps == 5,"original five-lap rules")
++		check(not is_instance_valid(app.race_loading),"loading cover released after preparation")
++		var row: Dictionary = {"cycle":cycle,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"game_costs":game.preparation_costs.duplicate(true),"world_costs":game.track_ground.build_costs.duplicate(true),"effects":game.effect_preparation_counts.duplicate(true),"feature_load_ms":app.feature_load_ms.duplicate(true),"groups":game.world_render_preparation.frame_groups}
++		rows.append(row); print("DEEP_ROW ",JSON.stringify(row))
++		app._leave_race()
++		await process_frame
++	retained_scene = null
+diff --git a/scripts/investigate_loading.py b/scripts/investigate_loading.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/investigate_loading.py
+@@ -0,0 +1,242 @@
++"""Instrument only the disposable measured project and run bounded offline probes."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++PROJECT = ROOT / "build/game-profile-2026-11-12/snapshot/game"
++WORK = ROOT / "build/loading-investigation-2026-11-12"
++OUT = ROOT / "docs/evidence/loading-investigation-2026-11-12"
++ENGINE = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
++NODE_HELPER = '''
++func _deep_mark(label: String, data: Dictionary = {}) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.mark(label,data)
++'''
++STATIC_HELPER = '''
++static func _deep_cost(label: String, usec: int) -> void:
++	var trace: Node = Engine.get_main_loop().root.get_node_or_null("DeepTrace")
++	if trace != null: trace.cost(label,usec)
++'''
++
++
++def replace(source, old, new):
++    if source.count(old) != 1:
++        raise ValueError(f"Changed instrumentation anchor ({source.count(old)}): {old[:140]!r}")
++    return source.replace(old, new)
++
++
++def original(relative):
++    path = WORK / "originals" / relative
++    if not path.exists():
++        path.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copy2(PROJECT / relative, path)
++    return path.read_text(encoding="utf-8").replace("\r\n", "\n")
++
++
++def wrap(source, signature, name, args, label, static=False, asynchronous=False):
++    source = replace(source, signature, signature.replace(name+"(", "_deep_original_"+name+"("))
++    result_type = "String" if signature.endswith("-> String:") else "bool" if signature.endswith("-> bool:") else ""
++    call = ("await " if asynchronous else "") + "_deep_original_"+name+"("+args+")"
++    lines = ["\n"+signature, "\tvar started: int = Time.get_ticks_usec()"]
++    lines.append("\tvar result: "+result_type+" = "+call if result_type else "\t"+call)
++    if static:
++        lines.append('\t_deep_cost("'+label+'",Time.get_ticks_usec()-started)')
++    else:
++        lines += ['\tvar trace: Node = get_tree().root.get_node_or_null("DeepTrace")',
++                  '\tif trace != null: trace.cost("'+label+'",Time.get_ticks_usec()-started)']
++    if result_type:
++        lines.append("\treturn result")
++    return source + "\n".join(lines)+"\n"
++
++
++def instrument():
++    if not (PROJECT / "project.godot").is_file():
++        raise SystemExit("The previous measured private project is unavailable; prepare a new coherent project first.")
++    WORK.mkdir(parents=True, exist_ok=True)
++    OUT.mkdir(parents=True, exist_ok=True)
++    for parent in (WORK, PROJECT.parent.parent):
++        (parent / ".keep").write_text("Active loading investigation; remove at completion.\n")
++    changes = {}
++    source = original("core/app.gd")
++    anchor = "\t\t_install_feature_resource(path,load(path))"
++    source = replace(source, anchor, '\t\t_deep_mark("feature_begin",{"path":path})\n'+anchor+'\n\t\t_deep_mark("feature_end",{"path":path})')
++    changes["core/app.gd"] = source+NODE_HELPER
++    source = original("rendering/graphics_preparation.gd")
++    for signature, name, args in [
++        ("static func context(view: Viewport, world: Node, camera: Camera3D) -> String:","context","view,world,camera"),
++        ("static func geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:","geometry_key","node,materials"),
++        ("static func _material_key(material: Material, cache: Dictionary = {}) -> String:","_material_key","material,cache"),
++    ]:
++        source = wrap(source,signature,name,args,name,static=True)
++    changes["rendering/graphics_preparation.gd"] = source+STATIC_HELPER
++    source = original("race/world_render_preparation.gd")
++    source = replace(source,"\twhile not pending.is_empty():\n",'\twhile not pending.is_empty():\n\t\t_deep_mark("world_batch_begin",{"pending":pending.size()})\n')
++    source = replace(source,"\t\tvar began: int = Time.get_ticks_usec()",'\t\t_deep_mark("world_draw_begin",_deep_groups(submitted))\n\t\tvar began: int = Time.get_ticks_usec()')
++    source = replace(source,"\t\tvar drawn: bool = await draw.call()",'\t\tvar drawn: bool = await draw.call()\n\t\t_deep_mark("world_draw_end",{"drawn":drawn})')
++    source = replace(source,"\t\tcontext = Graphics.context(_view(),world,camera)",'\t\tcontext = Graphics.context(_view(),world,camera)\n\t\t_deep_mark("world_batch_end")')
++    source += NODE_HELPER+'''
++func _deep_groups(groups: Array) -> Dictionary:
++	var result: Array = []
++	for group: Dictionary in groups:
++		var names: Array = []; var materials: Array = []
++		for item: Dictionary in group.sources:
++			var node: Object = item.node.get_ref()
++			if not is_instance_valid(node): continue
++			names.append(str(node.get_path()))
++			if node is MeshInstance3D:
++				for i: int in range(node.mesh.get_surface_count()):
++					var material: Material = node.get_active_material(i)
++					var description: String = material.get_class() if material != null else "none"
++					if material is ShaderMaterial and material.shader != null: description += ":"+material.shader.resource_path
++					if material is ShaderMaterial and material.has_meta("surface_dynamic_material"):
++						var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material") as ShaderMaterial
++						if dynamic != null and dynamic.shader != null: description += " [source="+dynamic.shader.resource_path+"]"
++					if description not in materials: materials.append(description)
++		result.append({"key":group.key,"nodes":names,"materials":materials})
++	return {"groups":result}
++'''
++    changes["race/world_render_preparation.gd"] = source
++    source = original("ui/rivalry_victory_car.gd")
++    for anchor, label in [("\tworld.add_child(car)","podium_car_begin"),("\tvar weathering := VehicleWeathering.new()","podium_car_end"),("\tvar camera := Camera3D.new()","podium_studio_end"),("\tpresentation_ready = true","podium_ready")]:
++        source = replace(source,anchor,'\tif podium_presentation: _deep_mark("'+label+'",{"widget":str(name)})\n'+anchor)
++    source = wrap(source,"func _fit_camera() -> void:","_fit_camera","","podium_fit_camera")
++    source = wrap(source,"func _refresh() -> void:","_refresh","","podium_refresh")
++    # Append after the wrapper's cost recording; update scheduling only in this diagnostic copy.
++    source += NODE_HELPER
++    anchor = '\tif trace != null: trace.cost("podium_refresh",Time.get_ticks_usec()-started)'
++    source = replace(source,anchor,anchor+'''
++	if podium_presentation and is_instance_valid(viewport) and OS.has_environment("BMT_DEEP_PODIUM_COUNT"):
++		var rank: int = int(str(name).get_slice("_",1))
++		if rank > int(OS.get_environment("BMT_DEEP_PODIUM_COUNT")): viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
++''')
++    changes["ui/rivalry_victory_car.gd"] = source
++    source = changes["ui/rivalry_victory_car.gd"]
++    anchor = '\tif podium_presentation: _deep_mark("podium_studio_end",{"widget":str(name)})'
++    source = replace(source,anchor,anchor+'''
++	if podium_presentation:
++		var mode: String = OS.get_environment("BMT_DEEP_LIGHTING")
++		if mode == "no_sky":
++			var environment: WorldEnvironment = world.get_node("PodiumReflectionEnvironment")
++			environment.environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
++			environment.environment.sky = null
++		elif mode == "no_rim": world.get_node("GarageRim").hide()
++		elif mode == "no_shadows": world.get_node("GarageKey").shadow_enabled = false
++''')
++    changes["ui/rivalry_victory_car.gd"] = source
++    source = original("core/game.gd")
++    start = source.index("func _ready() -> void:")
++    end = source.index("\nfunc ",start+1)
++    body = source[start:end]
++    for anchor,label in [("\ttrails = SkidTrails.new()","trails_begin"),("\tworld.add_child(trails)","trails_add"),("\tsand_dust = SandDustEffect.new()","particles_create_begin"),("\tworld.add_child(sand_dust)","particles_add_begin"),("\tsand_dust.prepare_track(native_track)","particles_track_begin"),("\tvehicle_audio = VehicleAudio.new()","audio_create_begin"),("\tadd_child(vehicle_audio)","audio_add_begin"),("\tvehicle_audio.configure(vehicle_id,handling,car)","audio_configure_begin")]:
++        body = replace(body,anchor,'\t_deep_mark("'+label+'")\n'+anchor)
++    for anchor,label in [("\tworld.add_child(trails)","trails_end"),("\tworld.add_child(sand_dust)","particles_add_end"),("\tsand_dust.prepare_track(native_track)","particles_track_end"),("\tadd_child(vehicle_audio)","audio_add_end"),("\tvehicle_audio.configure(vehicle_id,handling,car)","audio_configure_end")]:
++        body = replace(body,anchor,anchor+'\n\t_deep_mark("'+label+'")')
++    changes["core/game.gd"] = source[:start]+body+source[end:]+NODE_HELPER
++    source = original("ui/weekly_rivalry_page.gd")
++    source = replace(source,"func _build_content() -> void:\n",'func _build_content() -> void:\n\t_deep_mark("page_build_begin")\n')
++    source = wrap(source,"func _build_content() -> void:","_build_content","","page_build_content")
++    anchor = '\tif trace != null: trace.cost("page_build_content",Time.get_ticks_usec()-started)'
++    source = replace(source,anchor,anchor+'\n\t_deep_mark("page_build_end")')
++    changes["ui/weekly_rivalry_page.gd"] = source+NODE_HELPER
++    source = original("core/features/race.gd")
++    start = source.index("func run_start_race(app:")
++    end = source.index("\nfunc run_race_installation_current(",start)
++    body = source[start:end]
++    hooks = [
++        ("\tif not await app._await_selected_preparation(track,","selected_wait_begin"),
++        ("\tvar daily_rules: RefCounted","selected_wait_end"),
++        ("\tvar prepared_roads: Dictionary = {}","roads_begin"),
++        ("\tapp.returning_to_editor = from_editor","roads_end"),
++        ("\tapp.add_child(app.game)\n\tvar prepared_game: Node = app.game","game_begin"),
++        ("\tif is_instance_valid(prepared_game.world_render_preparation):","game_end"),
++        ("\t\tif not await prepared_game.world_render_preparation.prepare(","graphics_begin"),
++        ("\tapp.game.opponent_ghost =","graphics_end"),
++        ("\tvar prepared_finish: VehicleWeathering","finish_setup_begin"),
++        ("\tvar bridge_preparation =","bridge_setup_begin"),
++        ("\tvar trail_preparation =","trail_setup_begin"),
++        ("\tvar preparation_started: int = Time.get_ticks_usec()","effects_begin"),
++        ("\tvar effects_drawn: bool =","effects_return"),
++        ("\tvar night_preparation: Dictionary =","finish_draw_return"),
++        ("\tprepared_finish.end_render_warmup()","restore_finish"),
++        ("\tif (finish_warmed or night_preparation.contexts > 0)","clean_draw_begin"),
++        ("\tapp.game.set(\"weathering_prepared\", finish_drawn)","clean_draw_end"),
++        ("\tapp._close_race_loading(loading_id)\n\n","race_end"),
++    ]
++    for anchor,label in hooks:
++        indent = "\t\t" if anchor.startswith("\t\t") else "\t"
++        body = replace(body,anchor,indent+'_deep_mark("'+label+'")\n'+anchor)
++    changes["core/features/race.gd"] = source[:start]+body+source[end:]+NODE_HELPER
++    for relative,source in changes.items():
++        (PROJECT / relative).write_text(source,encoding="utf-8",newline="\n")
++    shutil.copy2(ROOT / "game/tests/profile_deep_loading.gd",PROJECT / "tests/profile_deep_loading.gd")
++    (OUT / "instrumentation.json").write_text(json.dumps({r:{"original_sha256":hashlib.sha256((WORK/"originals"/r).read_bytes()).hexdigest(),"instrumented_sha256":hashlib.sha256((PROJECT/r).read_bytes()).hexdigest()} for r in changes},indent=2))
++    print("Instrumented private copy only: "+", ".join(changes))
++
++
++def digest():
++    result = hashlib.sha256()
++    for p in sorted(PROJECT.rglob("*")):
++        if p.is_file() and (".godot" not in p.parts or "imported" in p.parts):
++            result.update(str(p.relative_to(PROJECT)).encode()); result.update(hashlib.sha256(p.read_bytes()).digest())
++    return result.hexdigest()
++
++
++def run(args):
++    OUT.mkdir(parents=True,exist_ok=True)
++    profile = WORK / "profiles" / (args.profile or args.name)
++    for relative in ("roaming","local"): (profile/relative).mkdir(parents=True,exist_ok=True)
++    captures = WORK / "captures" / args.name
++    captures.mkdir(parents=True,exist_ok=True)
++    (OUT/(args.name+"-configuration.json")).write_text(json.dumps(vars(args),indent=2))
++    env = dict(os.environ,APPDATA=str(profile/"roaming"),LOCALAPPDATA=str(profile/"local"),BMT_API_URL="",BMT_DEV_AUTH_KEY="",BMT_LOADING_OUTPUT=str(OUT/(args.name+".json")),BMT_GRAPHICS_OUTPUT=str(captures),BMT_DEEP_PODIUM_COUNT=str(args.podium),BMT_DEEP_LIGHTING=args.lighting,BMT_DEEP_CONTACT="1" if args.contact else "0",BMT_DEEP_RETAIN_SCENE="1" if args.retain_scene else "0")
++    wrapper = [sys.executable,str(ROOT/"scripts/run_no_crash_dialog.py"),"--",ENGINE]
++    version = subprocess.check_output(wrapper+["--version"],text=True).strip()
++    assert version == (ROOT/"godot-version.txt").read_text().strip()
++    command = wrapper+["--path",str(PROJECT),"--audio-driver","Dummy","--position","10000,10000","--rendering-method",args.renderer,"--script","res://tests/profile_deep_loading.gd","--","--case="+args.case,"--theme="+args.theme]
++    before = digest(); started = time.monotonic()
++    path = OUT/(args.name+".log")
++    with path.open("w",encoding="utf-8") as log:
++        process = subprocess.Popen(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT)
++        (OUT/(args.name+"-process.json")).write_text(json.dumps(dict(pid=process.pid,command=command),indent=2))
++        while process.poll() is None:
++            time.sleep(0.3)
++            text = path.read_text(encoding="utf-8",errors="replace")
++            if "SCRIPT ERROR:" in text or time.monotonic()-started > 270:
++                stopped = subprocess.run(["taskkill","/PID",str(process.pid),"/T","/F"],stdout=log,stderr=subprocess.STDOUT)
++                if stopped.returncode:
++                    print(json.dumps(dict(cleanup_required=True,pid=process.pid)),flush=True)
++                    return 126
++                break
++        code = process.wait()
++    after = digest()
++    lines = path.read_text(encoding="utf-8",errors="replace").splitlines()
++    diagnostics = list(dict.fromkeys(s for s in lines if s.startswith(("ERROR:","SCRIPT ERROR:","WARNING:","DEEP_FAIL"))))
++    receipt = dict(command=command,engine=version,exit_code=code,seconds=round(time.monotonic()-started,3),before_sha256=before,after_sha256=after,unchanged=before==after,diagnostics=diagnostics)
++    (OUT/(args.name+"-receipt.json")).write_text(json.dumps(receipt,indent=2))
++    print(json.dumps(dict(name=args.name,**receipt)),flush=True)
++    print("\n".join(lines[-4:]),flush=True)
++    return int(code!=0 or before!=after or any(s.startswith("SCRIPT ERROR:") for s in diagnostics))
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser()
++    parser.add_argument("action",choices=["instrument","run"])
++    parser.add_argument("name",nargs="?",default="smoke")
++    parser.add_argument("--case",choices=["rivalry","race"],default="rivalry")
++    parser.add_argument("--renderer",default="gl_compatibility")
++    parser.add_argument("--podium",type=int,default=3)
++    parser.add_argument("--theme",default="pine")
++    parser.add_argument("--profile",default="")
++    parser.add_argument("--lighting",choices=["normal","no_sky","no_rim","no_shadows"],default="normal")
++    parser.add_argument("--contact",action="store_true")
++    parser.add_argument("--retain-scene",action="store_true")
++    options = parser.parse_args()
++    if options.action == "instrument": instrument()
++    else: sys.exit(run(options))
+diff --git a/scripts/analyze_loading_investigation.py b/scripts/analyze_loading_investigation.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/analyze_loading_investigation.py
+@@ -0,0 +1,165 @@
++"""Summarize observed CPU/render boundaries; retain slow intervals, not disposable profiles."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/loading-investigation-2026-11-12"
++
++
++def load_runs():
++    runs = {}
++    for path in OUT.glob("*.json"):
++        data = json.loads(path.read_text(encoding="utf-8"))
++        if "events" in data and "rows" in data:
++            runs[path.stem] = data
++    return runs
++
++
++def pairs(events, first, last):
++    result = []
++    opened = None
++    for event in events:
++        if event["label"] == first:
++            opened = event
++        elif event["label"] == last and opened:
++            result.append(dict(ms=(event["us"]-opened["us"])/1000, data=opened["data"], begin_us=opened["us"], end_us=event["us"]))
++            opened = None
++    return result
++
++
++def elapsed(events, first, last):
++    values = pairs(events, first, last)
++    return sum(v["ms"] for v in values) if values else None
++
++
++def phase_summary(data, phase):
++    events = [e for e in data["events"] if e["phase"] == phase]
++    if not events:
++        return {}
++    costs = {key.split(":",1)[1]:value for key,value in data["costs"].items() if key.startswith(phase+":")}
++    if "frame_summary" in data:
++        frames = data["frame_summary"].get(phase,{})
++    else:
++        raw = [f for f in data["frames"] if f["phase"]==phase and 0<f["render_begin_us"]<=f["end_us"]]
++        spans = [(f["end_us"]-f["render_begin_us"])/1000 for f in raw]
++        frames = dict(count=len(raw),render_total_ms=sum(spans),render_max_ms=max(spans,default=0))
++    batches = pairs(events,"world_draw_begin","world_draw_end")
++    reads = pairs(events,"surface_read_begin","surface_read_end")
++    keys = [e["data"] for e in events if e["label"]=="outline_key"]
++    hulls = [e["data"] for e in events if e["label"]=="outline_end" and e["data"]]
++    starts = [e["us"] for e in events if e["label"] in ("race_begin","entry_begin")]
++    ends = [e["us"] for e in events if e["label"] in ("race_ready","entry_ready")]
++    measured = [e for e in events if (not starts or e["us"]>=starts[0]) and (not ends or e["us"]<=ends[-1])]
++    return dict(costs=costs,frames=frames,
++                feature_ms=elapsed(measured,"feature_begin","feature_end"),
++                roads_ms=elapsed(events,"roads_begin","roads_end"),
++                game_ms=elapsed(events,"game_begin","game_end"),
++                graphics_ms=elapsed(events,"graphics_begin","graphics_end"),
++                finish_ms=elapsed(events,"finish_setup_begin","race_end"),
++                effects_ms=elapsed(events,"effects_begin","effects_return"),
++                audio_ms=elapsed(events,"audio_configure_begin","audio_configure_end"),
++                outline_ms=elapsed(events,"outline_begin","outline_end"),
++                surface_read_ms=sum(r["ms"] for r in reads),surface_reads=len(reads),
++                surface_read_max_ms=max((r["ms"] for r in reads),default=0),
++                outline_keys=keys,outline_hulls=hulls,
++                outline_hits=sum(e["label"]=="outline_cache_hit" for e in events),
++                outline_misses=sum(e["label"]=="outline_cache_miss" for e in events),
++                draw_groups=len(batches),draw_wait_total_ms=sum(b["ms"] for b in batches),
++                slow_groups=sorted(batches,key=lambda b:-b["ms"])[:8],
++                slow_surface_reads=sorted(reads,key=lambda b:-b["ms"])[:8])
++
++
++def table(headers, rows):
++    return "\n".join(["| "+" | ".join(headers)+" |","| "+" | ".join(["---"]*len(headers))+" |",*["| "+" | ".join(map(str,row))+" |" for row in rows]])
++
++
++def number(value):
++    return "—" if value is None else f"{value:.1f}"
++
++
++def main(compact=False):
++    runs = load_runs()
++    results = {}
++    for name,data in runs.items():
++        results[name] = dict(mode=data["mode"],renderer=data["renderer"],checks=data["checks"],failures=data["failures"],rows=data["rows"],phases={p:phase_summary(data,p) for p in sorted({e["phase"] for e in data["events"]})})
++    text = ["# Rivalry entry and race loading investigation — 12 November 2026",
++            "RLI01–RLI06: controlled offline reproduction, podium draw ablations, persistent shader-cache controls, per-batch native rendering boundaries, repeated construction attribution and bounded evidence/cleanup. Production runtime sources, rendering defaults, canonical physics and player data were not changed.",
++            "The strongest new finding is an ineffective repeated contact-outline cache when prepared model meshes are recreated: Vulkan reads 57 mesh surfaces again, taking 4.85 seconds on the repeat. Holding the existing prepared PackedScene resource keeps mesh IDs stable, makes the unchanged cache hit in 0.34 ms, and produces the exact same hull bytes. Total repeat loading in that control falls from 8.79 to 3.71 seconds. This is a diagnostic retention experiment, not a shipping fix or a proven global memory policy.",
++            "## What the experiments establish",
++            "Rivalry's large first-entry delay is dominated by the first native draw of its 3D podium, followed by synchronous feature-script loading. Three car widgets are constructed in roughly 0.16 seconds; building them is not the multi-second cost. One rendered podium view retains almost the whole initial delay. Reusing the same private application's shader cache across a fresh process removes most of that draw stall. This points to first-use native renderer/driver program preparation; these tests do not intercept current GL compile/link calls, so they do not assign exact percentages to a specific driver API.",
++            "Race loading contains several different costs: lazy script/resource graph loading, first-use world/material drawing, final effect drawing, and a separate repeated vehicle-configuration delay observed on Vulkan. The finer outline/readback probes identify that last cost below. World packing is measured separately in microseconds; a `cache` status label does not identify packing as the cause of a rendering stall.",
++            "## Conditions and interpretation",
++            "Pinned official Godot 4.7.2, Windows/i7-11700K/RTX 3090, native 1280×720 windows offscreen, Dummy audio, music disabled, private APPDATA/LOCALAPPDATA, explicit disabled backend. GPU probes run sequentially. The prior full private project and imports were reused; runtime script comparison against live source differed only at generated build identity. The measured asset revisions remain pinned to that copy. Timers/observers are injected only into this disposable copy, plus explicitly recorded in-memory timing annotations for contact-outline construction. Every completed run records an unchanged before/after disk-project digest; the contact probe separately records original-file and in-memory annotated source hashes.",
++            "Optional Garage background warming is suppressed to isolate these paths. Consequently, repeated mesh lifetime is measured without an unrelated Garage view keeping resources alive. Ordinary navigation/optional retention may mask or alter this cache miss; these durations do not mean every normal race repeat takes nine seconds. The retained-scene control deliberately holds one existing stock Rally PackedScene across two races, without changing mesh data, outline calculation, cache key or lookup conditions. The scene is released after the probe. The reported 1,313,542-byte immediate Godot static-allocation delta is not full process/GPU memory qualification.",
++            "Cold means a fresh private application/shader-cache directory, with project imports and uncontrolled OS/driver state already present. Restart controls reuse exactly the same profile. First and second entry inside a process distinguish retained views/worlds. Single fresh-profile ablations are causal diagnostics, not statistical renderer/quality benchmarks. Turning off podium views, sky use, rim light or shadows changes the diagnostic picture and is not proposed as a shipping visual change.",
++            "## Rivalry entry"]
++    rows=[]
++    for name,result in results.items():
++        if result["mode"]!="rivalry": continue
++        for row in result["rows"]:
++            p=result["phases"].get("rivalry-"+str(row["cycle"]),{})
++            rows.append([name,row["cycle"],number(row["wall_ms"]),number(p.get("feature_ms")),number(p.get("costs",{}).get("page_build_content",{}).get("total_us",0)/1000),number(p.get("frames",{}).get("render_max_ms"))])
++    text += [table(["Run","Entry","Ready ms","Feature loads ms","Page construction ms","Largest native render interval ms"],rows),
++             "The zero-view control still constructs all three actual widgets/models, but disables their viewport updates. One-view keeps only the first-ranked viewport active. Remaining UI/composite work still draws. Individual lighting toggles retain the original rig construction and alter use afterward; they did not demonstrate a robust first-entry improvement. They do not prove that every underlying resource was absent from the driver's work.",
++             "The native draw boundary uses RenderingServer.frame_pre_draw/frame_post_draw. It measures CPU wall time spent in native frame submission/rendering and associated waits, not pure GPU execution time. Camera fitting/page layout are timed independently. A single native call can exceed the script-side scheduling budget, so spreading three widget constructions across frames cannot by itself guarantee responsive first rendering.",
++             "## Race loading"]
++    rows=[]
++    for name,result in results.items():
++        if result["mode"]!="race": continue
++        for row in result["rows"]:
++            p=result["phases"].get("race-"+str(row["cycle"]),{})
++            rows.append([name,row["cycle"],number(row["wall_ms"]),number(p.get("feature_ms")),number(p.get("roads_ms")),number(p.get("game_ms")),number(p.get("graphics_ms")),number(p.get("finish_ms")),p.get("draw_groups")])
++    text += [table(["Run","Entry","Ready ms","Feature loads ms","Road stage ms","Game construction ms","World draw stage ms","Final finish ms","Draw batches"],rows),
++             "Feature-load totals are restricted to the entry timer's begin/ready markers and cover the App's real lazy resources, including the editor memory-policy dependency. Observer phase/frame/helper aggregates may also include pre-entry and post-exit work and must not be added as exclusive slices of that timer. The standalone probe deliberately avoids preloading game classes before App starts. This exposes script parsing/loading that broader typed test fixtures can warm before their race timer. In-memory outline-detail setup loads that one class before the race and should be used for local function attribution, rather than a cold script-load comparison. Race process-restart controls reuse disk road data as well as shader caches; the separate road/draw stages show both effects.",
++             "Graphics preparation's `context`, `geometry_key` and `_material_key` CPU timers are inclusive/nested; do not add them together. Material hashing/context scans must be distinguished from the much longer native draw waits. A batch key describes the script's grouping; it is not a count of actual native shader programs.",
++             "## Contact outline and repeated configuration"]
++    rows=[]
++    for name,result in results.items():
++        if result["mode"]!="race": continue
++        for phase,p in result["phases"].items():
++            if p.get("audio_ms") is None: continue
++            rows.append([name,phase,number(p["audio_ms"]),number(p.get("outline_ms")),p.get("outline_hits"),p.get("outline_misses"),p.get("surface_reads"),number(p.get("surface_read_ms")),number(p.get("surface_read_max_ms"))])
++    text += [table(["Run","Phase","VehicleAudio.configure ms","VisibleContactAudio.configure ms","Outline hits","Misses","Mesh surface reads","Surface-read total ms","Worst read ms"],rows),
++             "The normal contact-outline routine reads rendered mesh arrays with surface_get_arrays and builds a convex hull for presentation contact audio. This is outside canonical simulation. Its bounded cache key includes mesh object identities and transforms. The detailed traces retain key hashes, mesh IDs, pose hashes and hull hashes, allowing repeated misses and actual geometry equality to be checked without changing the cache condition. Surface-read timing includes native readback/synchronisation, not merely numeric hull calculation. The test keeps the original algorithm, cache lookup, eviction and output; it adds only timers/metadata before any race is constructed.",
++             "For the stock Rally control, all 57 mesh IDs changed between ordinary race instances; pose hashes were identical, both lookups missed, and both hull hashes were `375508ad217875f9483d22f7d8b7e3c86c4ae358202b5dd7ccdfd758b9d08d4f`. Retaining the source PackedScene made IDs, poses and the entire cache key stable. The second lookup hit and returned that same hull hash with zero surface reads. On OpenGL the corresponding reads cost only about 2–3 ms, so this particular repeated readback issue is much more consequential in the observed Vulkan runs. It does not establish a general renderer speed comparison.",
++             "Source locations: `game/vehicle/visible_contact_audio.gd:13` constructs the key and outline; line32 reads the surfaces. `game/vehicle/vehicle_audio.gd:133` calls this work from audio configuration. `game/vehicle/modular_car_base.gd:35` loads the prepared scene into a local reference; this path has no bounded retained PackedScene cache. The existing stock-simple path also bypasses the older fitted/full rest-pose cache. The control establishes a concrete resource-lifetime cause without replacing the outline with a guessed shape or changing canonical contacts.",
++             "## Largest world-draw batches"]
++    for name in ("race-gl-cold","race-gl-warm","race-mobile","race-gl-outline","race-mobile-outline"):
++        if name not in results: continue
++        p=results[name]["phases"].get("race-0",{})
++        text += ["### "+name,table(["Draw wait ms","Material descriptions","Representative nodes"],[[number(b["ms"]),"; ".join(sorted({m for g in b["data"].get("groups",[]) for m in g.get("materials",[])})),"; ".join(n.rsplit("/",1)[-1] for g in b["data"].get("groups",[]) for n in g.get("nodes",[])[:2])] for b in p.get("slow_groups",[])[:5]])]
++        text += ["Measured CPU helpers: "+json.dumps(p.get("costs",{}))+"."]
++    receipts={p.stem:json.loads(p.read_text()) for p in OUT.glob("*-receipt.json")}
++    text += ["## Limits, failures and next implementation targets",
++             "The first instrumented Rivalry run retains a two-object/one-resource shutdown finding. Releasing the local App script and draining the soundtrack node after measurement removes that finding in subsequent runs. A contact-probe anchor check rejected an ambiguous reset anchor before applying its annotations; that attempt remains rejected. One instrumented Vulkan cold race hit the original `Preparing start…` loading deadline; it remains a failed run and is not counted as successful cold readiness. The deadline was not increased or disabled. Raw failed logs/receipts are retained alongside successful controls.",
++             "The sandbox's certificate-store diagnostic is retained; offline configuration prevents network testing. Timers/metadata add observation overhead, other owner processes were not stopped, and the differing cold durations are not a controlled renderer speedup claim. The older native GL trace in [NATIVE_SHADER_PREPARATION_2026_10_28.md](NATIVE_SHADER_PREPARATION_2026_10_28.md) identified compile/link calls in an earlier build; it corroborates the mechanism but is not substituted for current API-level measurements.",
++             "Priorities for a subsequent implementation: (1) add bounded, version/geometry-fenced prepared-model retention or exact prepared CPU outlines, preserving current pose/fit validation, invalidation and memory-pressure eviction; qualify every car/fitted shape and contact invariant, (2) reduce or prepare first-use podium/world native graphics in an appropriate validated render context, preserving exact appearance and real completion, (3) reduce the synchronous feature dependency graph and move genuinely independent CPU/file work behind existing lifecycle guards. World packing, car triangle reduction and serializing the three podium widgets are not supported as the leading fix by these measurements. Existing view/world retention and persistent shader caching already provide large repeat-entry gains. The retention control also changes other resource/draw reuse, so the entire wall-time difference must not be assigned exclusively to the outline function.",
++             table(["Run","Native exit","Unchanged project","Diagnostics"],[[name,r.get("exit_code"),r.get("unchanged"),"; ".join(r.get("diagnostics",[]))] for name,r in sorted(receipts.items())]),
++             "## Artifacts, source scope and retention",
++             "New source: `game/tests/profile_deep_loading.gd`, `scripts/investigate_loading.py` and `scripts/analyze_loading_investigation.py`. No shipping runtime file was edited. Exact instrumentation anchors, private-copy original/instrumented hashes, process commands, data, failures and project digests are in [the evidence directory](evidence/loading-investigation-2026-11-12/). The machine-readable conclusions are in `summary.json`. Frames are compacted to slow intervals plus exact per-phase render totals; event markers and original measurement rows remain. Selected baseline/diagnostic pictures are retained. Both task-owned build directories, including the full private project, shader caches and test profiles, were removed at completion under the owner retention policy. `cleanup.json` records disposition and the mandatory build-cleaner receipt. Other recent/protected build work remains above the 20 GiB target. The four-file source-only checkpoint records hashes and reverse-apply validation without changing the main index.",
++             "Reproduction requires preparing a fresh coherent private copy at the path declared in the runner (the existing prepare/freeze profile helpers provide this), verifying all prepared-asset contracts, then running `python scripts/investigate_loading.py instrument` and `python scripts/investigate_loading.py run NAME --case rivalry|race --renderer gl_compatibility|mobile`. Use `--profile NAME` for a persistent-cache pair, `--podium 0|1|3` for podium controls, `--lighting no_sky|no_rim|no_shadows` for visual diagnostics, `--contact` for the additional in-memory contact timers, and `--retain-scene` for the stock Rally resource-lifetime control. Exact actually executed configurations are recorded in `run-configurations.json`. Do not run concurrent GPU probes. Source snapshots are intentionally not permanent evidence.",
++             "No device query/test, APK/export, live service request, deployment, owner-save edit, owner-process change, production renderer/default change or main-index write was performed. Release, uncontended repeats, real signed-in network entry and Android driver/frame/input qualification remain separate."]
++    (OUT/"summary.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
++    (ROOT/"docs/RIVALRY_RACE_LOADING_INVESTIGATION_2026_11_12.md").write_text("\n\n".join(text)+"\n",encoding="utf-8")
++    if compact:
++        prior=OUT/"compaction.json"
++        compacted=json.loads(prior.read_text()) if prior.exists() else []
++        for name,data in runs.items():
++            if "frame_summary" in data: continue
++            path=OUT/(name+".json")
++            before=hashlib.sha256(path.read_bytes()).hexdigest()
++            data["frame_summary"]={p:phase_summary(data,p).get("frames",{}) for p in {f["phase"] for f in data["frames"]}}
++            data["original_frame_count"]=len(data["frames"])
++            data["frames"]=[f for f in data["frames"] if f["end_us"]-f["render_begin_us"]>16667 or f["end_us"]-f["begin_us"]>16667]
++            data["retained_frame_scope"]="All slow frame/render intervals above 16.667 ms; exact per-phase native-render totals/counts retained separately"
++            path.write_text(json.dumps(data,separators=(",",":")),encoding="utf-8")
++            compacted.append(dict(name=name,before_sha256=before,after_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),original_frames=data["original_frame_count"],retained_frames=len(data["frames"])))
++        (OUT/"compaction.json").write_text(json.dumps(compacted,indent=2))
++    print(json.dumps({n:dict(checks=d["checks"],failures=d["failures"],ms=[round(r["wall_ms"],1) for r in d["rows"]]) for n,d in results.items()}))
++
++
++if __name__=="__main__":
++    parser=argparse.ArgumentParser(); parser.add_argument("--compact",action="store_true")
++    main(parser.parse_args().compact)
+diff --git a/docs/RIVALRY_RACE_LOADING_INVESTIGATION_2026_11_12.md b/docs/RIVALRY_RACE_LOADING_INVESTIGATION_2026_11_12.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_RACE_LOADING_INVESTIGATION_2026_11_12.md
+@@ -0,0 +1,186 @@
++# Rivalry entry and race loading investigation — 12 November 2026
++
++RLI01–RLI06: controlled offline reproduction, podium draw ablations, persistent shader-cache controls, per-batch native rendering boundaries, repeated construction attribution and bounded evidence/cleanup. Production runtime sources, rendering defaults, canonical physics and player data were not changed.
++
++The strongest new finding is an ineffective repeated contact-outline cache when prepared model meshes are recreated: Vulkan reads 57 mesh surfaces again, taking 4.85 seconds on the repeat. Holding the existing prepared PackedScene resource keeps mesh IDs stable, makes the unchanged cache hit in 0.34 ms, and produces the exact same hull bytes. Total repeat loading in that control falls from 8.79 to 3.71 seconds. This is a diagnostic retention experiment, not a shipping fix or a proven global memory policy.
++
++## What the experiments establish
++
++Rivalry's large first-entry delay is dominated by the first native draw of its 3D podium, followed by synchronous feature-script loading. Three car widgets are constructed in roughly 0.16 seconds; building them is not the multi-second cost. One rendered podium view retains almost the whole initial delay. Reusing the same private application's shader cache across a fresh process removes most of that draw stall. This points to first-use native renderer/driver program preparation; these tests do not intercept current GL compile/link calls, so they do not assign exact percentages to a specific driver API.
++
++Race loading contains several different costs: lazy script/resource graph loading, first-use world/material drawing, final effect drawing, and a separate repeated vehicle-configuration delay observed on Vulkan. The finer outline/readback probes identify that last cost below. World packing is measured separately in microseconds; a `cache` status label does not identify packing as the cause of a rendering stall.
++
++## Conditions and interpretation
++
++Pinned official Godot 4.7.2, Windows/i7-11700K/RTX 3090, native 1280×720 windows offscreen, Dummy audio, music disabled, private APPDATA/LOCALAPPDATA, explicit disabled backend. GPU probes run sequentially. The prior full private project and imports were reused; runtime script comparison against live source differed only at generated build identity. The measured asset revisions remain pinned to that copy. Timers/observers are injected only into this disposable copy, plus explicitly recorded in-memory timing annotations for contact-outline construction. Every completed run records an unchanged before/after disk-project digest; the contact probe separately records original-file and in-memory annotated source hashes.
++
++Optional Garage background warming is suppressed to isolate these paths. Consequently, repeated mesh lifetime is measured without an unrelated Garage view keeping resources alive. Ordinary navigation/optional retention may mask or alter this cache miss; these durations do not mean every normal race repeat takes nine seconds. The retained-scene control deliberately holds one existing stock Rally PackedScene across two races, without changing mesh data, outline calculation, cache key or lookup conditions. The scene is released after the probe. The reported 1,313,542-byte immediate Godot static-allocation delta is not full process/GPU memory qualification.
++
++Cold means a fresh private application/shader-cache directory, with project imports and uncontrolled OS/driver state already present. Restart controls reuse exactly the same profile. First and second entry inside a process distinguish retained views/worlds. Single fresh-profile ablations are causal diagnostics, not statistical renderer/quality benchmarks. Turning off podium views, sky use, rim light or shadows changes the diagnostic picture and is not proposed as a shipping visual change.
++
++## Rivalry entry
++
++| Run | Entry | Ready ms | Feature loads ms | Page construction ms | Largest native render interval ms |
++| --- | --- | --- | --- | --- | --- |
++| rivalry-gl-3 | 0 | 13382.3 | 1995.5 | 161.3 | 10992.7 |
++| rivalry-gl-3 | 1 | 98.8 | — | 0.0 | 8.1 |
++| rivalry-gl-none | 0 | 2758.6 | 2274.5 | 186.1 | 99.2 |
++| rivalry-gl-none | 1 | 94.1 | — | 0.0 | 8.1 |
++| rivalry-gl-one | 0 | 13019.2 | 2220.6 | 177.3 | 10422.0 |
++| rivalry-gl-one | 1 | 85.1 | — | 0.0 | 8.0 |
++| rivalry-gl-warm | 0 | 2896.8 | 2040.0 | 175.2 | 495.8 |
++| rivalry-gl-warm | 1 | 77.5 | — | 0.0 | 8.2 |
++| rivalry-mobile | 0 | 5631.0 | 2670.0 | 728.8 | 2038.0 |
++| rivalry-mobile | 1 | 76.0 | — | 0.0 | 2.1 |
++| rivalry-no-rim | 0 | 14839.9 | 2335.4 | 455.7 | 11441.5 |
++| rivalry-no-rim | 1 | 103.6 | — | 0.0 | 23.2 |
++| rivalry-no-shadows | 0 | 13822.6 | 2330.5 | 396.1 | 10651.5 |
++| rivalry-no-shadows | 1 | 129.7 | — | 0.0 | 21.2 |
++| rivalry-no-sky | 0 | 17936.0 | 2478.1 | 660.2 | 14065.2 |
++| rivalry-no-sky | 1 | 152.0 | — | 0.0 | 43.2 |
++
++The zero-view control still constructs all three actual widgets/models, but disables their viewport updates. One-view keeps only the first-ranked viewport active. Remaining UI/composite work still draws. Individual lighting toggles retain the original rig construction and alter use afterward; they did not demonstrate a robust first-entry improvement. They do not prove that every underlying resource was absent from the driver's work.
++
++The native draw boundary uses RenderingServer.frame_pre_draw/frame_post_draw. It measures CPU wall time spent in native frame submission/rendering and associated waits, not pure GPU execution time. Camera fitting/page layout are timed independently. A single native call can exceed the script-side scheduling budget, so spreading three widget constructions across frames cannot by itself guarantee responsive first rendering.
++
++## Race loading
++
++| Run | Entry | Ready ms | Feature loads ms | Road stage ms | Game construction ms | World draw stage ms | Final finish ms | Draw batches |
++| --- | --- | --- | --- | --- | --- | --- | --- | --- |
++| race-gl-cold | 0 | 48924.4 | 4906.2 | 4045.8 | 6668.5 | 25696.5 | 7556.5 | 28 |
++| race-gl-cold | 1 | 423.9 | — | 0.0 | 113.8 | 55.7 | 216.0 | 3 |
++| race-gl-outline | 0 | 22101.7 | 7108.3 | 163.7 | 4119.2 | 4101.5 | 6504.3 | 34 |
++| race-gl-outline | 1 | 2974.5 | — | 0.0 | 156.3 | 287.3 | 2476.2 | 3 |
++| race-gl-warm | 0 | 13354.5 | 6243.3 | 182.3 | 4056.1 | 1667.3 | 1146.4 | 28 |
++| race-gl-warm | 1 | 536.5 | — | 0.0 | 177.7 | 65.2 | 252.3 | 3 |
++| race-mobile-contact | 0 | 38640.7 | 6191.2 | 205.0 | 27429.7 | 1227.1 | 3328.3 | 15 |
++| race-mobile-contact | 1 | 13798.3 | — | 0.0 | 10212.5 | 387.8 | 3009.2 | 3 |
++| race-mobile-detail | 1 | 18958.6 | — | 0.0 | 11589.6 | 457.5 | 6673.1 | 3 |
++| race-mobile-outline | 0 | 40904.5 | 6360.9 | 171.4 | 26592.3 | 3791.9 | 3754.7 | 34 |
++| race-mobile-outline | 1 | 8793.8 | — | 0.1 | 6511.9 | 303.8 | 1890.0 | 3 |
++| race-mobile-retained | 0 | 41571.2 | 7497.2 | 244.1 | 26589.1 | 3363.9 | 3684.8 | 34 |
++| race-mobile-retained | 1 | 3712.8 | — | 0.1 | 1621.5 | 68.5 | 1915.9 | 1 |
++| race-mobile | 0 | 61347.6 | 7218.2 | 5602.4 | 37797.8 | 3769.6 | 6848.2 | 34 |
++| race-mobile | 1 | 10011.0 | — | 0.0 | 7774.3 | 249.4 | 1869.2 | 3 |
++
++Feature-load totals are restricted to the entry timer's begin/ready markers and cover the App's real lazy resources, including the editor memory-policy dependency. Observer phase/frame/helper aggregates may also include pre-entry and post-exit work and must not be added as exclusive slices of that timer. The standalone probe deliberately avoids preloading game classes before App starts. This exposes script parsing/loading that broader typed test fixtures can warm before their race timer. In-memory outline-detail setup loads that one class before the race and should be used for local function attribution, rather than a cold script-load comparison. Race process-restart controls reuse disk road data as well as shader caches; the separate road/draw stages show both effects.
++
++Graphics preparation's `context`, `geometry_key` and `_material_key` CPU timers are inclusive/nested; do not add them together. Material hashing/context scans must be distinguished from the much longer native draw waits. A batch key describes the script's grouping; it is not a count of actual native shader programs.
++
++## Contact outline and repeated configuration
++
++| Run | Phase | VehicleAudio.configure ms | VisibleContactAudio.configure ms | Outline hits | Misses | Mesh surface reads | Surface-read total ms | Worst read ms |
++| --- | --- | --- | --- | --- | --- | --- | --- | --- |
++| race-gl-outline | race-0 | 46.6 | 17.6 | 0 | 1 | 57 | 2.3 | 0.7 |
++| race-gl-outline | race-1 | 25.4 | 20.8 | 0 | 1 | 57 | 2.9 | 0.9 |
++| race-mobile-contact | race-0 | 1229.7 | — | 0 | 0 | 0 | 0.0 | 0.0 |
++| race-mobile-contact | race-1 | 7643.2 | — | 0 | 0 | 0 | 0.0 | 0.0 |
++| race-mobile-detail | race-0 | 8904.5 | — | 0 | 0 | 0 | 0.0 | 0.0 |
++| race-mobile-detail | race-1 | 8764.6 | — | 0 | 0 | 0 | 0.0 | 0.0 |
++| race-mobile-outline | race-0 | 6201.9 | 6169.7 | 0 | 1 | 57 | 6145.9 | 311.9 |
++| race-mobile-outline | race-1 | 4881.1 | 4875.2 | 0 | 1 | 57 | 4850.6 | 199.6 |
++| race-mobile-retained | race-0 | 4884.9 | 4842.8 | 0 | 1 | 57 | 4819.3 | 204.4 |
++| race-mobile-retained | race-1 | 6.2 | 0.3 | 1 | 0 | 0 | 0.0 | 0.0 |
++
++The normal contact-outline routine reads rendered mesh arrays with surface_get_arrays and builds a convex hull for presentation contact audio. This is outside canonical simulation. Its bounded cache key includes mesh object identities and transforms. The detailed traces retain key hashes, mesh IDs, pose hashes and hull hashes, allowing repeated misses and actual geometry equality to be checked without changing the cache condition. Surface-read timing includes native readback/synchronisation, not merely numeric hull calculation. The test keeps the original algorithm, cache lookup, eviction and output; it adds only timers/metadata before any race is constructed.
++
++For the stock Rally control, all 57 mesh IDs changed between ordinary race instances; pose hashes were identical, both lookups missed, and both hull hashes were `375508ad217875f9483d22f7d8b7e3c86c4ae358202b5dd7ccdfd758b9d08d4f`. Retaining the source PackedScene made IDs, poses and the entire cache key stable. The second lookup hit and returned that same hull hash with zero surface reads. On OpenGL the corresponding reads cost only about 2–3 ms, so this particular repeated readback issue is much more consequential in the observed Vulkan runs. It does not establish a general renderer speed comparison.
++
++Source locations: `game/vehicle/visible_contact_audio.gd:13` constructs the key and outline; line32 reads the surfaces. `game/vehicle/vehicle_audio.gd:133` calls this work from audio configuration. `game/vehicle/modular_car_base.gd:35` loads the prepared scene into a local reference; this path has no bounded retained PackedScene cache. The existing stock-simple path also bypasses the older fitted/full rest-pose cache. The control establishes a concrete resource-lifetime cause without replacing the outline with a guessed shape or changing canonical contacts.
++
++## Largest world-draw batches
++
++### race-gl-cold
++
++| Draw wait ms | Material descriptions | Representative nodes |
++| --- | --- | --- |
++| 2475.1 | ShaderMaterial:res://assets/vehicles/modular_car_bases_v1/compact_simple_fixed.scn::Shader_glkl0; ShaderMaterial:res://vehicle/compact_headlamp.gdshader; StandardMaterial3D | PreparedNode_34; PreparedNode_32; RearPlateHeaderRule; FrontLampLenses; RaceShadowProxy; RaceShadowProxy |
++| 2122.3 | ShaderMaterial: | @MeshInstance3D@237 |
++| 1688.1 | ShaderMaterial: | @MeshInstance3D@238 |
++| 1646.7 | ShaderMaterial: | @MeshInstance3D@305; @MeshInstance3D@304 |
++| 1572.6 | ShaderMaterial: | @MeshInstance3D@265; @MeshInstance3D@264 |
++
++Measured CPU helpers: {"_material_key": {"calls": 1980, "max_us": 543, "total_us": 30382}, "context": {"calls": 57, "max_us": 2007, "total_us": 56513}, "geometry_key": {"calls": 853, "max_us": 560, "total_us": 47720}}.
++
++### race-gl-warm
++
++| Draw wait ms | Material descriptions | Representative nodes |
++| --- | --- | --- |
++| 134.4 | ShaderMaterial:res://assets/vehicles/modular_car_bases_v1/compact_simple_fixed.scn::Shader_glkl0; ShaderMaterial:res://vehicle/compact_headlamp.gdshader; StandardMaterial3D | PreparedNode_34; PreparedNode_32; RearPlateHeaderRule; FrontLampLenses; RaceShadowProxy; RaceShadowProxy |
++| 103.3 | ShaderMaterial: | @MeshInstance3D@238 |
++| 103.0 | StandardMaterial3D | LowCover |
++| 85.3 | StandardMaterial3D | @MeshInstance3D@307; @MeshInstance3D@306 |
++| 82.4 | ShaderMaterial: | @MeshInstance3D@305; @MeshInstance3D@304 |
++
++Measured CPU helpers: {"_material_key": {"calls": 1980, "max_us": 1021, "total_us": 45072}, "context": {"calls": 57, "max_us": 2166, "total_us": 83184}, "geometry_key": {"calls": 853, "max_us": 1066, "total_us": 71225}}.
++
++### race-mobile
++
++| Draw wait ms | Material descriptions | Representative nodes |
++| --- | --- | --- |
++| 498.3 | ShaderMaterial: | @MeshInstance3D@238 |
++| 147.7 | ShaderMaterial: | @MeshInstance3D@237 |
++| 126.5 | ShaderMaterial:res://track/contact_shadow.gdshader | CarContactShadow |
++| 125.3 |  | Mud1; Spray1 |
++| 124.6 | StandardMaterial3D | PreparedNode_35 |
++
++Measured CPU helpers: {"_material_key": {"calls": 1980, "max_us": 934, "total_us": 48188}, "context": {"calls": 69, "max_us": 3439, "total_us": 108943}, "geometry_key": {"calls": 853, "max_us": 985, "total_us": 74676}}.
++
++### race-gl-outline
++
++| Draw wait ms | Material descriptions | Representative nodes |
++| --- | --- | --- |
++| 169.2 | ShaderMaterial:res://assets/vehicles/modular_car_bases_v1/compact_simple_fixed.scn::Shader_glkl0 | RaceShadowProxy |
++| 145.0 | StandardMaterial3D | PreparedNode_35 |
++| 142.1 | ShaderMaterial:res://vehicle/window_reflection.gdshader | PreparedNode_26 |
++| 141.8 | StandardMaterial3D | LowCover |
++| 141.8 | StandardMaterial3D | @MeshInstance3D@307; @MeshInstance3D@306 |
++
++Measured CPU helpers: {"_material_key": {"calls": 1980, "max_us": 675, "total_us": 38757}, "context": {"calls": 69, "max_us": 2093, "total_us": 87952}, "geometry_key": {"calls": 853, "max_us": 763, "total_us": 60198}}.
++
++### race-mobile-outline
++
++| Draw wait ms | Material descriptions | Representative nodes |
++| --- | --- | --- |
++| 144.3 | ShaderMaterial: [source=res://track/creator_road.gdshader] | @MeshInstance3D@305; @MeshInstance3D@304 |
++| 138.8 | ShaderMaterial: [source=res://track/ground.gdshader] | @MeshInstance3D@237 |
++| 136.8 | ShaderMaterial:res://vehicle/compact_tire.gdshader | PreparedNode_0; PreparedNode_0 |
++| 127.9 | ShaderMaterial: [source=res://track/terrain.gdshader] | @MeshInstance3D@238 |
++| 120.3 | StandardMaterial3D | LowCover |
++
++Measured CPU helpers: {"_material_key": {"calls": 1980, "max_us": 2331, "total_us": 45062}, "context": {"calls": 69, "max_us": 2444, "total_us": 97099}, "geometry_key": {"calls": 853, "max_us": 2408, "total_us": 69109}}.
++
++## Limits, failures and next implementation targets
++
++The first instrumented Rivalry run retains a two-object/one-resource shutdown finding. Releasing the local App script and draining the soundtrack node after measurement removes that finding in subsequent runs. A contact-probe anchor check rejected an ambiguous reset anchor before applying its annotations; that attempt remains rejected. One instrumented Vulkan cold race hit the original `Preparing start…` loading deadline; it remains a failed run and is not counted as successful cold readiness. The deadline was not increased or disabled. Raw failed logs/receipts are retained alongside successful controls.
++
++The sandbox's certificate-store diagnostic is retained; offline configuration prevents network testing. Timers/metadata add observation overhead, other owner processes were not stopped, and the differing cold durations are not a controlled renderer speedup claim. The older native GL trace in [NATIVE_SHADER_PREPARATION_2026_10_28.md](NATIVE_SHADER_PREPARATION_2026_10_28.md) identified compile/link calls in an earlier build; it corroborates the mechanism but is not substituted for current API-level measurements.
++
++Priorities for a subsequent implementation: (1) add bounded, version/geometry-fenced prepared-model retention or exact prepared CPU outlines, preserving current pose/fit validation, invalidation and memory-pressure eviction; qualify every car/fitted shape and contact invariant, (2) reduce or prepare first-use podium/world native graphics in an appropriate validated render context, preserving exact appearance and real completion, (3) reduce the synchronous feature dependency graph and move genuinely independent CPU/file work behind existing lifecycle guards. World packing, car triangle reduction and serializing the three podium widgets are not supported as the leading fix by these measurements. Existing view/world retention and persistent shader caching already provide large repeat-entry gains. The retention control also changes other resource/draw reuse, so the entire wall-time difference must not be assigned exclusively to the outline function.
++
++| Run | Native exit | Unchanged project | Diagnostics |
++| --- | --- | --- | --- |
++| race-gl-cold-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| race-gl-outline-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| race-gl-warm-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| race-mobile-contact-receipt | 1 | True | ERROR: Failed to read the root certificate store.; DEEP_FAIL exact outline anchor 	reset() |
++| race-mobile-detail-receipt | 1 | True | ERROR: Failed to read the root certificate store.; WARNING: Race preparation timed out at stage: Preparing start…; DEEP_FAIL race installed |
++| race-mobile-outline-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| race-mobile-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| race-mobile-retained-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-gl-3-receipt | 0 | True | ERROR: Failed to read the root certificate store.; WARNING: 2 ObjectDB instances were leaked at exit (run with `--verbose` for details).; ERROR: 1 resources still in use at exit (run with --verbose for details). |
++| rivalry-gl-none-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-gl-one-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-gl-warm-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-mobile-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-no-rim-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-no-shadows-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++| rivalry-no-sky-receipt | 0 | True | ERROR: Failed to read the root certificate store. |
++
++## Artifacts, source scope and retention
++
++New source: `game/tests/profile_deep_loading.gd`, `scripts/investigate_loading.py` and `scripts/analyze_loading_investigation.py`. No shipping runtime file was edited. Exact instrumentation anchors, private-copy original/instrumented hashes, process commands, data, failures and project digests are in [the evidence directory](evidence/loading-investigation-2026-11-12/). The machine-readable conclusions are in `summary.json`. Frames are compacted to slow intervals plus exact per-phase render totals; event markers and original measurement rows remain. Selected baseline/diagnostic pictures are retained. Both task-owned build directories, including the full private project, shader caches and test profiles, were removed at completion under the owner retention policy. `cleanup.json` records disposition and the mandatory build-cleaner receipt. Other recent/protected build work remains above the 20 GiB target. The four-file source-only checkpoint records hashes and reverse-apply validation without changing the main index.
++
++Reproduction requires preparing a fresh coherent private copy at the path declared in the runner (the existing prepare/freeze profile helpers provide this), verifying all prepared-asset contracts, then running `python scripts/investigate_loading.py instrument` and `python scripts/investigate_loading.py run NAME --case rivalry|race --renderer gl_compatibility|mobile`. Use `--profile NAME` for a persistent-cache pair, `--podium 0|1|3` for podium controls, `--lighting no_sky|no_rim|no_shadows` for visual diagnostics, `--contact` for the additional in-memory contact timers, and `--retain-scene` for the stock Rally resource-lifetime control. Exact actually executed configurations are recorded in `run-configurations.json`. Do not run concurrent GPU probes. Source snapshots are intentionally not permanent evidence.
++
++No device query/test, APK/export, live service request, deployment, owner-save edit, owner-process change, production renderer/default change or main-index write was performed. Release, uncontended repeats, real signed-in network entry and Android driver/frame/input qualification remain separate.

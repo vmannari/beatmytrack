@@ -9,23 +9,24 @@ static var hits: int = 0
 static var _sources: Dictionary = {}
 
 static func build_revision(id: String) -> String:
+	id = VehicleCatalog.model_id(id)
 	var identity: GDScript = load("res://core/build_identity.gd")
 	var revisions: Dictionary = identity.get_script_constant_map().get("MODULAR_CAR_SHA256",{})
 	return str(revisions.get(id,""))
 
 static func path_for(car: CarVisual) -> String:
-	return DIRECTORY.path_join("%s_%s_%s.scn" % [car.vehicle_id,"simple" if car.simple_model else "full","editable" if car.editable_kits else "fixed"])
+	return DIRECTORY.path_join("%s_%s_%s.scn" % [car.model_id,"simple" if car.simple_model else "full","editable" if car.editable_kits else "fixed"])
 
 static func key_for(car: CarVisual) -> Array:
-	var config: HandlingConfig = VehicleCatalog.config(car.vehicle_id)
-	return [SCHEMA,Engine.get_version_info().string,build_revision(car.vehicle_id),car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+	var config: HandlingConfig = VehicleCatalog.config(car.model_id)
+	return [SCHEMA,Engine.get_version_info().string,build_revision(car.model_id),car.model_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
 static func source_hashes(id: String) -> Dictionary:
 	return preload("res://vehicle/prepared_asset_sources.gd").hashes(id)
 
 static func _eligible(car: CarVisual) -> bool:
-	var revision: String = build_revision(car.vehicle_id)
-	return enabled and car.vehicle_id in VehicleCatalog.IDS and revision.length() == 64 and revision.is_valid_hex_number(false) and car.batch_parts and (not car.editable_kits or VehicleCustomisation.supported(car.vehicle_id))
+	var revision: String = build_revision(car.model_id)
+	return enabled and car.model_id in VehicleCatalog.IDS and revision.length() == 64 and revision.is_valid_hex_number(false) and car.batch_parts and (not car.editable_kits or VehicleCustomisation.supported(car.model_id))
 
 static func restore(car: CarVisual) -> bool:
 	if not _eligible(car): return false
@@ -43,8 +44,8 @@ static func restore(car: CarVisual) -> bool:
 	# In a source checkout, reject any stale scene before touching the car.
 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
-		if not _sources.has(car.vehicle_id): _sources[car.vehicle_id] = validation.runtime_hashes(car.vehicle_id)
-		if validation.runtime_projection(data.get("sources",{})) != _sources[car.vehicle_id]:
+		if not _sources.has(car.model_id): _sources[car.model_id] = validation.runtime_hashes(car.model_id)
+		if validation.runtime_projection(data.get("sources",{})) != _sources[car.model_id]:
 			holder.free()
 			return false
 	# Validate every stored path before mutating the live car. A corrupt or
@@ -127,7 +128,7 @@ static func bake(car: CarVisual) -> Error:
 			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(surface))
 			mesh.surface_set_material(surface,node.mesh.surface_get_material(surface))
 		node.mesh = mesh
-	var data: Dictionary = {"key":key_for(car),"sources":source_hashes(car.vehicle_id),"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
+	var data: Dictionary = {"key":key_for(car),"sources":source_hashes(car.model_id),"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field] = entry[field]
 	for field: String in ["brake_material","accent_roof","underside_material"]: data[field] = SNAPSHOT._material(entry[field],copies)
 	for slot: String in entry.paint_materials: data.paint_materials[slot] = SNAPSHOT._material(entry.paint_materials[slot],copies)

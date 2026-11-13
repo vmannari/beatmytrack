@@ -7,6 +7,7 @@ func _initialize() -> void:
 	run.call_deferred()
 
 func run() -> void:
+	var lods = preload("res://tests/support/car_refinement_lods.gd").new()
 	var vehicle_filter: String = ""
 	var quality_filter: String = ""
 	var category_filter: String = ""
@@ -48,6 +49,8 @@ func run() -> void:
 					parts[category] = option
 					car.change_kit_parts(parts)
 					var error: Error = Kits.bake(car,category,option)
+					if error == OK: error = lods.bake(Kits.path_for(car,category,option),id,0.5 if simple else 2.0)
+					if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(Kits.path_for(car,category,option),id)
 					if error != OK:
 						push_error("Kit bake failed: %s/%s/%s/%s: %s" % [id,"simple" if simple else "full",category,option,error])
 						car.free()

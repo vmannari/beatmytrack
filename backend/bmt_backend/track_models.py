@@ -25,6 +25,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from .db import Base
+from .receipt_references import FIELDS as RECEIPT_REFERENCE_FIELDS
+from .receipt_references import reference as receipt_reference
 
 
 def new_id() -> str:
@@ -225,6 +227,12 @@ class IdempotencyRecord(Base):
     response: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     archive_key: Mapped[str] = mapped_column(String(80), default="", server_default="")
+
+
+for _reference_field in RECEIPT_REFERENCE_FIELDS:
+    _reference = receipt_reference(IdempotencyRecord.response, _reference_field)
+    Index(f"ix_retry_{_reference_field}", _reference,
+          sqlite_where=_reference.is_not(None), postgresql_where=_reference.is_not(None))
 
 
 class QueuePlayer(Base):

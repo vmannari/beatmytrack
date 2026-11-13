@@ -17,6 +17,13 @@ func run() -> void:
 	root.add_child(camera)
 	camera.current = true
 	var baseline: CameraProfile = load("res://resources/camera.tres")
+	check(CameraProfile.MODES.size() == CameraProfile.TITLES.size() and CameraProfile.MODES.size() == CameraProfile.DESCRIPTIONS.size(), "every view has settings copy")
+	for entry: Array in [["top_down", 85.0], ["high_angle", 70.0], ["low_angle", 46.0]]:
+		camera.set_mode(entry[0])
+		check(is_equal_approx(camera.profile.pitch_degrees, entry[1]), "distinct authored angle " + str(entry[0]))
+		check(not camera.profile.follow_heading and camera.profile.world_yaw_degrees == baseline.world_yaw_degrees, "new angle retains steady world " + str(entry[0]))
+		check(camera.profile.maximum_look_ahead == baseline.maximum_look_ahead and camera.profile.smoothing == baseline.smoothing, "new angle preserves tracking " + str(entry[0]))
+	check(CameraProfile.valid_mode("unknown") == "overhead", "unknown views retain original default")
 	camera.set_mode("follow_car")
 	check(camera.profile.pitch_degrees < baseline.pitch_degrees and camera.profile.pitch_degrees >= 40.0, "lower view remains overhead")
 	check(camera.profile != baseline and not baseline.follow_heading and baseline.pitch_degrees == 56.0, "mode owns its profile and preserves baseline")
@@ -77,6 +84,9 @@ func run() -> void:
 		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["ellipse"], "reload preserves camera and unrelated preferences " + mode)
 		check(reload.settings.camera_speed_zoom == false, "reload preserves disabled speed zoom " + mode)
 		check(is_equal_approx(float(reload.settings.camera_speed_zoom_strength), 0.41), "reload preserves zoom strength independently of mode and toggle " + mode)
+	# Keep the legacy rollback scenarios pinned to their original committed view.
+	store.settings.camera_mode = "look_ahead"
+	check(store.save_records() == OK, "restore committed view for rollback scenarios")
 	store.settings.camera_mode = "unknown"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_mode == "look_ahead", "invalid camera preference rejected without losing committed settings")
 	store.settings.camera_speed_zoom = "yes"
@@ -131,6 +141,14 @@ func run() -> void:
 	var reload := LocalRecords.new(store.path)
 	reload.load_records()
 	check(reload.settings.camera_mode == "follow_car", "pause camera preference persists for next race")
+	for mode: String in ["top_down", "high_angle", "low_angle"]:
+		(settings.find_child("Camera_" + mode, true, false) as Button).pressed.emit()
+		check(game.camera.mode != mode and settings.draft_camera == mode, "new pause angle stages " + mode)
+		check(settings._apply() and game.paused and game.camera.mode == mode, "new pause angle applies without resuming " + mode)
+		reload.load_records()
+		check(reload.settings.camera_mode == mode, "new pause angle survives reload " + mode)
+	(settings.find_child("Camera_follow_car", true, false) as Button).pressed.emit()
+	check(settings._apply(), "restore prior view for failed-Apply scenarios")
 	store.path = directory.path_join("missing/records.json")
 	settings.draft_camera = "overhead"
 	settings.draft_speed_zoom = false
@@ -150,6 +168,10 @@ func run() -> void:
 	shortcut.physical_keycode = KEY_C
 	game._unhandled_key_input(shortcut)
 	check(game.camera.mode == "look_ahead", "C cycles the race camera")
+	for index: int in range(CameraProfile.MODES.size()):
+		var next_mode: String = CameraProfile.MODES[(CameraProfile.MODES.find(game.camera.mode) + 1) % CameraProfile.MODES.size()]
+		game._unhandled_key_input(shortcut)
+		check(game.camera.mode == next_mode, "C reaches every view and wraps: " + next_mode)
 	game.restart()
 	check(game.camera.mode == "look_ahead", "retry keeps chosen camera")
 	check(is_equal_approx(game.camera.speed_zoom_strength, 0.24), "mode changes and retry keep session zoom strength")

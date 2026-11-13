@@ -90,9 +90,11 @@ func run() -> void:
 		"content_hash":"a".repeat(64),"name":document.name,"creator":document.creator,"theme":"pine",
 		"points":document.points,"rating_average":4.7,"rating_count":128}}}
 	service.scores = scores()
+	service.scores.data.comparison = {"position":4,"population":34,"candidate_ticks":15270,"top_percent":12}
 	var result := preload("res://ui/daily_elimination_results.gd").new()
 	result.rules = preload("res://race/daily_elimination.gd").new()
 	result.session = TrackSession.new()
+	result.session.lap_times = [135.0,127.25]
 	result.client = service
 	result.day = 20754
 	result.version = "00000000-0000-0000-0000-000000000002"
@@ -105,9 +107,18 @@ func run() -> void:
 	await process_frame
 	var result_dialog: Node = result.get_node_or_null("DailyStandings")
 	check(result_dialog != null and result_dialog.flying_laps and result_dialog.vehicle == "compact","results open the flying-lap board for the raced car")
+	check(result_dialog._own.find_child("DailyComparisonPosition",true,false) != null,"daily result has a visible local comparison in the full standings")
+	check(is_equal_approx(result_dialog._attempt_seconds(),127.25),"the comparison excludes the standing-start lap")
+	result_dialog.vehicle = "kart"
+	check(result_dialog._attempt_seconds() == 0.0,"a local attempt is not attributed to a different car")
+	result_dialog.vehicle = "compact"
+	service.player = {"id":"another-account"}
+	check(result_dialog._attempt_seconds() == 0.0,"a local attempt does not cross account boundaries")
+	service.player = {"id":"00000000-0000-0000-0000-000000000004"}
 	check(not service.calls.is_empty() and "/lap-standings?" in service.calls.back(),"results request the flying-lap standings")
 	result.queue_free()
 	await process_frame
+	service.scores = scores()
 	service.calls.clear()
 	page.client = service
 	await page.refresh()

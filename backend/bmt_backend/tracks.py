@@ -177,32 +177,37 @@ def my_tracks(
     heads: bool = False,
     profile_stats: bool = False,
 ) -> dict:
-    latest_query = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number"))
-    if request.app.state.settings.local_drafts_only:
-        latest_query = latest_query.where(TrackVersion.state == "published")
-    latest = latest_query.group_by(TrackVersion.track_id).subquery()
-    query = select(TrackVersion).join(Track).where(Track.owner_id == player.id)
+    owned_tracks = select(Track.id).where(Track.owner_id == player.id)
+    if heads:
+        owned_tracks = owned_tracks.where(Track.archived.is_(False))
+    query = select(TrackVersion, Track).join(Track).where(TrackVersion.track_id.in_(owned_tracks))
     if request.app.state.settings.local_drafts_only:
         query = query.where(TrackVersion.state == "published")
     if heads:
+        latest_query = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number")).where(
+            TrackVersion.track_id.in_(owned_tracks))
+        if request.app.state.settings.local_drafts_only:
+            latest_query = latest_query.where(TrackVersion.state == "published")
+        latest = latest_query.group_by(TrackVersion.track_id).subquery()
         query = query.where(Track.archived.is_(False))
         query = query.join(latest, (latest.c.track_id == TrackVersion.track_id) & (latest.c.number == TrackVersion.number))
-    versions = session.scalars(
+    rows = session.execute(
         query
         .order_by(TrackVersion.created_at.desc(), TrackVersion.id)
         .offset(offset)
         .limit(limit + 1)
     ).all()
-    items = [_payload(request, session, row) for row in versions[:limit]]
+    items = [track_payload(version, track, player.display_name, request.app.state.settings.public_base_url)
+             for version, track in rows[:limit]]
     if profile_stats:
         from .profile_statistics import track_races
 
-        counts = track_races(session, [row.id for row in versions[:limit]])
+        counts = track_races(session, [version.id for version, _track in rows[:limit]])
         for item in items:
             item["verified_races"] = counts[item["version_id"]]
     return {
         "items": items,
-        "next_offset": offset + limit if len(versions) > limit else None,
+        "next_offset": offset + limit if len(rows) > limit else None,
     }
 
 

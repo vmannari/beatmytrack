@@ -34,6 +34,10 @@ func refresh_thumbnail() -> void:
 		if displayed_key!=key and preview_service.has_method("_remembered"):
 			var ready: Texture2D=preview_service._remembered(vehicle_id,key)
 			if ready!=null: publish_preview(key,ready)
+		# A matching identity describes the desired picture, not a live request.
+		# Re-entering or refreshing must recover a missing/cancelled request too;
+		# the service already coalesces queued, active and IO work for this view.
+		if displayed_key!=key: preview_service.request(self)
 		return
 	preview_key = key
 	# A picture of a different finish must never stand in for the saved car.

@@ -1,0 +1,858 @@
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -1,9 +1,12 @@
+ class_name SuperRallyModel
+ extends RefCounted
+-## Complete original 1970s C3-style coupe; -Z is the long nose.
++## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
++## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-classic-c3-2/"
++const KEY: String = "super-rally-hellcat-1/"
+ static var meshes: Dictionary = {}
++const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
++static var assets: Dictionary = {}
+ const AERO: Dictionary = {
+ 	"lip":Vector4(0.70,0.845,2.17,0.065),"ducktail":Vector4(0.82,0.965,2.13,0.11),
+ 	"wing":Vector4(0.90,1.28,1.92,0.19),"touring":Vector4(0.73,0.92,1.85,0.11),
+@@ -67,39 +70,10 @@
+ 		return normal*cos(v*TAU)+tangent.cross(normal).normalized()*sin(v*TAU))
+ 
+ static func width(z: float) -> float:
+-	var stations: Array[Vector2] = [Vector2(-2.65,0.73),Vector2(-2.26,0.90),Vector2(-1.28,0.985),Vector2(-0.64,0.89),Vector2(0.12,0.855),Vector2(0.80,0.955),Vector2(1.30,1.005),Vector2(1.88,0.95),Vector2(2.20,0.835)]
+-	for index: int in range(stations.size()-1):
+-		if z <= stations[index+1].x: return lerpf(stations[index].y,stations[index+1].y,smoothstep(stations[index].x,stations[index+1].x,z))
+-	return stations.back().y
+-
+-static func deck_y(z: float, across: float) -> float:
+-	var base: float = 0.675+0.125*smoothstep(-2.65,-0.74,z)
+-	# Broad shoulders flow into the bonnet instead of forming isolated humps.
+-	var bulge: float = 0.095*exp(-pow((z+1.28)/0.94,2))+0.11*exp(-pow((z-1.30)/0.96,2))
+-	return base+bulge*exp(-pow((absf(across)-0.88)/0.43,2))-0.018*pow(absf(across),8)
+-
+-static func _bottom(z: float) -> float:
+-	var y: float = 0.285
+-	for axle: float in [-1.28,1.28]:
+-		var delta: float = absf(z-axle)
+-		if delta < 0.414: y = maxf(y,0.37+sqrt(0.414*0.414-delta*delta))
+-	return y
+-
+-static func _side(side: float, z: float, y: float) -> Vector3:
+-	var t: float = clampf((y-_bottom(z))/maxf(0.01,deck_y(z,1)-_bottom(z)),0,1)
+-	return Vector3(side*(width(z)-0.11*pow(1-t,2)),y,z)
+-
+-static func hood_point(across: float, v: float, kind: String = "stock") -> Vector3:
+-	var front: float = -2.60+0.12*across*across
+-	var z: float = lerpf(front,-0.70,v)
+-	var power: float = 0.009 if kind == "stock" else 0.095 if kind in ["dome","vented","cowl"] else 0.055
+-	var rise: float = power*exp(-pow(across/0.32,4))*smoothstep(0.12,0.32,v)*(1-smoothstep(0.78,1,v))
+-	if kind == "ribs":
+-		for ridge: float in [-0.28,0.0,0.28]: rise += 0.018*exp(-pow((across-ridge)/0.035,4))*smoothstep(0.12,0.30,v)*(1-smoothstep(0.82,1,v))
+-	return Vector3(across*width(z),deck_y(z,across)+rise,z)
+-
+-static func roof_point(across: float, v: float) -> Vector3:
+-	return Vector3(across*(0.535+0.020*sin(v*PI)),1.285+0.022*sin(v*PI)-0.045*across*across,lerpf(-0.25,0.69,v))
++	return 0.95-0.11*smoothstep(1.75,2.22,absf(z))
++
++static func hood_point(across: float, v: float, _kind: String = "stock") -> Vector3:
++	return Vector3(across*lerpf(0.74,0.67,v),lerpf(0.87,1.02,v)+0.018*(1-across*across),lerpf(-1.92,-0.78,v))
+ 
+ static func _paint(color: Color) -> StandardMaterial3D:
+ 	var result: StandardMaterial3D = CompactFinish.paint(color)
+@@ -110,111 +84,53 @@
+ 	result.clearcoat_roughness = 0.42
+ 	return result
+ 
++static func _materials(car: CarVisual) -> Dictionary:
++	if car.has_meta("hellcat_materials"): return car.get_meta("hellcat_materials")
++	var glass := VisualGeometry.material(Color("101b20"))
++	glass.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
++	glass.cull_mode = BaseMaterial3D.CULL_DISABLED # Opaque from both sides of every source pane.
++	glass.roughness = 0.32; glass.metallic = 0.18
++	var result: Dictionary = {"paint":car.paint_materials.body,"accent":car.paint_materials.accent,"detail":car.paint_materials.detail,
++		"glass":glass,"mirror":CompactFinish.alloy(Color("657578")),"dark":CompactFinish.rubber(Color("172125")),
++		"chrome":CompactFinish.alloy(Color("8e999a")),"rubber":CompactFinish.rubber(Color("192125")),
++		"red":car.brake_material,"white":VisualGeometry.material(Color("b8c0b8")),"reverse":VisualGeometry.material(Color("423d3d")),"amber":VisualGeometry.material(Color("b96820"))}
++	car.set_meta("hellcat_materials",result)
++	return result
++
++static func _asset(car: CarVisual, parent: Node3D, group: String, roles: Array[String] = [], override: Material = null) -> void:
++	var manifest: Dictionary = (load(ROOT+"manifest.json") as JSON).data
++	for item: Dictionary in manifest.tiers["simple" if car.simple_model else "full"]:
++		if item.group != group or (not roles.is_empty() and item.role not in roles): continue
++		var path: String = ROOT+str(item.mesh)
++		if not assets.has(path): assets[path] = load(path)
++		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
++		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
++		parent.add_child(part)
++		if group.begins_with("tail_"): car.brake_lights.append(part)
++
++static func _wheel_group(position: Vector3) -> String:
++	return "wheel_"+("Ft_" if position.z < 0.0 else "Bk_")+("L" if position.x < 0.0 else "R")
++
+ static func build(car: CarVisual) -> void:
+ 	CompactKits.simple_parts = car.simple_model
+-	car.body = Node3D.new(); car.body.name = "ClassicStingrayCoupe"; car.add_child(car.body)
+-	var paint: Material = _paint(Color("b73528"))
+-	var accent: Material = _paint(Color("20272a"))
+-	var alloy: Material = CompactFinish.alloy(Color("a3aba9"))
+-	var dark: Material = CompactFinish.rubber(Color("182125"))
+-	var glass: StandardMaterial3D = VisualGeometry.material(Color("14232b")); glass.roughness = 0.27; glass.metallic = 0.32
+-	car.paint_materials = {"body":paint,"accent":accent,"detail":alloy}
++	car.body = Node3D.new(); car.body.name = "SimplifiedHellcat"; car.add_child(car.body)
++	car.paint_materials = {"body":_paint(Color("b73528")),"accent":_paint(Color("20272a")),"detail":CompactFinish.alloy(Color("a4abad"))}
+ 	car.brake_material = VisualGeometry.material(Color("802d2b"))
+-	_patch(car.body,"C3Underbody",func(u: float,v: float) -> Vector3:
+-		var z: float = lerpf(-2.47,2.17,v)
+-		return Vector3((u*2-1)*(width(z)-0.11),0.285,z),car.underside_material,Vector3.DOWN,24,24)
+-	for side: float in [-1.0,1.0]:
+-		_patch(car.body,"C3SculptedSide"+str(side),func(u: float,v: float) -> Vector3:
+-			var z: float = lerpf(-2.48,2.20,u)
+-			return _side(side,z,lerpf(_bottom(z),deck_y(z,1),v)),paint,Vector3(side,0,0),112,14)
+-		for axle: float in [-1.28,1.28]:
+-			_curve(car.body,"C3ArchLip"+str(side)+str(axle),func(t: float) -> Vector3:
+-				var angle: float = lerpf(-0.11,PI+0.11,t)
+-				var z: float = axle+cos(angle)*0.414
+-				var p: Vector3 = _side(side,z,0.37+sin(angle)*0.414)
+-				return p+Vector3(side*0.008,0,0),0.009,dark,32)
+-		_curve(car.body,"C3Rocker"+str(side),func(t: float) -> Vector3:
+-			var z: float = lerpf(-0.80,0.81,t)
+-			return _side(side,z,0.34)+Vector3(side*0.012,0,0),0.014,alloy,24)
+-	_patch(car.body,"C3CowlUnderCabin",func(u: float,v: float) -> Vector3:
+-		var z: float = lerpf(-0.70,1.10,v); var x: float = u*2-1
+-		return Vector3(x*width(z),deck_y(z,x),z),paint,Vector3.UP,48,28)
+-	_patch(car.body,"C3RearDeck",func(u: float,v: float) -> Vector3:
+-		var z: float = lerpf(1.10,2.20,v); var x: float = u*2-1
+-		return Vector3(x*width(z),deck_y(z,x),z),paint,Vector3.UP,48,24)
+-	_patch(car.body,"C3SharkNose",func(u: float,v: float) -> Vector3:
+-		var x: float = u*2-1; var top: Vector3 = hood_point(x,0)
+-		return Vector3(top.x,lerpf(0.32,top.y,v),top.z+0.040*(1-v)),paint,Vector3.FORWARD,56,14)
+-	_patch(car.body,"C3TailPanel",func(u: float,v: float) -> Vector3:
+-		var x: float = (u*2-1)*0.835
+-		return Vector3(x,lerpf(0.33,deck_y(2.20,u*2-1),v),2.20-0.045*pow(absf(x)/0.835,4)),paint,Vector3.BACK,48,12)
+-	_patch(car.body,"C3LowerGrille",func(u: float,v: float) -> Vector3:
+-		var across: float = lerpf(-0.82,0.82,u); var p: Vector3 = hood_point(across,0)
+-		return Vector3(p.x,lerpf(0.372,0.490,v),p.z-0.007),dark,Vector3.FORWARD,32,4)
+-	for side: float in [-1.0,1.0]:
+-		_curve(car.body,"C3FrontChrome"+str(side),func(t: float) -> Vector3:
+-			var p: Vector3 = hood_point(side*lerpf(0.10,0.98,t),0)
+-			return Vector3(p.x,0.345,p.z-0.024),0.019,alloy,24)
+-		_curve(car.body,"C3RearChrome"+str(side),func(t: float) -> Vector3:
+-			var x: float = side*lerpf(0.26,0.82,t)
+-			return Vector3(x,0.365,2.22-0.045*pow(absf(x)/0.835,4)),0.022,alloy,20)
+-		for x: float in [0.465,0.715]:
+-			var rim := CompactKits._cylinder(car.body,0.111,0.033,Vector3(side*x,0.623,2.204),alloy,20); rim.rotation.x = PI*0.5
+-			var lens := CompactKits._cylinder(car.body,0.091,0.026,Vector3(side*x,0.623,2.228),car.brake_material,20); lens.rotation.x = PI*0.5; car.brake_lights.append(lens)
+-		_box(car.body,"C3SideVent"+str(side),Vector3(side*0.906,0.660,-0.73),Vector3(0.024,0.198,0.32),dark,0.006)
+-		for slat: int in range(4):
+-			_box(car.body,"C3SideVentBar"+str(side)+str(slat),Vector3(side*0.923,0.660,-0.845+slat*0.076),Vector3(0.021,0.17,0.010),alloy,0.003)
+-		var exhaust := CompactKits._cylinder(car.body,0.043,1.55,Vector3(side*0.885,0.30,0.03),alloy,12); exhaust.rotation.x = PI*0.5
+-	_box(car.body,"C3RearPlate",Vector3(0,0.575,2.236),Vector3(0.33,0.15,0.012),dark,0.005)
+-	_cabin(car,paint,accent,dark,glass,alloy)
++	for group: String in ["body","window_seal","tail_left","tail_right","head_left","head_right"]: _asset(car,car.body,group)
++	# A plain exterior underside replaces the source's cabin floor slabs.
++	VisualGeometry.box(car.body,Vector3(1.48,0.018,3.50),Vector3(0,0.285,0),car.underside_material)
++	_box(car.body,"GrilleBacking",Vector3(0,0.72,-1.84),Vector3(1.64,0.24,0.009),_materials(car).dark,0.005)
+ 	for side: float in [-1.0,1.0]:
+ 		for axle: float in [-1.28,1.28]:
+ 			var pivot := Node3D.new(); pivot.position = Vector3(side*0.83,0.37,axle); car.add_child(pivot)
+-			CompactDetail.tire(pivot,dark,car.simple_model)
++			var group: String = _wheel_group(pivot.position)
++			CompactDetail.tire(pivot,_materials(car).rubber,car.simple_model)
+ 			var frame: Node3D = car.new_kit_frame("rims",pivot) if car.editable_kits else pivot
+-			wheel(frame,side,str(car.customisation.rims))
+-			if axle < 0: car.front_wheels.append(pivot)
++			wheel(frame,side,"five" if car.customisation.rims == "stock" else str(car.customisation.rims))
++			if axle < 0.0: car.front_wheels.append(pivot)
+ 			car.register_rolling_wheel(pivot,0.37)
+ 			CompactKits.build_caliper(pivot,side)
+ 	for category: String in ["hood","aero","body"]: kit(car,category)
+-
+-static func _cabin(car: CarVisual, paint: Material, accent: Material, dark: Material, glass: Material, alloy: Material) -> void:
+-	_patch(car.body,"C3LowRoof",func(u: float,v: float) -> Vector3: return roof_point(u*2-1,v),paint,Vector3.UP,40,24)
+-	for side: float in [-1.0,1.0]:
+-		_patch(car.body,"C3Ttop"+str(side),func(u: float,v: float) -> Vector3:
+-			return roof_point(side*lerpf(0.085,0.955,u),lerpf(0.065,0.94,v))+Vector3.UP*0.004,accent,Vector3.UP,20,20)
+-	var windscreen: Callable = func(u: float,v: float) -> Vector3:
+-		var x: float = u*2-1; var bottom := Vector3(x*0.69,0.800+0.015*x*x,-0.70+0.09*x*x)
+-		return bottom.lerp(roof_point(x,0),v)+Vector3(0,0.006*sin(v*PI),-0.006)
+-	_patch(car.body,"C3CurvedWindscreen",windscreen,glass,Vector3(0,0.7,-0.7),40,20)
+-	for v: float in [0.0,1.0]: _curve(car.body,"C3ScreenEdge"+str(v),func(u: float) -> Vector3: return windscreen.call(u,v),0.012,dark,40)
+-	_patch(car.body,"C3RecessedRearWindow",func(u: float,v: float) -> Vector3:
+-		var x: float = (u*2-1)*lerpf(0.57,0.51,v)
+-		return Vector3(x,lerpf(0.84,1.23,v),lerpf(1.08,0.735,v)),glass,Vector3(0,0.5,0.8),32,14)
+-	for side: float in [-1.0,1.0]:
+-		var a := Vector3(side*0.70,0.82,-0.61); var b := Vector3(side*0.715,0.84,1.025)
+-		var c := Vector3(side*0.535,1.24,-0.235); var d := Vector3(side*0.555,1.245,0.67)
+-		_patch(car.body,"C3LongDoorGlass"+str(side),func(u: float,v: float) -> Vector3: return a.lerp(b,u).lerp(c.lerp(d,u),v),glass,Vector3(side,0.3,0),36,16)
+-		_curve(car.body,"C3Apillar"+str(side),func(t: float) -> Vector3: return a.lerp(c,t),0.026,paint,16)
+-		_curve(car.body,"C3WindowSill"+str(side),func(t: float) -> Vector3: return a.lerp(b,t),0.019,paint,24)
+-		_curve(car.body,"C3WindowHeader"+str(side),func(t: float) -> Vector3: return c.lerp(d,t),0.023,paint,24)
+-		var tip := Vector3(side*0.895,deck_y(1.55,0.895/width(1.55))+0.005,1.55)
+-		var sail: Callable = func(u: float,v: float) -> Vector3:
+-			return d.lerp(tip,u).lerp(b.lerp(tip,u),v)+Vector3(side*0.012*sin(u*PI)*sin(v*PI),0.015*sin(u*PI)*(1-v),0)
+-		_patch(car.body,"C3IntegralRearSail"+str(side),sail,paint,Vector3(side,0.2,0),28,14)
+-		_patch(car.body,"C3RearSailInner"+str(side),func(u: float,v: float) -> Vector3:
+-			return (sail.call(u,v) as Vector3)-Vector3(side*0.050,0,0),paint,Vector3(-side,0.2,0),28,14)
+-		_patch(car.body,"C3RearSailCrown"+str(side),func(u: float,v: float) -> Vector3:
+-			return (sail.call(u,0) as Vector3)-Vector3(side*0.050*v,0,0),paint,Vector3.UP,28,4)
+-		_curve(car.body,"C3Bpillar"+str(side),func(t: float) -> Vector3: return b.lerp(d,t),0.044,paint,18)
+-		_box(car.body,"C3MirrorStem"+str(side),Vector3(side*0.79,0.90,-0.49),Vector3(0.13,0.025,0.04),alloy,0.004)
+-		_box(car.body,"C3Mirror"+str(side),Vector3(side*0.865,0.93,-0.49),Vector3(0.09,0.09,0.17),paint,0.025)
+-		_box(car.body,"C3DoorHandle"+str(side),_side(side,0.66,0.755)+Vector3(side*0.015,0,0),Vector3(0.025,0.028,0.15),alloy,0.005)
+-		var outline: Array[Vector2] = [Vector2(-0.62,0.81),Vector2(0.98,0.84),Vector2(0.76,0.35),Vector2(-0.75,0.35),Vector2(-0.62,0.81)]
+-		for index: int in range(outline.size()-1):
+-			var p: Vector2 = outline[index]; var q: Vector2 = outline[index+1]
+-			_curve(car.body,"C3DoorGap"+str(side)+str(index),func(t: float) -> Vector3:
+-				var point: Vector2 = p.lerp(q,t); return _side(side,point.x,point.y)+Vector3(side*0.004,0,0),0.003,dark,16)
+ 
+ static func kit(car: CarVisual, category: String) -> void:
+ 	CompactKits.simple_parts = car.simple_model
+@@ -222,89 +138,89 @@
+ 	if category == "rims":
+ 		for rotor: Node3D in car.rolling_wheels:
+ 			var frame: Node3D = car.new_kit_frame("rims",rotor) if car.editable_kits else rotor
+-			wheel(frame,signf((rotor.get_parent() as Node3D).position.x),kind)
++			var pivot: Node3D = rotor.get_parent()
++			wheel(frame,signf(pivot.position.x),"five" if kind == "stock" else kind)
+ 		return
+ 	var root: Node3D = car.new_kit_frame(category,car.body) if car.editable_kits else Node3D.new()
+-	if not car.editable_kits: root.name = "ClassicKit_"+category; car.body.add_child(root)
+-	if category == "hood": hood(root,car.paint_materials.body,car.paint_materials.accent,kind)
+-	elif category == "aero": aero(root,car.paint_materials.body,car.paint_materials.accent,kind)
++	if not car.editable_kits: root.name = "HellcatKit_"+category; car.body.add_child(root)
++	if category == "hood":
++		_asset(car,root,"hood")
++		hood(root,car.paint_materials.body,car.paint_materials.accent,kind)
++	elif category == "aero":
++		if kind == "stock": _asset(car,root,"aero")
++		else: aero(root,car.paint_materials.body,car.paint_materials.accent,kind)
+ 	elif category == "body": body(root,car.paint_materials.body,car.paint_materials.accent,kind)
+ 
+ static func hood(root: Node3D, paint: Material, accent: Material, kind: String = "stock") -> void:
+-	var dark: Material = CompactFinish.rubber(Color("152024"))
+-	var holes: Array[Rect2] = []
+-	if kind in ["louvres","vented"]: holes = [Rect2(0.16,0.44,0.15,0.25),Rect2(0.69,0.44,0.15,0.25)]
+-	if kind == "extractor": holes = [Rect2(0.33,0.44,0.34,0.28)]
+-	_patch(root,"C3LongBonnet_"+kind,func(u: float,v: float) -> Vector3: return hood_point(u*2-1,v,kind),paint,Vector3.UP,72,32,holes)
+-	for side: float in [-1.0,1.0]:
+-		var corners: Array[Vector2] = [Vector2(side*0.44,0.21),Vector2(side*0.78,0.21),Vector2(side*0.78,0.405),Vector2(side*0.44,0.405),Vector2(side*0.44,0.21)]
+-		for index: int in range(4):
+-			var a: Vector2 = corners[index]; var b: Vector2 = corners[index+1]
+-			_curve(root,"C3ClosedHeadlightGap"+str(side)+str(index),func(t: float) -> Vector3:
+-				var q: Vector2 = a.lerp(b,t); return hood_point(q.x,q.y,kind)+Vector3.UP*0.003,0.0025,dark,10)
+-	for index: int in range(holes.size()):
+-		var hole: Rect2 = holes[index]
+-		_patch(root,"C3HeatOutlet"+str(index)+kind,func(u: float,v: float) -> Vector3: return hood_point(lerpf(hole.position.x,hole.end.x,u)*2-1,lerpf(hole.position.y,hole.end.y,v),kind)-Vector3.UP*0.020,dark,Vector3.UP,10,6)
+-		for slat: int in range(5):
+-			var v: float = lerpf(hole.position.y,hole.end.y,slat/4.0)
+-			_curve(root,"C3HeatVane"+str(index)+str(slat)+kind,func(t: float) -> Vector3: return hood_point(lerpf(hole.position.x,hole.end.x,t)*2-1,v,kind)+Vector3.UP*0.005,0.006,paint,10)
+-	if kind in ["scoop","twin_scoop","reverse","cowl"]:
+-		var height: float = 0.055 if kind == "cowl" else 0.10
+-		var centers: Array[float] = []
+-		centers.assign([-0.22,0.22] if kind == "twin_scoop" else [0.0])
+-		for x: float in centers:
+-			var at: Vector3 = hood_point(x,0.80 if kind == "cowl" else 0.60,kind)+Vector3.UP*height*0.45
+-			var breadth: float = 0.22 if kind == "twin_scoop" else 0.38
+-			_box(root,"C3Induction_"+kind+str(x),at,Vector3(breadth,height,0.52),accent,0.025)
+-			_box(root,"C3InductionMouth_"+kind+str(x),at+Vector3(0,0.003,0.263 if kind in ["reverse","cowl"] else -0.263),Vector3(breadth*0.78,height*0.60,0.012),dark,0.006)
++	if kind == "stock": return
++	if kind in ["louvres","vented","extractor"]:
++		var positions: Array[float] = []
++		positions.assign([0.0] if kind == "extractor" else [-0.36,0.36])
++		for x: float in positions:
++			var at: Vector3 = hood_point(x,0.57)
++			_box(root,"HeatOutlet"+kind+str(x),at+Vector3.UP*0.011,Vector3(0.25,0.018,0.33),accent,0.012)
++			for slat: int in range(5): _box(root,"Vane"+kind+str(x)+str(slat),at+Vector3(0,0.027,-0.14+slat*0.07),Vector3(0.24,0.009,0.012),paint,0.003)
++	elif kind in ["scoop","twin_scoop","reverse","cowl"]:
++		var positions: Array[float] = []
++		positions.assign([-0.22,0.22] if kind == "twin_scoop" else [0.0])
++		for x: float in positions:
++			var at: Vector3 = hood_point(x,0.70)
++			var breadth: float = 0.22 if kind == "twin_scoop" else 0.40
++			_box(root,"Induction"+kind+str(x),at+Vector3.UP*0.055,Vector3(breadth,0.10,0.41),paint,0.035)
++			_box(root,"InductionMouth"+kind+str(x),at+Vector3(0,0.055,0.213 if kind in ["reverse","cowl"] else -0.213),Vector3(breadth*0.76,0.055,0.012),accent,0.006)
++	else:
++		_patch(root,"BonnetContour"+kind,func(u: float,v: float) -> Vector3:
++			var x: float = (u*2-1)*0.45; var t: float = lerpf(0.35,0.91,v)
++			var p: Vector3 = hood_point(x,t)
++			p.y += 0.008+0.050*sin(u*PI)*sin(v*PI)
++			if kind == "ribs": p.y += 0.012*sin(u*PI*6)*sin(v*PI)
++			return p,paint,Vector3.UP,24,20)
+ 
+ static func aero_extent(kind: String) -> Vector2:
+ 	var profile: Vector4 = AERO.get(kind,Vector4(0,0,0,0))
+-	return Vector2(profile.x+0.02,profile.y+0.09)
++	return Vector2(profile.x+0.02,profile.y+0.22)
+ 
+ static func aero(root: Node3D, paint: Material, accent: Material, kind: String = "stock") -> void:
+ 	if kind == "stock": return
+ 	var profile: Vector4 = AERO[kind]
+ 	var wing: bool = profile.y > 1.0
+-	var height: float = profile.y
++	var height: float = profile.y+0.13
+ 	if wing:
+-		for side: float in [-1.0,1.0]: _beam(root,"C3DeckWingLeg"+str(side)+kind,Vector3(side*0.46,0.82,minf(2.13,profile.z)),Vector3(side*0.46,height-0.02,profile.z),0.018,0.035,paint)
++		for side: float in [-1.0,1.0]: _beam(root,"HellcatDeckWingLeg"+str(side)+kind,Vector3(side*0.46,0.98,minf(2.13,profile.z)),Vector3(side*0.46,height-0.02,profile.z),0.018,0.035,paint)
+ 	var spans: Array[Vector2] = [Vector2(-profile.x,profile.x)]
+ 	if kind == "splitwing": spans = [Vector2(-profile.x,-0.065),Vector2(0.065,profile.x)]
+ 	for span: Vector2 in spans:
+-		_patch(root,"C3RearAero"+kind+str(span.x),func(u: float,v: float) -> Vector3:
++		_patch(root,"HellcatRearAero"+kind+str(span.x),func(u: float,v: float) -> Vector3:
+ 			var x: float = lerpf(span.x,span.y,u); var angle: float = v*TAU
+ 			return Vector3(x,height+0.025*sin(angle)+0.023*pow(x/profile.x,2),profile.z+profile.w*cos(angle)),accent,Vector3.UP,32,12,[],func(_u: float,v: float) -> Vector3: return Vector3(0,sin(v*TAU)/0.025,cos(v*TAU)/profile.w).normalized())
+-	if kind == "biwing": _box(root,"C3LowerWing",Vector3(0,height-0.15,profile.z-0.04),Vector3(profile.x*1.85,0.035,0.22),paint)
++	if kind == "biwing": _box(root,"HellcatLowerWing",Vector3(0,height-0.15,profile.z-0.04),Vector3(profile.x*1.85,0.035,0.22),paint)
+ 	if wing:
+-		for side: float in [-1.0,1.0]: _box(root,"C3WingEnd"+kind+str(side),Vector3(side*profile.x,height+0.005,profile.z),Vector3(0.018,0.13,profile.w*1.95),paint,0.010)
++		for side: float in [-1.0,1.0]: _box(root,"HellcatWingEnd"+kind+str(side),Vector3(side*profile.x,height+0.005,profile.z),Vector3(0.018,0.13,profile.w*1.95),paint,0.010)
+ 
+ static func body(root: Node3D, paint: Material, accent: Material, kind: String = "stock") -> void:
+ 	if kind == "stock": return
+ 	var ordinal: int = maxi(0,["street","rally","club","heritage","touring","wide","endurance","gravel","urban"].find(kind))
+ 	var depth: float = 0.035+0.01*ordinal
+ 	for side: float in [-1.0,1.0]:
+-		_box(root,"C3FittedSill"+kind+str(side),Vector3(side*(0.825+depth*0.3),0.29,0.03),Vector3(depth+0.055,0.065+0.004*ordinal,1.60),paint,0.015)
+-	_box(root,"C3FittedSplitter"+kind,Vector3(0,0.277,-2.49),Vector3(1.65+depth,0.030,0.24+depth),accent,0.012)
++		_box(root,"HellcatFittedSill"+kind+str(side),Vector3(side*(0.825+depth*0.3),0.29,0.03),Vector3(depth+0.055,0.065+0.004*ordinal,1.60),paint,0.015)
++	_box(root,"HellcatFittedSplitter"+kind,Vector3(0,0.277,-2.49),Vector3(1.65+depth,0.030,0.24+depth),accent,0.012)
+ 	if kind in ["wide","rally","gravel"]:
+ 		for side: float in [-1.0,1.0]:
+ 			for axle: float in [-1.28,1.28]:
+-				_curve(root,"C3FittedArch"+kind+str(side)+str(axle),func(t: float) -> Vector3:
++				_curve(root,"HellcatFittedArch"+kind+str(side)+str(axle),func(t: float) -> Vector3:
+ 					var a: float = t*PI; var z: float = axle+cos(a)*0.445
+ 					return Vector3(side*(width(z)+0.018),0.37+sin(a)*0.445,z),0.025+depth*0.15,paint,36)
+ 	if kind in ["rally","gravel"]:
+ 		var rubber: Material = CompactFinish.rubber(Color("192125"))
+ 		for side: float in [-1.0,1.0]:
+-			for axle: float in [-1.28,1.28]: _box(root,"C3Mudflap"+kind+str(side)+str(axle),Vector3(side*0.86,0.335,axle+0.38),Vector3(0.23,0.43,0.024),rubber,0.006)
+-
+-static func night_lens(root: Node3D, lens: Material, paint: Material) -> void:
+-	var dark: Material = CompactFinish.rubber(Color("132025"))
+-	for side: float in [-1.0,1.0]:
+-		var at: Vector3 = hood_point(side*0.62,0.325)
+-		_box(root,"C3RaisedPopUp"+str(side),Vector3(at.x,at.y+0.115,at.z),Vector3(0.35,0.21,0.28),paint,0.028)
+-		_box(root,"C3HeadlampPanel"+str(side),Vector3(at.x,at.y+0.12,at.z-0.15),Vector3(0.31,0.16,0.018),dark,0.010)
+-		for delta: float in [-0.080,0.080]:
+-			var bulb := CompactKits._cylinder(root,0.063,0.018,Vector3(at.x+delta,at.y+0.12,at.z-0.166),lens,16); bulb.rotation.x = PI*0.5; bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++			for axle: float in [-1.28,1.28]: _box(root,"HellcatMudflap"+kind+str(side)+str(axle),Vector3(side*0.86,0.335,axle+0.38),Vector3(0.23,0.43,0.024),rubber,0.006)
++
++static func night_lens(root: Node3D, lens: Material, _paint: Material) -> void:
++	var car: Node = root
++	while not car is CarVisual: car = car.get_parent()
++	for group: String in ["head_left","head_right"]:
++		var frame := Node3D.new(); frame.position.z = -0.003; root.add_child(frame)
++		_asset(car,frame,group,[],lens)
+ 
+ static func _box(root: Node3D, name: String, center: Vector3, size: Vector3, material: Material, bevel: float = 0.012) -> void:
+ 	# Broad fabricated faces need no densely sampled longitudinal rings.
+@@ -355,7 +271,7 @@
+ 	if kind == "stock":
+ 		var slots: Array[Rect2] = []
+ 		for slot: int in range(5): slots.append(Rect2(slot/5.0+0.035,0.53,0.125,0.37))
+-		_patch(root,"C3FiveSlotRallyWheel"+str(side),func(u: float,v: float) -> Vector3:
++		_patch(root,"HellcatFiveSlotRallyWheel"+str(side),func(u: float,v: float) -> Vector3:
+ 			var angle: float = u*TAU; var radius: float = lerpf(0.070,0.232,v)
+ 			return Vector3(side*(0.121+0.030*v*v),sin(angle)*radius,cos(angle)*radius),white,Vector3(side,0,0),60,12,slots)
+ 	var hub := CompactKits._cylinder(root,0.077,0.067,Vector3(side*0.120,0,0),white,12)
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -68,7 +68,7 @@
+ 	headlights.name = "NightHeadlights"
+ 	body.add_child(headlights)
+ 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
+-	var mount: Vector3 = {"super_rally":Vector3(0.59,0.94,-2.68),"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
++	var mount: Vector3 = {"super_rally":Vector3(0.63,0.68,-2.16),"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+ 	var beam := SpotLight3D.new()
+ 	beam.name = "SharedHeadlightBeam"
+ 	# Keep the entire hood behind the cone. A higher, wider short-range beam
+@@ -715,7 +715,7 @@
+ 				height = extent.y
+ 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
+ 	if vehicle_id == "super_rally":
+-		outline = [Vector2(-1.02,0.27),Vector2(1.02,0.27),Vector2(-1.02,0.96),Vector2(1.02,0.96),Vector2(-0.57,1.30),Vector2(0.57,1.30)]
++		outline = [Vector2(-1.08,0.27),Vector2(1.08,0.27),Vector2(-1.08,0.98),Vector2(1.08,0.98),Vector2(-0.58,1.42),Vector2(0.58,1.42)]
+ 		if customisation.aero != "stock":
+ 			var extent: Vector2 = SuperRallyModel.aero_extent(customisation.aero)
+ 			outline.append_array([Vector2(-extent.x,extent.y),Vector2(extent.x,extent.y)])
+diff --git a/game/vehicle/livery_catalog.gd b/game/vehicle/livery_catalog.gd
+--- a/game/vehicle/livery_catalog.gd
++++ b/game/vehicle/livery_catalog.gd
+@@ -46,8 +46,8 @@
+ 		"forklift": {"bounds":Vector3(1.88,2.89,4.24), "hood":Vector4(-0.39,-1.24,0.78,0.44), "roof":Vector4(0,0,1,1), "levels":Vector2(1.54,10)}
+ 	}.get(id, {})
+ 	if super_rally:
+-		result.bounds = Vector3(2.05,1.315,5.30)
+-		result.hood = Vector4(-0.68,-2.40,1.36,1.63)
+-		result.roof = Vector4(-0.50,-0.19,1.00,0.82)
+-		result.levels = Vector2(0.78,1.24)
++		result.bounds = Vector3(2.14,1.44,4.44)
++		result.hood = Vector4(-0.72,-1.94,1.44,1.12)
++		result.roof = Vector4(-0.48,-0.24,0.96,1.16)
++		result.levels = Vector2(0.92,1.34)
+ 	return result
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -3,7 +3,7 @@
+ ## Cosmetic exposure and local wash volume. Never writes canonical simulation or livery.
+ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
+ const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
+-const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52, "hovercraft": 1.42, "super_rally": 1.315}
++const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52, "hovercraft": 1.42, "super_rally": 1.44}
+ const SLOW_RATE: float = 1.0 / 20.0
+ const SCRUB_RATE: float = 1.15
+ const SCRUB_RADIUS: float = 0.60
+diff --git a/game/vehicle/prepared_asset_dependencies.json b/game/vehicle/prepared_asset_dependencies.json
+--- a/game/vehicle/prepared_asset_dependencies.json
++++ b/game/vehicle/prepared_asset_dependencies.json
+@@ -18,6 +18,12 @@
+   ],
+   "rules": [
+     {
++      "pattern": "game/assets/vehicles/challenger_hellcat_v1/*",
++      "vehicles": [
++        "super_rally"
++      ]
++    },
++    {
+       "pattern": "game/ui/header_simple_cache.gd",
+       "vehicles": [
+         "compact",
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -56,9 +56,9 @@
+ 			direction = Vector3(3,0.95,-4)
+ 	if showroom.car.vehicle_id == "super_rally":
+ 		match category:
+-			"hood": local_target = Vector3(0,0.84,-1.62); direction = Vector3(2,2.5,-4); distance = 3.2
+-			"aero": local_target = Vector3(0,0.90,1.98); direction = Vector3(2,1.5,4); distance = 3.3
+-			"roof": local_target = Vector3(0,1.28,0.23); direction = Vector3(0.5,4,-1.5); distance = 2.9
++			"hood": local_target = Vector3(0,0.95,-1.35); direction = Vector3(2,2.5,-4); distance = 3.2
++			"aero": local_target = Vector3(0,1.0,1.88); direction = Vector3(2,1.5,4); distance = 3.3
++			"roof": local_target = Vector3(0,1.40,0.35); direction = Vector3(0.5,4,-1.5); distance = 2.9
+ 	if showroom.car.vehicle_id=="kart":
+ 		match category:
+ 			"hood": local_target = Vector3(0,0.35,-1.05); direction = Vector3(2,2.5,-4); distance = 2.4
+diff --git a/game/legal/third_party_notices.gd b/game/legal/third_party_notices.gd
+--- a/game/legal/third_party_notices.gd
++++ b/game/legal/third_party_notices.gd
+@@ -12,6 +12,7 @@
+ 		"res://assets/countries/LICENSE-flag-icons.txt", "res://assets/countries/UNICODE-LICENSE.txt"]},
+ 	{"id":"audio", "title":"Sound and music credits", "files":["res://legal/audio_notices.txt"]},
+ 	{"id":"kart_driver", "title":"Kart driver", "files":["res://legal/kart_driver_notices.txt"]},
++	{"id":"challenger_hellcat", "title":"Super rally car model", "files":["res://legal/challenger_hellcat_notices.txt"]},
+ 	{"id":"cc0", "title":"CC0 1.0 Universal", "files":["res://assets/audio/locked_in_v1/CC0-LICENSE.txt"]},
+ 	{"id":"native", "title":"Native libraries", "files":["res://platform/track_geometry/NOTICE.txt"]},
+ 	{"id":"shader", "title":"Godot particle shader", "files":["res://vehicle/GODOT-DUST-SHADER-LICENSE.txt"]},
+diff --git a/game/tests/test_super_rally_design.gd b/game/tests/test_super_rally_design.gd
+--- a/game/tests/test_super_rally_design.gd
++++ b/game/tests/test_super_rally_design.gd
+@@ -74,9 +74,9 @@
+ 		check(signature(rally) == signature(control),"normal Rally matches task-start construction exactly")
+ 		var stock: AABB = bounds(car)
+ 		var ordinary: AABB = bounds(rally)
+-		check(stock.position.z < ordinary.position.z-0.35,"C3-style long nose extends distinctly beyond the Rally hatchback")
+-		check(stock.end.y < ordinary.end.y-0.15,"C3 coupe cabin is distinctly lower than the Rally roof")
+-		check(car.brake_lights.size() == 4,"classic tail uses four independently retained round rear lamps")
++		check(stock.position.z < -2.05 and stock.end.z > 2.16 and stock.size.z < 4.50,"imported Challenger retains its measured front and rear overhangs")
++		check(stock.end.y > 1.38 and stock.end.y < 1.46,"imported Challenger retains its measured roof height")
++		check(car.brake_lights.size() == 2,"modern tail retains independent left and right lamp groups")
+ 		check(car.wheel_rest_positions == rally.wheel_rest_positions and car.wheel_radii == rally.wheel_radii,"exterior retains physical wheel contact locations and radii")
+ 		check(car.model_id != rally.model_id and car.chassis_id == rally.chassis_id,"separate exterior cache identity retains Rally chassis")
+ 		check(car.customisation == VehicleCustomisation.defaults(),"new factory shape requires no purchased fitted parts")
+diff --git a/game/tests/test_super_rally_c3_kits.gd b/game/tests/test_super_rally_c3_kits.gd
+--- a/game/tests/test_super_rally_c3_kits.gd
++++ b/game/tests/test_super_rally_c3_kits.gd
+@@ -16,8 +16,9 @@
+ 				car.change_kit_parts(parts)
+ 				check(car.customisation == parts and not car.kit_frames.get(category,[]).is_empty(),"coupe accepts "+category+"/"+str(option[0]))
+ 				var box: AABB = bounds(car)
+-				check(box.position.is_finite() and box.size.is_finite() and box.size.x < 2.5 and box.size.y < 1.55 and box.size.z < 5.5,"bounded classic exterior "+str(option[0]))
+-				check(car.wheel_rest_positions == positions and car.brake_lights.size() == 4,"classic identity and physical wheel contacts survive "+str(option[0]))
++				var height_limit: float = maxf(1.50,SuperRallyModel.aero_extent(str(parts.aero)).y)+0.02
++				check(box.position.is_finite() and box.size.is_finite() and box.size.x < 2.5 and box.size.y < height_limit and box.size.z < 5.5,"bounded Challenger exterior "+str(option[0]))
++				check(car.wheel_rest_positions == positions and car.brake_lights.size() == 2,"Challenger lamps and physical wheel contacts survive "+str(option[0]))
+ 				car.change_kit_parts(VehicleCustomisation.defaults())
+ 				check(bounds(car).is_equal_approx(factory),"reset restores the full coupe after "+str(option[0]))
+ 				await process_frame
+diff --git a/game/tests/test_super_rally.gd b/game/tests/test_super_rally.gd
+--- a/game/tests/test_super_rally.gd
++++ b/game/tests/test_super_rally.gd
+@@ -95,7 +95,7 @@
+ 	reopened.load_records()
+ 	check(reopened.settings.selected_car == "super_rally" and VehicleCustomisation.for_car(reopened.settings,"super_rally").hood == "scoop","new selection and fitted parts survive reload")
+ 	check(VehicleLivery.for_car(reopened.settings,"compact") != VehicleLivery.for_car(reopened.settings,"super_rally"),"separate paint survives reload")
+-	check(LiveryCatalog.projection("super_rally").hood.w > 1.5 and LiveryCatalog.projection("super_rally").roof.w < 1.0 and LiveryCatalog.has_roof("super_rally"),"stickers map to the new long bonnet and low coupe roof")
++	check(LiveryCatalog.projection("super_rally").hood == Vector4(-0.72,-1.94,1.44,1.12) and LiveryCatalog.projection("super_rally").roof == Vector4(-0.48,-0.24,0.96,1.16) and LiveryCatalog.has_roof("super_rally"),"stickers map to the imported Challenger hood and roof")
+ 	var bases = preload("res://vehicle/modular_car_base.gd")
+ 	var kits = preload("res://vehicle/modular_car_kits.gd")
+ 	var base_hits: int = bases.hits
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/prepare_challenger.py
+@@ -0,0 +1,187 @@
++"""Blender offline conversion of the owner-supplied CC-BY Hellcat.
++
++Run with factory startup and --disable-autoexec. No embedded scripts, Rigacar,
++source textures, studio objects or rig are exported. The source is never saved.
++"""
++import bpy
++import bmesh
++import hashlib
++import json
++import math
++import numpy as np
++from pathlib import Path
++import sys
++from mathutils import Vector
++
++args = sys.argv[sys.argv.index("--")+1:]
++source, labels_file, output = map(Path,args[:3])
++output.mkdir(parents=True,exist_ok=True)
++bpy.ops.wm.open_mainfile(filepath=str(source),load_ui=False,use_scripts=False)
++body=bpy.data.objects['Hellcat-Body']
++labels=np.load(labels_file)['labels']
++mesh=body.data;mesh.calc_loop_triangles()
++co=np.empty(len(mesh.vertices)*3,dtype=np.float32);mesh.vertices.foreach_get('co',co);co=co.reshape(-1,3)
++tri=np.empty(len(mesh.loop_triangles)*3,dtype=np.int32);mesh.loop_triangles.foreach_get('vertices',tri);tri=tri.reshape(-1,3)
++mi=np.empty(len(mesh.loop_triangles),dtype=np.int32);mesh.loop_triangles.foreach_get('material_index',mi)
++component=labels[tri[:,0]]
++world=np.array(body.matrix_world,dtype=np.float64)
++body_world=co@world[:3,:3].T+world[:3,3]
++original_wheels={o.name:o for o in bpy.data.objects if o.name.startswith('Hellcat-Wheel.')}
++wheel_centres={name:np.mean([np.array(o.matrix_world@Vector(c)) for c in o.bound_box],axis=0) for name,o in original_wheels.items()}
++front_y=float(np.mean([c[1] for n,c in wheel_centres.items() if '.Ft.' in n]))
++rear_y=float(np.mean([c[1] for n,c in wheel_centres.items() if '.Bk.' in n]))
++centre_x=float(np.mean([c[0] for c in wheel_centres.values()]));wheel_z=float(np.mean([c[2] for c in wheel_centres.values()]))
++scale=np.array([1.50,2.56/(rear_y-front_y),0.37/0.26099])
++
++def game(points):
++    return np.c_[-(points[:,0]-centre_x)*scale[0],(points[:,2]-wheel_z)*scale[2]+0.37,(points[:,1]-front_y)*scale[1]-1.28]
++
++def blender(points): return np.c_[points[:,0],-points[:,2],points[:,1]]
++fitted_body=game(body_world)
++
++ROLE={'Car Paint':'paint','Paint':'accent','Basic Glass':'glass','Mirror':'mirror','Matter Black':'dark',
++      'Gloss Black':'accent','Chrome':'chrome','Metal09':'dark','Black Metal':'dark',
++      'Red Light':'red','White Light':'white','Headlight Glow':'white','Orange Light':'amber',
++      'Cranberry Juice':'red','Material':'dark','Rim':'detail','Composite Rubber':'rubber'}
++materials={}
++for name,color in {'paint':(.55,.04,.025,1),'accent':(.025,.033,.038,1),'glass':(.025,.045,.057,1),
++                   'mirror':(.36,.42,.44,1),'dark':(.016,.021,.025,1),'chrome':(.48,.53,.54,1),
++                   'red':(.48,.015,.01,1),'white':(.65,.69,.66,1),'amber':(.65,.22,.01,1),
++                   'detail':(.40,.44,.45,1),'rubber':(.014,.018,.02,1),'reverse':(.08,.065,.065,1)}.items():
++    m=bpy.data.materials.new('BMT_'+name);m.diffuse_color=color;materials[name]=m
++
++all_source=list(bpy.data.objects)
++for obj in all_source: obj.hide_render=True;obj.hide_set(True)
++
++record={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(), 'source_triangles':len(tri)+sum(len(o.data.polygons)*2 for o in original_wheels.values()),
++        'body_source_triangles':len(tri),'source':str(source),'source_wheel_centres':{k:v.tolist() for k,v in wheel_centres.items()},
++        'body_scale_xyz':scale.tolist(),'tiers':{},'removed_components':[],'native_materials_only':True}
++
++def new_piece(name, points, faces, mat_indices, mat_names):
++    used,faces=np.unique(np.asarray(faces).ravel(),return_inverse=True)
++    data=bpy.data.meshes.new(name);data.from_pydata(blender(points[used]).tolist(),[],faces.reshape(-1,3).tolist());data.update()
++    for n in mat_names:data.materials.append(materials[ROLE.get(n,'dark')])
++    data.polygons.foreach_set('material_index',np.asarray(mat_indices,dtype=np.int32))
++    for p in data.polygons:p.use_smooth=True
++    obj=bpy.data.objects.new(name,data);bpy.context.scene.collection.objects.link(obj)
++    return obj
++
++def reduce(obj, target):
++    obj.hide_set(False);obj.hide_render=False;bpy.context.view_layer.objects.active=obj;obj.select_set(True)
++    obj.data.calc_loop_triangles();before=len(obj.data.loop_triangles)
++    reference=None
++    if before>target:
++        reference=obj.copy();reference.data=obj.data.copy();bpy.context.scene.collection.objects.link(reference)
++        reference.hide_set(True);reference.hide_render=True
++        mod=obj.modifiers.new('Offline silhouette reduction','DECIMATE')
++        glass=all(obj.data.materials[p.material_index].name=='BMT_glass' for p in obj.data.polygons)
++        if glass:
++            mod.decimate_type='DISSOLVE';mod.angle_limit=math.radians(2.0);mod.use_dissolve_boundaries=False
++        else:
++            mod.ratio=target/float(before);mod.use_collapse_triangulate=True
++        bpy.ops.object.modifier_apply(modifier=mod.name)
++    obj.data.set_sharp_from_angle(angle=math.radians(52))
++    if reference is not None:
++        transfer=obj.modifiers.new('Retain dense surface normals','DATA_TRANSFER');transfer.object=reference
++        transfer.use_loop_data=True;transfer.data_types_loops={'CUSTOM_NORMAL'};transfer.loop_mapping='POLYINTERP_NEAREST'
++        bpy.ops.object.datalayout_transfer(modifier=transfer.name)
++        bpy.ops.object.modifier_apply(modifier=transfer.name)
++        bpy.data.objects.remove(reference,do_unlink=True)
++    obj.data.calc_loop_triangles();obj.select_set(False)
++    return len(obj.data.loop_triangles)
++
++def body_target(key, count, simple):
++    explicit={1464:(7000,4000),1491:(2500,1500),1624:(1500,900),1572:(1600,900),2149:(700,350),
++              1862:(600,350),4445:(600,350),2790:(900,450)}
++    if key in explicit:return explicit[key][1 if simple else 0]
++    return min(count,max(40 if simple else 72,int(count*(.018 if simple else .035))))
++
++for simple in [False,True]:
++    tier='simple' if simple else 'full';pieces=[];groups={};statistics=[]
++    bpy.ops.object.select_all(action='DESELECT')
++    for key in np.unique(component):
++        mask=component==key;faces=tri[mask];indices=mi[mask];count=len(faces)
++        names={mesh.materials[int(i)].name for i in np.unique(indices)}
++        pts=co[np.unique(faces)];low,high=pts.min(0),pts.max(0)
++        badge=any(n.startswith('SVGMat') for n in names) or int(key) in [415457,417915]
++        badge=badge or (names=={'Black Metal'} and low[1]>1.28 and max(abs(low[0]),abs(high[0]))<.16)
++        tiny=count<20
++        interior=int(key) in [0,732]
++        if badge or tiny or interior:
++            if not simple:record['removed_components'].append({'component':int(key),'triangles':count,'reason':'cabin floor' if interior else 'badge geometry' if badge else 'micro grille/hidden detail'})
++            continue
++        group='hood' if int(key) in [1572,321860,323444,323460] else 'aero' if int(key)==297986 else 'body'
++        if names=={'Red Light'}:group='tail_left' if (low[0]+high[0])*0.5>centre_x else 'tail_right'
++        if names in [{'White Light'},{'Headlight Glow'}] and high[1]<0:group='head_left' if (low[0]+high[0])*0.5>centre_x else 'head_right'
++        material_names=[m.name for m in mesh.materials]
++        if int(key)==436063:
++            group='head_right';material_names=['Headlight Glow' if m=='Gloss Black' else m for m in material_names]
++        points=fitted_body
++        if names=={'Basic Glass'}:
++            # Seal tiny source panel gaps with an opaque pane overlap, tucked
++            # behind the surrounding pillars. No cabin shell or interior ships.
++            vertices=np.unique(faces);points=fitted_body.copy();window=points[vertices]
++            centre=window.mean(0);delta=window-centre
++            normal=np.linalg.svd(delta,full_matrices=False)[2][-1]
++            if np.dot(normal,np.array([0,1.05,.25])-centre)<0:normal=-normal
++            planar=delta-np.outer(delta@normal,normal)
++            points[vertices]=window+planar*.02+normal*.003
++        obj=new_piece(group+'_'+str(key),points,faces,indices,material_names)
++        after=reduce(obj,body_target(int(key),count,simple));pieces.append(obj)
++        groups[obj.name]=group;statistics.append({'component':int(key),'group':group,'before':count,'after':after})
++    # Source wheels are measured above for fitting. The runtime builds exact
++    # round tyres and five-spoke rims, avoiding fragile subpixel source details.
++    # A low-cost glazing backing closes small gaps in the source's window/pillar
++    # junctions. It contains no seats, dashboard, steering, cabin floor or rig.
++    glass_faces=tri[np.array([mesh.materials[int(i)].name=='Basic Glass' for i in mi])]
++    window_points=fitted_body[np.unique(glass_faces)]
++    bm=bmesh.new()
++    for point in blender(window_points):bm.verts.new(point)
++    bm.verts.ensure_lookup_table()
++    bmesh.ops.convex_hull(bm,input=list(bm.verts),use_existing_faces=False)
++    loose=[v for v in bm.verts if not v.link_faces]
++    if loose:bmesh.ops.delete(bm,geom=loose,context='VERTS')
++    data=bpy.data.meshes.new('OpaqueGlazingBacking');bm.to_mesh(data);bm.free();data.materials.append(materials['glass'])
++    obj=bpy.data.objects.new('OpaqueGlazingBacking',data);bpy.context.scene.collection.objects.link(obj)
++    after=reduce(obj,160 if simple else 320);pieces.append(obj);groups[obj.name]='window_seal'
++    statistics.append({'group':'window_seal','after':after,'purpose':'opaque glazing backing; no interior contents'})
++    # Group per articulation and material. No skinning, constraints or rig ships.
++    buckets={}
++    for obj in pieces:
++        for polygon in obj.data.polygons:
++            role=obj.data.materials[polygon.material_index].name.removeprefix('BMT_')
++            if groups[obj.name]=='body' and role=='white':role='reverse'
++            buckets.setdefault((groups[obj.name],role),[]).append((obj,polygon.index))
++    exports=[]
++    for (group,role),polygons in buckets.items():
++        vertices=[];faces=[];lookup={};normals=[]
++        for obj,index in polygons:
++            polygon=obj.data.polygons[index];face=[]
++            for loop,vi in zip(polygon.loop_indices,polygon.vertices):
++                identity=(obj.name,vi)
++                if identity not in lookup:lookup[identity]=len(vertices);vertices.append(tuple(obj.data.vertices[vi].co))
++                face.append(lookup[identity])
++                normals.append(tuple(obj.data.corner_normals[loop].vector))
++            faces.append(face)
++        data=bpy.data.meshes.new(group+'__'+role);data.from_pydata(vertices,[],faces);data.materials.append(materials[role]);data.update()
++        for polygon in data.polygons:polygon.use_smooth=True
++        data.set_sharp_from_angle(angle=math.radians(52))
++        data.normals_split_custom_set(normals)
++        obj=bpy.data.objects.new(group+'__'+role,data);bpy.context.scene.collection.objects.link(obj);exports.append(obj)
++    bpy.ops.object.select_all(action='DESELECT')
++    for obj in pieces:obj.hide_set(True);obj.hide_render=True
++    for obj in exports:obj.select_set(True)
++    bpy.context.view_layer.objects.active=exports[0]
++    bpy.ops.export_scene.gltf(filepath=str(output/(tier+'.glb')),export_format='GLB',use_selection=True,
++        export_animations=False,export_skins=False,export_yup=True,export_cameras=False,export_lights=False,
++        export_materials='EXPORT',export_extras=False)
++    total=sum(row['after'] for row in statistics)
++    record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
++    print('CHALLENGER_EXPORT',tier,total,len(exports),flush=True)
++    for obj in exports:obj.hide_set(True);obj.hide_render=True;obj.name='ARCHIVE_'+tier+'_'+obj.name
++for o in original_wheels.values():o.data.calc_loop_triangles()
++record['source_triangles']=len(tri)+sum(len(o.data.loop_triangles) for o in original_wheels.values())
++record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source wheel centres retained as alignment reference.'
++record['opaque_glazing']='Boundary-preserving dissolve, 2% pane overlap and an opaque low-poly glazing backing close source pillar gaps. No cabin contents or rig.'
++(output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
++print('CHALLENGER_PREPARED',output,flush=True)
+diff --git a/game/tests/bake_challenger_hellcat.gd b/game/tests/bake_challenger_hellcat.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_challenger_hellcat.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Native mesh resources from the offline simplified owner-supplied model.
++const SOURCE: String = "res://../build/challenger-hellcat-2026-11-09/converted/"
++const DEST: String = "res://assets/vehicles/challenger_hellcat_v1/"
++
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DEST))
++	var result: Dictionary = {"schema":"challenger-hellcat-1","tiers":{}}
++	for tier: String in ["full","simple"]:
++		var document := GLTFDocument.new(); var state := GLTFState.new()
++		assert(document.append_from_file(ProjectSettings.globalize_path(SOURCE+tier+".glb"),state) == OK)
++		var scene: Node3D = document.generate_scene(state)
++		var entries: Array = []
++		for part: MeshInstance3D in scene.find_children("*","MeshInstance3D",true,false):
++			var label: String = str(part.name)
++			var split: PackedStringArray = label.split("__")
++			assert(split.size() == 2,label)
++			var group: String = split[0]; var role: String = split[1].get_slice(".",0)
++			var pose: Transform3D = part.transform
++			var parent: Node3D = part.get_parent()
++			while parent != scene: pose = parent.transform*pose; parent = parent.get_parent()
++			var pivot := Vector3.ZERO
++			if group.begins_with("wheel_"):
++				pivot = Vector3(-0.83 if group.ends_with("_L") else 0.83,0.37,-1.28 if "_Ft_" in group else 1.28)
++			var native := ArrayMesh.new(); var triangles: int = 0
++			for index: int in range(part.mesh.get_surface_count()):
++				var arrays: Array = part.mesh.surface_get_arrays(index)
++				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++				for vertex: int in range(vertices.size()):
++					vertices[vertex] = pose*vertices[vertex]-pivot
++					normals[vertex] = (pose.basis.inverse().transposed()*normals[vertex]).normalized()
++				arrays[Mesh.ARRAY_VERTEX] = vertices; arrays[Mesh.ARRAY_NORMAL] = normals
++				# Native fitted parts have UVs/colours. Explicit neutral attributes
++				# keep direct and separately batched assemblies byte-equivalent.
++				if arrays[Mesh.ARRAY_TEX_UV] == null:
++					var uv := PackedVector2Array(); uv.resize(vertices.size()); arrays[Mesh.ARRAY_TEX_UV] = uv
++				if arrays[Mesh.ARRAY_COLOR] == null:
++					var colors := PackedColorArray(); colors.resize(vertices.size()); colors.fill(Color.WHITE); arrays[Mesh.ARRAY_COLOR] = colors
++				triangles += (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array).size()/3
++				native.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++			var file: String = tier+"_"+group+"_"+role+".res"
++			assert(ResourceSaver.save(native,DEST+file) == OK)
++			entries.append({"group":group,"role":role,"mesh":file,"triangles":triangles,"bounds":str(native.get_aabb())})
++		result.tiers[tier] = entries
++		scene.free()
++	var output := FileAccess.open(DEST+"manifest.json",FileAccess.WRITE)
++	output.store_string(JSON.stringify(result,"\t")); output.close()
++	print("CHALLENGER_NATIVE_BAKE ",JSON.stringify(result.tiers.keys()))
++	quit()
+diff --git a/game/tests/bake_challenger_hellcat.gd.uid b/game/tests/bake_challenger_hellcat.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_challenger_hellcat.gd.uid
+@@ -0,0 +1 @@
++uid://camthjuv2hwh6
+diff --git a/game/tests/test_challenger_hellcat.gd b/game/tests/test_challenger_hellcat.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_challenger_hellcat.gd
+@@ -0,0 +1,73 @@
++extends SceneTree
++## Opaque glazing, no cabin/rig and actual native car budget/contact controls.
++var checks: int = 0
++var failures: int = 0
++const OUT: String = "res://../docs/evidence/challenger-hellcat-2026-11-09/opaque"
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func settle() -> void:
++	for frame: int in range(8):
++		await process_frame
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++func run() -> void:
++	root.size = Vector2i(1000,640)
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	var folder: String = OUT.path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var source: Dictionary = (load("res://assets/vehicles/challenger_hellcat_v1/source.json") as JSON).data
++	check(source.source_triangles == 911774,"source triangle count comes from supplied body and four wheels")
++	check(source.removed_components.filter(func(p: Dictionary) -> bool: return p.reason == "cabin floor").size() == 2,"both source cabin floor slabs are removed")
++	check(preload("res://vehicle/prepared_asset_sources.gd").vehicles_for("game/assets/vehicles/challenger_hellcat_v1/simple_body_paint.res") == ["super_rally"],"native Challenger meshes participate in Super rally dependency validation")
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	var metrics: Array = []
++	for reduced: bool in [false,true]:
++		var view := CarShowroom.new(); view.vehicle_id = "super_rally"; view.simple_model = reduced
++		view.read_only = true; view.size = Vector2(1000,640); view.livery = VehicleLivery.defaults("super_rally")
++		root.add_child(view)
++		while not view.showroom_ready or not view.car.model_ready: await process_frame
++		view.finish_car_transition(); view.finish_paint_transition(); view.finish_kit_transition()
++		var car: CarVisual = view.car
++		check(car.find_children("*","Skeleton3D",true,false).is_empty() and car.find_children("*","AnimationPlayer",true,false).is_empty(),"source rig and animations are absent")
++		var glass_count: int = 0; var triangles: int = 0
++		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++			if part.mesh != null: triangles += part.mesh.get_faces().size()/3
++			var material: StandardMaterial3D = part.get_active_material(0) as StandardMaterial3D
++			if material != null and material.albedo_color == Color("101b20"):
++				glass_count += 1
++				var surface: StandardMaterial3D = part.get_active_material(0) as StandardMaterial3D
++				check(surface != null and surface.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and surface.albedo_color.a == 1.0,"native windows are fully opaque")
++		check(glass_count == 1,"all original glazing shares one opaque native surface")
++		check(triangles < (30000 if reduced else 50000),"actual assembled car remains within its geometry budget")
++		check(car.wheel_rest_positions == [Vector3(-0.83,0.37,-1.28),Vector3(-0.83,0.37,1.28),Vector3(0.83,0.37,-1.28),Vector3(0.83,0.37,1.28)],"Rally physical wheel locations remain exact")
++		var probe := MeshInstance3D.new(); var sphere := SphereMesh.new(); sphere.radius = 0.18; sphere.height = 0.36
++		probe.mesh = sphere; probe.position = Vector3(0,1.03,0.25)
++		probe.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		var marker := StandardMaterial3D.new(); marker.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; marker.albedo_color = Color.MAGENTA
++		probe.material_override = marker; car.body.add_child(probe)
++		for angle: Array in [["front",-0.70],["rear",2.45],["side",-PI/2]]:
++			view.yaw = angle[1]; view.zoom = 1.15; view._orbit()
++			probe.hide(); view.invalidate_render(); view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; await settle()
++			if DisplayServer.get_name() != "headless":
++				var before: Image = root.get_texture().get_image()
++				await settle()
++				check(before.get_data() == root.get_texture().get_image().get_data(),"unchanged native view repeats exactly before the "+str(angle[0])+" probe")
++				probe.show(); view.invalidate_render(); view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; await settle()
++				var after: Image = root.get_texture().get_image()
++				check(before.get_data() == after.get_data(),"bright cabin probe is invisible through "+str(angle[0])+" glazing")
++				before.save_png(folder.path_join(("simple-" if reduced else "full-")+str(angle[0])+".png"))
++				after.save_png(folder.path_join(("simple-" if reduced else "full-")+str(angle[0])+"-probe.png"))
++		probe.queue_free(); await process_frame
++		car.set_night_headlights(true)
++		check(car.headlights != null and car.headlights.find_children("*","MeshInstance3D",true,false).size() == 2,"both original headlamp lens groups illuminate at night")
++		metrics.append({"simple":reduced,"triangles":triangles})
++		view.free(); await process_frame
++	if prepared: check(preload("res://vehicle/modular_car_base.gd").hits+preload("res://ui/garage_car_cache.gd").hits >= 2,"both quality tiers actually restore prepared geometry")
++	var file := FileAccess.open(folder.path_join("acceptance.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("CHALLENGER_HELLCAT: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(metrics)])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_challenger_hellcat.gd.uid b/game/tests/test_challenger_hellcat.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_challenger_hellcat.gd.uid
+@@ -0,0 +1 @@
++uid://cwa2jgnlmo6d0
+diff --git a/game/legal/challenger_hellcat_notices.txt b/game/legal/challenger_hellcat_notices.txt
+new file mode 100644
+--- /dev/null
++++ b/game/legal/challenger_hellcat_notices.txt
+@@ -0,0 +1,21 @@
++Super rally exterior
++
++Based on "Dodge Challenger HellCat - Rigged" by Richerworld.
++Source: https://blendswap.com/blend/26927
++Author: Richerworld (see the model listing above).
++Licence: Creative Commons Attribution (CC-BY).
++BlendSwap's published licence mapping identifies CC-BY as CC BY 4.0:
++https://blendswap.com/3d-mcp-api/docs
++https://creativecommons.org/licenses/by/4.0/
++
++Beat my track modifications (2026-11-09): exterior simplified offline into two
++mesh tiers; geometry split into paint, glazing, trim, hood, aero, lamps and wheels;
++source studio, rig, animation, embedded texture maps, badges and cabin floor
++removed; native opaque windows and native game materials replace source shaders;
++rim geometry aligned with the existing Super rally contacts; existing native
++round tyre geometry replaces the source tyre meshes. Existing native
++game cosmetic parts adapted to the new exterior. No runtime rig or interior.
++
++The source author credits a Kevin Gallant modelling tutorial:
++https://www.youtube.com/watch?v=H8Fo0mfyab0
++No endorsement by the artist, tutorial author or vehicle manufacturer is implied.

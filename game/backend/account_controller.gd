@@ -8,6 +8,7 @@ var busy: bool = false
 var waiting_for_google: bool = false
 var message: String = "Choose how to sign in."
 var retry_available: bool = false
+var service_unavailable: bool = false
 var capabilities: Dictionary = {}
 var configured: bool = false
 var _development_key: String = ""
@@ -51,7 +52,7 @@ func start_session() -> void:
 	if result.ok and client.has_saved_session():
 		result = await client.restore_session()
 	if result.get("account_removed",false): account_removed.emit(str(result.removed_origin),str(result.removed_player_id))
-	message = _signed_in_message() if client.signed_in() else ("" if result.ok else _error_text(result))
+	message = _report_error(result) if not result.ok else _signed_in_message() if client.signed_in() else ""
 	if result.get("account_removed",false): message = "Account removed. Tracks and historical standings remain under Removed account."
 	retry_available = not result.ok
 	busy = false
@@ -80,6 +81,8 @@ func _signed_in_message() -> String:
 
 func _check_service() -> Dictionary:
 	var result: Dictionary = await client.request_api("/bootstrap")
+	service_unavailable = false
+	retry_available = false
 	if result.ok and (result.data.get("service", "") != "beat-my-track" or result.data.get("api_version", "") != "v1"):
 		capabilities = {}
 		return {"ok":false,"error":"WRONG_SERVICE"}
@@ -101,14 +104,16 @@ func refresh_options() -> void:
 	if result.ok:
 		capabilities = result.data
 		if not client.signed_in() and client.has_saved_session():
-			await client.restore_session()
-		if client.signed_in():
-			var profile: Dictionary = await client.request_api("/me", HTTPClient.METHOD_GET, {}, "", true)
-			if profile.ok: client.player = profile.data
-		message = "" if not client.signed_in() else _signed_in_message()
+			result = await client.restore_session()
+		if result.ok and client.signed_in():
+			result = await client.request_api("/me", HTTPClient.METHOD_GET, {}, "", true)
+			if result.ok: client.player = result.data
+	if result.get("account_removed",false):
+		account_removed.emit(str(result.removed_origin),str(result.removed_player_id))
+		message = "Account removed. Tracks and historical standings remain under Removed account."
 	else:
-		message = _error_text(result)
-		retry_available = true
+		message = _report_error(result) if not result.ok else _signed_in_message() if client.signed_in() else ""
+	retry_available = not result.ok
 	busy = false
 	changed.emit()
 
@@ -124,7 +129,7 @@ func sign_in_developer() -> void:
 		changed.emit()
 		var result: Dictionary = await _check_service()
 		if result.ok: result = await client.developer_login(_development_key)
-		message = _signed_in_message() if result.ok else _error_text(result)
+		message = _signed_in_message() if result.ok else _report_error(result)
 		busy = false
 	changed.emit()
 
@@ -141,7 +146,7 @@ func sign_in_google() -> void:
 	if result.ok and not google_available(): result = {"ok":false,"error":"GOOGLE_SIGN_IN_NOT_CONFIGURED"}
 	if result.ok: result = await client.request_api("/auth/google/browser/start", HTTPClient.METHOD_POST)
 	if not result.ok:
-		message = _error_text(result)
+		message = _report_error(result)
 		busy = false
 		changed.emit()
 		return
@@ -172,7 +177,7 @@ func sign_in_google() -> void:
 			if int(result.get("status",0)) == 429:
 				poll_delay = maxf(5.0,float(result.get("retry_after",60)))
 				continue
-			message = _error_text(result)
+			message = _report_error(result)
 			break
 		poll_delay = 5.0
 		if client.signed_in():
@@ -217,14 +222,14 @@ func _sign_in_google_native() -> void:
 			changed.emit()
 			result = await client.google_login(credential.trim_prefix("token:"), challenge_id, "")
 			if _cancelled and client.signed_in(): await client.logout()
-			message = _signed_in_message() if result.ok else _error_text(result)
+			message = _signed_in_message() if result.ok else _report_error(result)
 		elif credential == "error:cancelled":
 			_cancelled = true
 		else:
 			message = "Google sign-in could not complete. Please try again."
 		native.cancelSignIn()
 	else:
-		message = _error_text(result)
+		message = _report_error(result)
 	if _cancelled: message = "Sign-in cancelled."
 	waiting_for_google = false
 	busy = false
@@ -244,7 +249,7 @@ func save_username(username: String, country_code: String = "") -> void:
 	if not country_code.is_empty(): payload.country_code = country_code
 	var result: Dictionary = await client.request_api("/me", HTTPClient.METHOD_PATCH, payload, "", true)
 	if result.ok: client.player = result.data
-	message = _signed_in_message() if result.ok else _error_text(result)
+	message = _signed_in_message() if result.ok else _report_error(result)
 	busy = false
 	changed.emit()
 
@@ -305,7 +310,16 @@ func delete_account(expected_player: String = "", expected_origin: String = "") 
 	busy = false
 	changed.emit()
 
+func _report_error(result: Dictionary) -> String:
+	service_unavailable = int(result.get("status",0)) >= 500 or str(result.get("error","")) in ["NETWORK_ERROR","REQUEST_START_FAILED"]
+	retry_available = service_unavailable
+	return _error_text(result)
+
 func _error_text(result: Dictionary) -> String:
+	# Proxies often return HTML during an outage, decoded as INVALID_RESPONSE.
+	# Preserve the HTTP failure reason instead of blaming the sign-in setup.
+	if int(result.get("status",0)) >= 500:
+		return "The game service is temporarily unavailable. Please retry, or continue as Guest."
 	match str(result.get("error", "")):
 		"USERNAME_TAKEN": return "That racing name is already taken. Choose another name."
 		"USERNAME_REQUIRED": return "Choose your racing name before sharing tracks."

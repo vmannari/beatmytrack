@@ -23,16 +23,12 @@ func run() -> void:
 		root.add_child(hud)
 		await process_frame
 		var choice: OptionButton = hud.handling_test_choice
-		if car_id in ["compact", "electric", "forklift", "kart"]:
+		if car_id != "pickup":
 			check(choice == null, car_id + " has no test selector")
 		else:
-			var expected_count: int = 7 if car_id == "hovercraft" else 6
+			var expected_count: int = 6
 			check(choice != null and choice.item_count == expected_count and choice.selected == 0, car_id + " has current handling and its test choices")
 			if choice != null:
-				if car_id == "hovercraft":
-					check(choice.get_item_text(1) == "Slide 5 (reference)", "Hover retains the chosen reference")
-					for index: int in range(1, 6):
-						check(choice.get_item_text(index + 1) == "Slide 5.%d" % index, "Hover names slide alternative %d" % index)
 				choice.select(expected_count - 1)
 				choice.item_selected.emit(expected_count - 1)
 				check(selected == expected_count - 2, car_id + " emits the last preset")

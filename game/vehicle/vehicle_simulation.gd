@@ -231,6 +231,12 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= surface.x * tire_grip
+	if config.high_speed_lateral_grip_scale < 1.0 and longitudinal > 0.0 and speed > config.maximum_speed * 0.7:
+		# Chassis steering keeps its front-axle response, while the tires have less
+		# force available to redirect existing world-space momentum into the bend.
+		# No velocity rotation or extra yaw is injected; slowing restores grip.
+		var momentum_slide: float = smoothstep(config.maximum_speed * 0.7, config.maximum_speed, speed)
+		grip_limit *= lerpf(1.0, config.high_speed_lateral_grip_scale, momentum_slide)
 	if config.winter_lateral_grip != 1.0 and ground is NativeTrack and str(ground.metadata.get("theme", "pine")) == "winter" and ground.cell_at(state.position, state.track_elevated) == 0:
 		grip_limit *= config.winter_lateral_grip
 	grip_limit *= 1.0 - lift * absf(state.steering) * config.lift_off_grip_loss
@@ -242,6 +248,11 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	# Keep the established front-steer arithmetic exact for every existing car.
 	var target_lateral: float = -state.yaw_rate * config.wheelbase * 0.5 if config.rear_steering else 0.0
 	var lateral_response: float = config.lateral_response
+	if config.high_speed_lateral_response_scale < 1.0 and longitudinal > 0.0 and speed > config.maximum_speed * 0.7:
+		# Let fast corners retain a little sideways momentum without adding yaw
+		# or reducing the tire force limit. Slowing restores the original response.
+		var fast_corner: float = smoothstep(config.maximum_speed * 0.7, config.maximum_speed, speed)
+		lateral_response *= lerpf(1.0, config.high_speed_lateral_response_scale, fast_corner)
 	if config.rear_wheel_drive and config.launch_lateral_response_scale < 1.0 and longitudinal >= 0.0 and speed < 8.0:
 		# Rear-drive power lets the tail retain a little sideways momentum on launch.
 		# No yaw impulse: steering still sets rotation, and lifting/straightening

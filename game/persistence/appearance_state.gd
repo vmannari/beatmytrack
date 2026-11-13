@@ -38,8 +38,17 @@ static func valid_collection(value: Variant) -> bool:
 	return true
 
 static func valid(value: Variant) -> bool:
-	if not value is Dictionary or value.size() not in [2,3] or value.get("version") != 1 or not valid_collection(value.get("baseline")): return false
-	return value.size() == 2 or (value.has("pending") and valid_collection(value.pending))
+	if not value is Dictionary or value.get("version") != 1 or not valid_collection(value.get("baseline")): return false
+	for key: Variant in value:
+		if key not in ["version","baseline","pending","rejected"]: return false
+	if value.has("pending") and not valid_collection(value.pending): return false
+	var rejected: Variant = value.get("rejected",{})
+	if not rejected is Dictionary or rejected.size() > VehicleCatalog.ALL_IDS.size(): return false
+	for id: Variant in rejected:
+		if id not in VehicleCatalog.ALL_IDS or not rejected[id] is String or rejected[id].length() != 64: return false
+		for letter: String in rejected[id]:
+			if not letter in "0123456789abcdef": return false
+	return true
 
 static func baseline(settings: Dictionary) -> Dictionary:
 	return normalized_collection(settings.get(KEY,{}).get("baseline",{}))

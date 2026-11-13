@@ -97,7 +97,7 @@ func run() -> void:
 	cloud.client = client
 	cloud.root_override = "user://run_confirmation_"+TrackLibrary.unique_id()
 	root.add_child(cloud)
-	check(cloud.queue_run({"ticket_id":"ticket-a"},[[0,255,0]]),"completion fixture is durably queued")
+	check((await cloud.queue_run_async({"ticket_id":"ticket-a"},[[0,255,0]])),"completion fixture is durably queued")
 	var job: Dictionary = cloud.upload_job("ticket-a")
 	job.run_id = "run-a"
 	cloud._save_job(str(job._path),job)

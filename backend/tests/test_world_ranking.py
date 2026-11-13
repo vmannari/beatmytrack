@@ -217,6 +217,7 @@ def test_shared_circuit_group_independence_and_free_resumes(ranking_domain, monk
     app.state.settings = settings
     seed(ranking_domain)
     monkeypatch.setattr(rivalry,"now",lambda: LAUNCH+20)
+    monkeypatch.setattr(resumes,"now",lambda: LAUNCH+20)
     monkeypatch.setattr(rivalry,"skill_score",lambda _db,pid,*_args: 950 if pid == ranking_domain.players["Bob"] else 100)
     active = app.state.verifier.manifest()
     with ranking_domain.factory() as db:
@@ -283,7 +284,8 @@ def test_shared_circuit_group_independence_and_free_resumes(ranking_domain, monk
     with ranking_domain.factory() as db:
         results = list(db.scalars(select(RankingStanding).where(RankingStanding.snapshot_id == current).order_by(RankingStanding.world_rank)))
         assert [r.world_rank for r in results] == [1,2]
-        assert [r.total for r in results] == [points(1,2),points(2,2)]
+        from bmt_backend.world_ranking_car_rules import award
+        assert [r.total for r in results] == [award(1,2),award(2,2)]
 
 
 @pytest.mark.parametrize("count", [1,127,128,1024])
@@ -528,12 +530,19 @@ def test_friends_country_and_fresh_redaction(ranking_domain,monkeypatch):
 def test_delayed_foreground_queue_yields_before_any_ranking_work(ranking_domain,monkeypatch):
     from test_domains import public_course, submit, ticket
 
+    from bmt_backend.track_models import Run
     from bmt_backend.worker import process_one
     app,domain = ranking_domain.app,ranking_domain
     version,_ = public_course(domain)
     issued = ticket(domain,version,"Alice")
     submit(domain,issued,"Alice")
     settings = seeded_build(app,monkeypatch)
+    # Queue age and leases use the same pinned competition clock as settlement.
+    with domain.factory() as db:
+        queued = db.scalar(select(Run).where(Run.status == "queued"))
+        queued.created_at = LAUNCH+WEEK-settings.world_ranking_max_queue_age_seconds-1
+        queued.lease_until = 0
+        db.commit()
     assert build.step(domain.factory,app.state.blobs,settings) is False
     with domain.factory() as db:
         assert db.scalar(select(RankingBranch)).phase == "track0"

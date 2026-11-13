@@ -54,6 +54,11 @@ func focus(showroom: CarShowroom, category: String) -> void:
 		"body_kit":
 			# Low front three-quarter view exposes the bumper, arches and sills.
 			direction = Vector3(3,0.95,-4)
+	if showroom.car.vehicle_id == "super_rally":
+		match category:
+			"hood": local_target = Vector3(0,0.95,-1.35); direction = Vector3(2,2.5,-4); distance = 3.2
+			"aero": local_target = Vector3(0,1.0,1.88); direction = Vector3(2,1.5,4); distance = 3.3
+			"roof": local_target = Vector3(0,1.40,0.35); direction = Vector3(0.5,4,-1.5); distance = 2.9
 	if showroom.car.vehicle_id=="kart":
 		match category:
 			"hood": local_target = Vector3(0,0.35,-1.05); direction = Vector3(2,2.5,-4); distance = 2.4

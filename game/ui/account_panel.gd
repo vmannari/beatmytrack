@@ -75,6 +75,9 @@ func _ready() -> void:
 	subtitle.add_theme_font_override("font", MenuStyle.BODY)
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(subtitle)
+	status_label = centered_label("", 18, true)
+	status_label.name = "SignInStatus"
+	column.add_child(status_label)
 	var accent_space := MarginContainer.new()
 	accent_space.add_theme_constant_override("margin_top", 8)
 	accent_space.add_theme_constant_override("margin_bottom", 8)
@@ -124,8 +127,6 @@ func _ready() -> void:
 	save_button = MenuStyle.button("Save name & continue", _save_name, true)
 	save_button.name = "SavePlayerName"
 	column.add_child(save_button)
-	status_label = centered_label("", 18, true)
-	column.add_child(status_label)
 	cancel_button = MenuStyle.button("Cancel sign-in", account.cancel_google)
 	column.add_child(cancel_button)
 	refresh_button = MenuStyle.button("Retry connection", account.refresh_options)
@@ -293,8 +294,9 @@ func _update() -> void:
 	if agreed: terms_attention = false
 	terms_check.add_theme_stylebox_override("normal", terms_warning_style if terms_attention else terms_idle_style)
 	_update_terms_copy()
-	title.text = "Ready to race?" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
+	title.text = "Service unavailable" if account.service_unavailable else "Ready to race?" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
 	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Sign in to save results online, join events and race friends.")
+	subtitle.visible = not account.service_unavailable
 	subtitle.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED if signed_in and not onboarding else Node.AUTO_TRANSLATE_MODE_INHERIT
 	username.visible = onboarding
 	username.editable = not account.busy
@@ -323,6 +325,7 @@ func _update() -> void:
 	cancel_button.disabled = account._cancelled
 	refresh_button.visible = account.retry_available and not account.busy
 	status_label.text = account.message
+	status_label.add_theme_color_override("font_color", Color("ffbf16") if account.service_unavailable else MenuStyle.MUTED)
 	status_label.visible = not account.message.is_empty() and account.message not in ["Choose how to sign in.", "Signed in as " + account.player_name() + ".", "Choose the name other racers will see."]
 	divider.visible = not signed_in
 	guest_button.visible = not onboarding

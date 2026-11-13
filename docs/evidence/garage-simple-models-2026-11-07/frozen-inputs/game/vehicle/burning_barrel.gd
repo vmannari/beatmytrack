@@ -1,0 +1,74 @@
+class_name BurningBarrel
+extends RefCounted
+## Deterministic cylinder motion. Only burning barrels use the extended row.
+# x,y,vx,vy, tip angle, fall direction, tip velocity, yaw velocity, roll, contact,
+# spilled-fuel age (-1 before impact), spill x/y, impact direction, strength.
+const ROW_SIZE: int=15
+const MASS: float=400.0
+const CAR_SLOWDOWN: float=0.7
+const FIRE_SECONDS: float=8.0
+const SMOKE_SECONDS: float=10.0
+static func initial(object: Dictionary) -> Array:
+	return [object.position[0],object.position[1],0.0,0.0,0.0,0.0,0.0,0.0,0.0,false,-1.0,object.position[0],object.position[1],0.0,0.0]
+
+static func step(state: VehicleState, object: Dictionary, row: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
+	var scale: float=float(object.get("scale",1.0))
+	var p:=Vector2(row[0],row[1]); var velocity:=Vector2(row[2],row[3])
+	var tilt: float=float(row[4]); var direction: float=float(row[5]); var omega: float=float(row[6]); var yaw: float=float(row[7])
+	var radius: float=lerpf(0.52,0.76,sin(tilt))*scale
+	var touching: bool=false
+	var hit_normal:=Vector2.ZERO
+	var closing: float=0.0
+	if not state.track_elevated and state.jump_height<=0:
+		var delta: Vector2=p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
+		touching=delta.length_squared()<pow(car_radius+radius,2)
+		if touching:
+			var relative: Vector2=state.velocity-velocity
+			var normal: Vector2=delta.normalized() if delta.length_squared()>0.000001 else (relative.normalized() if relative.length_squared()>0.000001 else state.forward())
+			var approach: float=relative.dot(normal)
+			hit_normal=normal; closing=approach
+			if approach>0:
+				var mass: float=MASS*scale*scale*scale
+				# Tune the arcade car response independently of drum inertia/toppling.
+				var impulse: float=approach/(1.0/car_mass+1.0/mass)
+				state.velocity-=normal*impulse*CAR_SLOWDOWN/car_mass
+				velocity+=normal*impulse/mass
+				if not bool(row[9]):
+					if tilt<0.15: direction=normal.angle()
+					omega+=impulse*0.65*scale/(mass*0.71*scale*scale)
+					omega=clampf(omega,-4.0,4.0)
+					yaw+=clampf(relative.cross(normal)*0.08,-1.8,1.8)
+				if float(row[10])<0.0 and approach>=1.6:
+					row[10]=0.0; row[11]=p.x; row[12]=p.y; row[13]=normal.angle(); row[14]=clampf(approach/12.0,0.3,1.0)
+	# Gravity uses the cylinder's supported centre height and edge inertia.
+	if tilt>0.00001 or omega>0:
+		omega+=9.81*(0.55*sin(tilt)-0.515*cos(tilt))/(0.71*scale)*dt
+		omega*=maxf(0.0,1.0-1.1*dt)
+		tilt+=omega*dt
+		if tilt<=0:
+			tilt=0.0; omega=-omega*0.06 if absf(omega)>0.25 else 0.0
+		elif tilt>=PI*0.5:
+			tilt=PI*0.5; omega=-omega*0.06 if absf(omega)>0.25 else 0.0
+		if absf(omega)<0.12 and tilt>PI*0.5-0.006: tilt=PI*0.5; omega=0.0
+	direction+=yaw*dt; yaw=move_toward(yaw,0.0,2.4*dt)
+	var rolling: bool=tilt>1.35
+	if rolling:
+		var tangent:=Vector2(-sin(direction),cos(direction))
+		row[8]=float(row[8])+velocity.dot(tangent)*dt/(0.515*scale)
+	velocity=velocity.limit_length(2.0*sqrt(scale)).move_toward(Vector2.ZERO,(12.0 if rolling else 18.0)*dt)
+	var next: Vector2=p+velocity*dt
+	if Vector3(contact.call(next,radius,false)).z<=0: p=next
+	else: velocity=Vector2.ZERO
+	if touching:
+		var offset: Vector2=p-state.position
+		var reach: float=car_radius+radius
+		var crossed: bool=offset.dot(hit_normal)<0.0 and closing>0.0
+		if offset.length_squared()<reach*reach or crossed:
+			# Retain the approached side even when a fast step crosses the centre.
+			var normal: Vector2=hit_normal if crossed or offset.length_squared()<0.000001 else offset.normalized()
+			var corrected: Vector2=p-normal*reach
+			if Vector3(contact.call(corrected,car_radius,false)).z<=0: state.position=corrected
+			elif Vector3(contact.call(previous,car_radius,false)).z<=0: state.position=previous
+	row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
+	row[4]=tilt; row[5]=direction; row[6]=omega; row[7]=yaw; row[9]=touching
+	if float(row[10])>=0.0: row[10]=minf(SMOKE_SECONDS,float(row[10])+dt)

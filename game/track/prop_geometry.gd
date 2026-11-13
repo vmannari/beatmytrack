@@ -1,6 +1,7 @@
 class_name PropGeometry
 extends RefCounted
 ## Original opaque, vertex-coloured prop geometry. No collision or simulation data.
+const SCENERY_LODS = preload("res://track/scenery_mesh_lods.gd")
 
 # Opt in only while assembling one immutable prop. The cores are strictly
 # inside closed boxes; they are never inferred from open foliage or a mesh AABB.
@@ -27,6 +28,7 @@ static func finish(tool: SurfaceTool, generate: bool = true) -> ArrayMesh:
 	if tool.has_meta("prop_solid_cores") and not complete: hidden = _hidden_plan(tool,source.surface_get_arrays(0)[Mesh.ARRAY_VERTEX])
 	source.set_meta("prop_hidden_triangles",hidden)
 	source.set_meta("prop_plan_complete",tool.has_meta("prop_solid_cores") or tool.get_meta("prop_plan_complete",false))
+	if tool.has_meta("tree_far_dropped"):source.set_meta("tree_far_dropped",tool.get_meta("tree_far_dropped"))
 	return source
 
 static func _hidden_plan(tool: SurfaceTool, vertices: PackedVector3Array) -> PackedInt32Array:
@@ -88,6 +90,7 @@ static func append_mesh(destination: SurfaceTool, mesh: ArrayMesh, pose: Transfo
 		offset = 0 if existing[Mesh.ARRAY_VERTEX] == null else existing[Mesh.ARRAY_VERTEX].size()/3
 	var hidden: PackedInt32Array = destination.get_meta("prop_hidden_triangles",PackedInt32Array())
 	for triangle: int in mesh.get_meta("prop_hidden_triangles",PackedInt32Array()): hidden.append(offset+triangle)
+	SCENERY_LODS.append_plan(destination,mesh,offset*3,pose)
 	destination.append_from(mesh,0,pose)
 	destination.set_meta("prop_hidden_triangles",hidden)
 	destination.set_meta("prop_triangle_count",offset+mesh.surface_get_array_len(0)/3)
@@ -121,10 +124,12 @@ static func prune(source: Array, hidden: PackedInt32Array) -> Array:
 
 static func commit(tool: SurfaceTool) -> ArrayMesh:
 	assert(Thread.is_main_thread(),"Prop mesh publication belongs to the main thread")
-	if not tool.has_meta("prop_hidden_triangles") or tool.get_meta("prop_hidden_triangles").is_empty(): return tool.commit()
-	var result := ArrayMesh.new()
-	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays(tool))
-	return result
+	var result: ArrayMesh
+	if not tool.has_meta("prop_hidden_triangles") or tool.get_meta("prop_hidden_triangles").is_empty(): result = tool.commit()
+	else:
+		result = ArrayMesh.new()
+		result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays(tool))
+	return SCENERY_LODS.apply(tool,result)
 
 class SolidBox extends RefCounted:
 	var center: Vector3

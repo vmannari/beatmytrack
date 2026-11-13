@@ -118,7 +118,7 @@ func inspect_page(page: Control) -> void:
 		check(name_label.size.x >= name_label.get_theme_font("font").get_string_size(name_label.text,HORIZONTAL_ALIGNMENT_LEFT,-1,name_label.get_theme_font_size("font_size")).x,"reference player names fit without truncation")
 		var car: Control = page.find_child("RivalryPodiumCar_"+str(position),true,false)
 		check(car.size.y >= 88 and car.fit_to_frame,"larger car previews fit the available frame")
-		check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"render targets retain existing bounds")
+		check(car.get_child_count()==0 and car.presentation_ready,"podium fits its frame without a 3D render target")
 		var card: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
 		check(is_equal_approx(card.size.y,194.0-(position-1)) and is_equal_approx(card.global_position.y-winner.global_position.y,float(position-1)),"podium heights descend by one unit per position")
 		check(is_equal_approx(card.get_global_rect().end.y,winner.get_global_rect().end.y),"stepped podium cards retain a shared bottom edge")

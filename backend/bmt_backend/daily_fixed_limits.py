@@ -68,6 +68,8 @@ def publish_build_variant(session, day_number, version, active_manifest, stamp, 
         raise LimitsPending("Every car needs a verified flying lap before publication")
     day.lap_limits = {**day.lap_limits, "build_variant": {"version_id": version.id, "limits": selection}}
     session.flush()
+    from .daily_snapshot_preparation import schedule
+    schedule(session, day, stamp, include_artificial=allow_artificial)
     return True
 
 

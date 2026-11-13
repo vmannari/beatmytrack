@@ -3,6 +3,7 @@ extends VBoxContainer
 const Adapter = preload("res://backend/world_ranking_client.gd")
 var client: Node
 var week_start: int = 0
+var vehicle_id: String = "overall"
 var compact: bool = false
 var label: Label
 var _adapter: Node
@@ -46,7 +47,9 @@ static func describe(data: Dictionary, week: int) -> String:
 func _load() -> void:
 	_request += 1
 	var request: int = _request
-	var response: Dictionary = await _adapter.profile()
+	var response: Dictionary = await _adapter.profile("",false,vehicle_id)
 	if not is_inside_tree() or is_queued_for_deletion() or request != _request or _scope != _adapter.scope(): return
 	label.text = describe(response.data,week_start) if response.ok else "World Ranking unavailable. Check the Garage newspaper."
+	if response.ok and response.data.get("policy") == "multi-car-circuit-v2" and vehicle_id != "overall":
+		label.text = VehicleCatalog.title(vehicle_id)+" · "+label.text
 	if compact: label.text = label.text.replace("\n"," · ")

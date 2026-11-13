@@ -12,6 +12,7 @@ from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFa
 from .object_models import ArchiveChunk, ObjectGarbageCandidate, ObjectPin
 from .publication_models import PublicationIntent, PublicationUpload
 from .publication_storage import retire_evidence, retired_candidates
+from .receipt_references import reference
 from .resume_models import ResumeRace, ResumeReceipt
 from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryTicket
 from .storage import LocalBlobStore, PinnedBlobStore, make_blob_store
@@ -164,10 +165,10 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             session.execute(delete(Run).where(Run.id.in_(run_ids)))
             session.execute(delete(RunTicket).where(RunTicket.id.in_(tickets)))
             retired_reference = or_(
-                IdempotencyRecord.response["run_id"].as_string().in_(run_ids),
-                IdempotencyRecord.response["ticket_id"].as_string().in_(tickets),
-                IdempotencyRecord.response["race_id"].as_string().in_(races),
-                IdempotencyRecord.response["receipt_id"].as_string().in_(receipts),
+                reference(IdempotencyRecord.response, "run_id").in_(run_ids),
+                reference(IdempotencyRecord.response, "ticket_id").in_(tickets),
+                reference(IdempotencyRecord.response, "race_id").in_(races),
+                reference(IdempotencyRecord.response, "receipt_id").in_(receipts),
             )
             # Retain retry identity without loading the entire history into Python.
             session.execute(update(IdempotencyRecord).where(retired_reference)

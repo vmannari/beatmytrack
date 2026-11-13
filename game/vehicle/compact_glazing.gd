@@ -5,14 +5,18 @@ static var sheets: Dictionary = {}
 static var use_baked: bool = true
 
 static func windshield_point(front: bool, u: float, v: float) -> Vector3:
-	var height: float = lerpf(0.13,0.89,v)
-	var lower_width: float = CompactCoachwork.cabin_width(0.13)*(0.90 if front else 0.83)
-	var upper_width: float = CompactCoachwork.cabin_width(0.89)*(0.88 if front else 0.86)
+	# Let the front pane meet the cowl with a broad, even trapezoid. The rear
+	# hatch keeps its existing opening and curvature.
+	var lower: float = 0.08 if front else 0.13
+	var upper: float = 0.90 if front else 0.89
+	var height: float = lerpf(lower,upper,v)
+	var lower_width: float = CompactCoachwork.cabin_width(lower)*(0.92 if front else 0.83)
+	var upper_width: float = CompactCoachwork.cabin_width(upper)*(0.90 if front else 0.86)
 	var across: float=u*lerpf(lower_width,upper_width,v)/CompactCoachwork.cabin_width(height)
 	var point: Vector3 = CompactCoachwork.cabin_front_point(across,height) if front else CompactCoachwork.cabin_rear_point(across,height)
 	var normal := Vector3(0,0.79,-0.61).normalized() if front else Vector3(0,0.84,0.54).normalized()
 	# Only cross-car curvature: every vertical generator remains a straight line.
-	return point+normal*(0.004+0.018*(1.0-u*u))
+	return point+normal*(0.004+(0.008 if front else 0.018)*(1.0-u*u))
 
 static func sheet(car: CarVisual, front: bool, trim: Material) -> void:
 	if shared_glass == null:
@@ -63,7 +67,9 @@ static func _attach_sheet(car: CarVisual,front: bool,glass: bool,resource: Array
 static func _sheet_point(front: bool,u: float,v: float,glass: bool) -> Vector3:
 	var edge: float = minf(v,1.0-v)
 	var half_width: float=1.0
-	if edge<0.07: half_width=0.93+0.07*sqrt(maxf(0,1.0-pow((edge-0.07)/0.07,2)))
+	var corner_height: float = 0.06 if front else 0.07
+	var corner_width: float = 0.035 if front else 0.07
+	if edge<corner_height: half_width=1.0-corner_width+corner_width*sqrt(maxf(0,1.0-pow((edge-corner_height)/corner_height,2)))
 	var across: float=lerpf(-half_width,half_width,u)
 	var height: float=v
 	if glass:

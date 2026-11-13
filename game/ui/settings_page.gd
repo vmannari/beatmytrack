@@ -22,7 +22,6 @@ var draft_speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 var draft_labels: bool = true
 var draft_ghost: String = "lap"
 var draft_show_ads: bool = false
-var draft_simple_models: bool = false
 var draft_graphics: Dictionary = {}
 var draft_analytics: bool = false
 var draft_audio: Dictionary = {}
@@ -80,7 +79,6 @@ func _ready() -> void:
 	draft_labels = bool(records.settings.get("control_labels", true))
 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
-	draft_simple_models = bool(records.settings.get("simple_car_models",false))
 	draft_graphics = preload("res://presentation/graphics_preferences.gd").preferences(records.settings)
 	draft_analytics = bool(records.settings.get("optional_analytics",false))
 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
@@ -334,19 +332,6 @@ func _graphics() -> void:
 	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")
 	_graphics_choice("render_resolution","3D resolution","Lower values improve performance. Device limits may cap resolution.")
 	_graphics_choice("anti_aliasing","Anti-aliasing","Smooth jagged edges. Higher quality uses more graphics power.")
-	var row: BoxContainer = _row("CarDetailSettings",18)
-	row.add_child(_copy("Simpler car models", "Use lighter car models and shadows from the next race. Garage previews keep full detail."))
-	var toggle := CheckButton.new()
-	toggle.name = "SimpleCarModels"
-	toggle.text = "On" if draft_simple_models else "Off"
-	toggle.button_pressed = draft_simple_models
-	toggle.custom_minimum_size = Vector2(150,52)
-	toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	toggle.toggled.connect(func(on: bool) -> void:
-		draft_simple_models = on
-		toggle.text = "On" if on else "Off"
-		_changed())
-	row.add_child(toggle)
 
 func _graphics_choice(field: String, title: String, description: String) -> void:
 	const GRAPHICS = preload("res://presentation/graphics_preferences.gd")
@@ -679,7 +664,6 @@ func _privacy() -> void:
 
 func _reset() -> void:
 	if section == "graphics":
-		draft_simple_models = false
 		draft_graphics = preload("res://presentation/graphics_preferences.gd").DEFAULTS.duplicate()
 	elif section == "audio":
 		draft_audio = GameSoundtrack.DEFAULTS.duplicate()
@@ -713,7 +697,6 @@ func _apply() -> bool:
 	records.settings.camera_speed_zoom_strength = draft_speed_zoom_strength
 	records.settings.control_labels = draft_labels
 	records.settings.ghost_mode = draft_ghost
-	records.settings.simple_car_models = draft_simple_models
 	for field: String in draft_graphics: records.settings[field] = draft_graphics[field]
 	records.settings.optional_analytics = draft_analytics
 	for key: String in draft_audio: records.settings[key] = draft_audio[key]

@@ -11,10 +11,12 @@ func run() -> void:
 		if argument.begins_with("--vehicle="): only_vehicle=argument.trim_prefix("--vehicle=")
 	assert(only_vehicle.is_empty() or only_vehicle in VehicleCatalog.IDS)
 	for id: String in VehicleCatalog.IDS:
+		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
 		if not only_vehicle.is_empty() and id!=only_vehicle: continue
 		preload("res://vehicle/prepared_car_cache.gd").enabled=false
 		var car:=CarVisual.new()
 		car.vehicle_id=id
+		car.simple_model=false # Standard exterior references used by wash eligibility.
 		car.livery=VehicleLivery.defaults(id)
 		car.editable_kits=VehicleCustomisation.supported(id)
 		root.add_child(car)
@@ -24,6 +26,7 @@ func run() -> void:
 		preload("res://vehicle/prepared_car_cache.gd").remember(car)
 		var error: Error=cache.bake(car)
 		if error == OK: error = lods.bake(cache.DIRECTORY+id+".scn")
+		if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(cache.DIRECTORY+id+".scn",id)
 		print("GARAGE_CAR_BAKE ",id," ",error)
 		car.free()
 		if error!=OK: quit(1);return

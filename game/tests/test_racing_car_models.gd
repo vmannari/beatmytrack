@@ -96,12 +96,14 @@ func _run() -> void:
 		if not only_vehicle.is_empty() and id!=only_vehicle: continue
 		var control := CarVisual.new()
 		control.vehicle_id = id
+		control.simple_model = false # Explicit offline detailed control.
 		control.batch_parts = false
 		world.add_child(control)
 		while not control.model_ready: await process_frame
 		legacy_batches(control)
 		var detailed := CarVisual.new()
 		detailed.vehicle_id = id
+		detailed.simple_model = false # Explicit offline detailed control.
 		world.add_child(detailed)
 		while not detailed.model_ready: await process_frame
 		var simple := CarVisual.new()
@@ -258,20 +260,20 @@ func _run() -> void:
 	fitted.queue_free()
 	await process_frame
 	var records := LocalRecords.new("user://racing_models_"+TrackLibrary.unique_id()+".json")
-	records.settings.simple_car_models = true
+	records.settings.reduced_car_models = true
 	check(records.save_records() == OK,"local graphics preference saves")
 	var reopened := LocalRecords.new(records.path)
 	reopened.load_records()
-	check(reopened.settings.get("simple_car_models",false) == true,"graphics preference reloads")
-	check(LocalRecords._normalize({"schema":2,"records":{},"settings":{"simple_car_models":"yes"}}).is_empty(),"reject non-boolean graphics preference")
+	check(reopened.settings.get("reduced_car_models",false) == true,"graphics preference reloads")
+	check(LocalRecords._normalize({"schema":2,"records":{},"settings":{"reduced_car_models":"yes"}}).is_empty(),"reject non-boolean graphics preference")
 	var page := SettingsPage.new()
 	page.records = records
 	root.add_child(page)
 	page._show_section("graphics")
-	check(page.draft_simple_models and page.find_child("SimpleCarModels",true,false) != null,"Settings exposes saved graphics toggle")
+	check(page.find_child("SimpleCarModels",true,false)==null,"Graphics omits retired model selector")
 	page._reset()
-	check(not page.draft_simple_models and records.settings.simple_car_models,"graphics reset is staged")
-	check(page._apply() and not records.settings.simple_car_models,"Apply saves disabled option")
+	check(records.settings.reduced_car_models,"Reset leaves retired saved value harmless")
+	check(page._apply() and records.settings.reduced_car_models,"Apply preserves legacy records without a model choice")
 	page.queue_free()
 	for path: String in [records.path,records.path+".bak"]:
 		if FileAccess.file_exists(path): DirAccess.remove_absolute(path)

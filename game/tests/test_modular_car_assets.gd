@@ -27,7 +27,10 @@ func check(ok: bool, message: String) -> void:
 func value_key(value: Variant) -> Variant:
 	if value is Texture2D:
 		var image: Image = value.get_image()
-		return [value.get_class(),value.resource_path,image.get_data().hex_encode().sha256_text() if image != null else "no-image"]
+		# PackedScene rehomes embedded ImageTextures into its own subresource
+		# paths. Compare their complete image identity, not that storage address.
+		var path: String = "embedded-image" if value is ImageTexture and value.resource_path.contains("::") else value.resource_path
+		return [value.get_class(),path,image.get_size() if image != null else Vector2i.ZERO,image.get_format() if image != null else -1,image.has_mipmaps() if image != null else false,image.get_data().hex_encode().sha256_text() if image != null else "no-image"]
 	if value is Resource:
 		return [value.get_class(),value.resource_path]
 	return value
@@ -158,6 +161,8 @@ func make_car(id: String, simple: bool, editable: bool, parts: Dictionary, modul
 	car.livery = VehicleLivery.defaults(id)
 	root.add_child(car)
 	while not car.model_ready: await process_frame
+	for node: Node3D in car.front_wheels+car.rear_wheels+car.rolling_wheels+car.brake_lights:
+		check(is_instance_valid(node) and node.is_inside_tree(),id+" keeps every live wheel/light binding in the tree")
 	return car
 
 func exercise(id: String, simple: bool, editable: bool, parts: Dictionary, label: String) -> void:
@@ -169,7 +174,8 @@ func exercise(id: String, simple: bool, editable: bool, parts: Dictionary, label
 	for category: String in VehicleCustomisation.CATEGORIES:
 		if parts[category] != "stock": fitted_count += 1
 	if simple and fitted_count > 0:
-		check(Base.hits == before and Kits.hits == kit_before,label+" keeps the procedural fitted-shadow fallback")
+		check(Base.hits>before and Kits.hits>=kit_before+fitted_count,label+" uses prepared reduced base and every fitted module")
+		check(prepared.find_children("RaceShadowProxy","MeshInstance3D",true,false).is_empty(),label+" fitted silhouette retains actual casters")
 	else:
 		check(Base.hits > before,label+" uses the baked base")
 		if fitted_count > 0: check(Kits.hits >= kit_before+fitted_count,label+" uses every selected module")
@@ -389,6 +395,7 @@ func test_last_module_rollback() -> void:
 	var expected: Dictionary = shape(control)
 	var descriptor := CarVisual.new()
 	descriptor.vehicle_id = "compact"
+	descriptor.simple_model = false # Match the full-quality control/fallback above.
 	descriptor.editable_kits = true
 	var path: String = Kits.path_for(descriptor,"body",str(parts.body))
 	descriptor.free()

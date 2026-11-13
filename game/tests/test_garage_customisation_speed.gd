@@ -14,6 +14,8 @@ func digest(bytes: PackedByteArray) -> String:
 	hash.update(bytes)
 	return hash.finish().hex_encode()
 func settle() -> void:
+	var page: GaragePage = root.find_child("GaragePage",true,false)
+	while page != null and (page._workbench_focus_pending or (page.showroom != null and page.showroom.get("preparing")==true)): await process_frame
 	for frame: int in range(6): await process_frame
 	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
 func _run() -> void:
@@ -26,23 +28,6 @@ func _run() -> void:
 	for key: String in manifest.meshes:
 		var resource: ArrayMesh = load(CompactKits.ASSET_ROOT.path_join("meshes/"+str(manifest.meshes[key].file)))
 		check(resource!=null and digest(var_to_bytes(resource.surface_get_arrays(0)))==manifest.meshes[key].surface_sha256,"prepared arrays exact "+key)
-	CompactKitThumbnail.images.clear()
-	for category: String in VehicleCustomisation.CATEGORIES:
-		for option: Array in VehicleCustomisation.OPTIONS[category]:
-			var card: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
-			root.add_child(card)
-			check(card.viewport==null,"cold preview needs no car/world: "+category+"/"+str(option[0]))
-			var path: String = CompactKits.ASSET_ROOT.path_join("previews/"+RenderingServer.get_current_rendering_method()+"/"+category+"_"+str(option[0])+".png")
-			var original := Image.new()
-			original.load_png_from_buffer(FileAccess.get_file_as_bytes(path))
-			var imported: Image = card.image.texture.get_image()
-			imported.clear_mipmaps()
-			original.convert(Image.FORMAT_RGBA8)
-			imported.convert(Image.FORMAT_RGBA8)
-			check(original.get_data()==imported.get_data(),"preview pixels exact "+category+"/"+str(option[0]))
-			card.queue_free()
-			await process_frame
-	check(CompactKitThumbnail.images.size()<=16,"preview byte budget retains sixteen images")
 	var folder: String = "user://garage_speed_checks_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var app: Node = load("res://core/app.tscn").instantiate()
@@ -86,6 +71,12 @@ func _run() -> void:
 	check(page.livery_menu!=menu and page.livery_menu.find_child("StickerRoof",true,false)==null,"car switch invalidates physical-panel tools")
 	page.open_car(0)
 	page._show_section("tuning")
+	for category: String in VehicleCustomisation.CATEGORIES:
+		page._select_kit_category(category)
+		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(category,page.vehicle_id).size(),"actual Parts list contains every "+category+" choice")
+		for card: Control in page.kit_cards.get_children():
+			check(card.get_script()==preload("res://ui/garage_part_option.gd") and card.find_children("*","SubViewport",true,false).is_empty(),"actual option is a row without an extra car/world")
+	page._select_kit_category("hood")
 	page._select_kit("hood","louvres")
 	var installed: CarVisual = page.showroom.car
 	page.showroom.apply_customisation(page.kit_draft)

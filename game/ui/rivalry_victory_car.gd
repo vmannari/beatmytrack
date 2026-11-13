@@ -1,7 +1,7 @@
 extends Control
 ## Static transparent render of the player's actual car and local cosmetics.
 var vehicle_id: String = "compact"
-var simple_model: bool = false
+var simple_model: bool = true # Retained widget API; production rendering always uses reduced models.
 var podium_presentation: bool = false
 var fit_to_frame: bool = false
 var cooperative_build: bool = false
@@ -43,7 +43,7 @@ func _ready() -> void:
 	viewport.add_child(world)
 	car = HeaderCarVisual.new() if header_template else CarVisual.new()
 	car.vehicle_id = vehicle_id
-	car.simple_model = simple_model
+	car.simple_model = true
 	car.livery = livery
 	car.customisation = customisation
 	car.cooperative_build = cooperative_build

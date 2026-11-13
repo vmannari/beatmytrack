@@ -9,7 +9,7 @@ static func mesh(value: Mesh) -> int:
 			var arrays: Array = value.surface_get_arrays(surface)
 			bytes += arrays[Mesh.ARRAY_VERTEX].size()*128
 			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*8
-	return bytes
+	return bytes+int(value.get_meta("scenery_lod_bytes",0))+int(value.get_meta("scenery_lod_plan_bytes",0))
 
 static func scene(node: Node, seen: Dictionary = {}, excluded: Dictionary = {}) -> int:
 	if excluded.has(node.get_instance_id()): return 0

@@ -65,14 +65,14 @@ func run() -> void:
 	cloud.root_override = directory.path_join("cloud")
 	root.add_child(cloud)
 	var issued: Dictionary = {"ticket_id":"00000000-0000-4000-8000-000000000001","_submit_key":"pinned-original-key","_race_proof":proof()}
-	check(cloud.queue_run(issued,frames),"durable new job admitted")
+	check((await cloud.queue_run_async(issued,frames)),"durable new job admitted")
 	var runs: String = cloud.outbox_path().get_base_dir().path_join("runs")
 	var path: String = runs.path_join(str(issued.ticket_id).sha256_text()+".job.json")
 	var job: Dictionary = Cloud._read_file(path)
 	check(int(job.wire_options.path) == 1 and job.wire_options.incidents == true,"wire and reward options pinned before first request")
 	var original_recording: String = FileAccess.get_file_as_string(runs.path_join(str(job.replay)))
 	client._capabilities = {"trajectory_verification":true}
-	check(cloud.queue_run(issued,frames),"repeat queue is idempotent after capability change")
+	check((await cloud.queue_run_async(issued,frames)),"repeat queue is idempotent after capability change")
 	check(Cloud._read_file(path).wire_options.path == 1,"repeat queue never replaces original options")
 	var deferred: Dictionary = await cloud._submit_saved(job,path)
 	check(not deferred.ok and deferred.status == 503 and client.requests[-1].path == "/bootstrap","older server defers packed job without sending an unsupported submission")

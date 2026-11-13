@@ -15,7 +15,7 @@ from .product_analytics import (
     journey_projection,
     ordered_journey,
 )
-from .telemetry_models import ProductPlayerDay, ProductProfile, ProductPublication
+from .telemetry_models import ProductLossSource, ProductPlayerDay, ProductProfile, ProductPublication
 from .telemetry_queue import defer, finish, insert_for, write_metrics
 
 
@@ -68,10 +68,26 @@ def project_actor(session, events, owner, at, fact_days):
         day, props = event.occurred_at // DAY, event.properties or {}
         if event.name == "collection_summary":
             quality = dict(profile.quality or {})
+            source_id = props.get("counter_id") or event.install_id or ""
+            source = session.get(ProductLossSource, (event.player_id, source_id))
+            if source is None:
+                # Old projections kept a single maximum with no source identity.
+                # Claim that legacy baseline once; do not re-add historic totals.
+                baseline = {}
+                if "counter_id" not in props and not quality.get("sources_initialized"):
+                    baseline = {key: quality[key] for key in
+                        ("dropped_events", "rejected_events", "persistence_failures") if key in quality}
+                    quality["sources_initialized"] = True
+                source = ProductLossSource(player_id=event.player_id, source_id=source_id, counters=baseline)
+                session.add(source)
+            counters = dict(source.counters or {})
             for key, value in props.items():
-                delta = max(0, value - quality.get(key, 0))
+                if key == "counter_id":
+                    continue
+                delta = max(0, value - counters.get(key, 0))
                 deltas[(day, "reported_" + key, "")] += delta
-                quality[key] = max(value, quality.get(key, 0))
+                counters[key] = max(value, counters.get(key, 0))
+            source.counters = counters
             profile.quality = quality
         prefix = "server_event_" if event.source == "server" and event.name.startswith("challenge_") else "event_"
         deltas[(day, prefix + event.name, "")] += 1

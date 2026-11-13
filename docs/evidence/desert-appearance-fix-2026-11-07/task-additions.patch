@@ -1,0 +1,318 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- DESERT-APPEARANCE-REGRESSION-20261107 -->
++## Desktop Desert appearance restored after a failed scenery script (2026-11-07)
++DAR01/DAR02: Owner log identifies invalid PackedByteArray.sha256_text in the new scenery module, cascading into empty props and failed preparation. Concurrent HashingContext correction was already on disk and is preserved. Owner restarts desktop and confirms objects and road texture both restored. New world14/0 headless,20/0 each desktop renderer; actual App40/0 headless,44/0 each native renderer and shader39/0 pass. Older October deformation comparison retains22/1 headless and28/1 native; no assertion weakened. Private offline tests, native captures and source receipt retained. No device test, APK, backend request, owner-save edit, agent-initiated owner-process restart or main-index write; concurrent work preserved. [Cause, commands, evidence, limits and task-only checkpoint](docs/DESERT_APPEARANCE_REGRESSION_2026_11_07.md).
++<!-- /DESERT-APPEARANCE-REGRESSION-20261107 -->
++
+ <!-- KART-NOTICEABLE-SLIDE-20261107 -->
+ ## Kart corner-entry slide strengthened after PC feedback (2026-11-07)
+ KGS06: Owner reports no perceived change on PC. Kart-17 response0.60to0.50 retains98-140km/h ramp; actual entry peak7.30to8.97degrees and sustained6.64-8.51degrees; at100 only0.006 added degrees.0.40 candidate rejected for turn-speed18/1; original assertion retained, final18/0. Dedicated6377/0, actual Game3613/0, driving72/0, rewind61/0 and three five-lap zero-contact full/resumed replay15/0 pass without script errors. Concurrent scenery PackedByteArray hashing parse blocker corrected with HashingContext; initial failures retained. Sixty kart modules refreshed; prepared468/1925/0 and five-picture157-source checks pass with stable scoped bake sources. [Commands, files, measurements and limits](docs/KART_GRADUAL_SLIDE_2026_11_07.md). Fresh PC launch and owner feel remain; played PC build unverified. No device test, APK, owner-process/save change or deployment. Main index and concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- DESERT-APPEARANCE-REGRESSION-20261107 -->
++## Desktop Desert appearance restored after a failed scenery script (2026-11-07)
++DAR01/DAR02: Owner log identifies invalid PackedByteArray.sha256_text in the new scenery module, cascading into empty props and failed preparation. Concurrent HashingContext correction was already on disk and is preserved. Owner restarts desktop and confirms objects and road texture both restored. New world14/0 headless,20/0 each desktop renderer; actual App40/0 headless,44/0 each native renderer and shader39/0 pass. Older October deformation comparison retains22/1 headless and28/1 native; no assertion weakened. Private offline tests, native captures and source receipt retained. No device test, APK, backend request, owner-save edit, agent-initiated owner-process restart or main-index write; concurrent work preserved. [Cause, commands, evidence, limits and task-only checkpoint](docs/DESERT_APPEARANCE_REGRESSION_2026_11_07.md).
++<!-- /DESERT-APPEARANCE-REGRESSION-20261107 -->
++
+ <!-- KART-NOTICEABLE-SLIDE-20261107 -->
+ ## Kart corner-entry slide strengthened after PC feedback (2026-11-07)
+ KGS06: Owner reports no perceived change on PC. Kart-17 response0.60to0.50 retains98-140km/h ramp; actual entry peak7.30to8.97degrees and sustained6.64-8.51degrees; at100 only0.006 added degrees.0.40 candidate rejected for turn-speed18/1; original assertion retained, final18/0. Dedicated6377/0, actual Game3613/0, driving72/0, rewind61/0 and three five-lap zero-contact full/resumed replay15/0 pass without script errors. Concurrent scenery PackedByteArray hashing parse blocker corrected with HashingContext; initial failures retained. Sixty kart modules refreshed; prepared468/1925/0 and five-picture157-source checks pass with stable scoped bake sources. [Commands, files, measurements and limits](docs/KART_GRADUAL_SLIDE_2026_11_07.md). Fresh PC launch and owner feel remain; played PC build unverified. No device test, APK, owner-process/save change or deployment. Main index and concurrent work preserved.
+--- /dev/null
++++ b/game/tests/test_desert_appearance.gd
+@@ -0,0 +1,115 @@
++extends SceneTree
++## Render the complete Desert world through synchronous, sliced and warm paths.
++var checks: int = 0
++var failures: int = 0
++var folder: String = "res://../docs/evidence/desert-appearance-fix-2026-11-07/"
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ", label)
++
++static func document() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = "desert"; doc["automatic_scenery"] = false
++	var point := Vector2(-28, -18)
++	var heading: float = 0.0
++	for kind: String in ["straight", "hairpin", "straight", "hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind, point, heading)
++		piece.length = 56.0 if kind == "straight" else 0.0; piece.radius = 18.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		point = pose.position; heading = pose.heading
++	doc.objects = []
++	for row: Array in [["egypt_pyramid",-38,0],["egypt_pyramid",38,0],["egypt_obelisk",0,0],["egypt_column",15,3],["egypt_wall",-15,3],["rock",0,26],["slate",8,26],["cliff",-8,26],["chevron",-20,-24],["braking_board",0,-24],["flag",20,-24],["gantry",0,18]]:
++		doc.objects.append({"kind":row[0],"position":[row[1],row[2]],"rotation":0.0,"scale":1.0})
++	var routed: Dictionary = RoadPieces.route_from_pieces(doc)
++	return routed.document
++
++func circuit() -> NativeTrack:
++	var doc: Dictionary = document()
++	check(TrackDocument.validate(doc).is_empty(),"valid authored Desert circuit")
++	return TrackCompiler.compile(doc)
++
++static func pixels(a: Image, b: Image) -> int:
++	var first: PackedByteArray = a.get_data(); var second: PackedByteArray = b.get_data()
++	var changed: int = 0
++	for at: int in range(0,first.size(),4):
++		if maxi(absi(int(first[at])-int(second[at])),maxi(absi(int(first[at+1])-int(second[at+1])),absi(int(first[at+2])-int(second[at+2])))) > 2: changed += 1
++	return changed
++
++func draw() -> Image:
++	for frame: int in range(3):
++		await process_frame
++		RenderingServer.force_draw(false)
++	return root.get_texture().get_image()
++
++func run() -> void:
++	var stage: String = "baseline"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--stage="): stage = argument.trim_prefix("--stage=")
++	folder += stage+"/"+RenderingServer.get_current_rendering_method()+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	root.size = Vector2i(1280,720)
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
++	NativeTrackVisual.PREPARED_WORLDS.entries.clear()
++	var track: NativeTrack = circuit()
++	var canonical: PackedByteArray = var_to_bytes([track.cells,track.deck_cells,track.route,track.metadata,track.content_hash])
++	var world := Node3D.new(); root.add_child(world)
++	var environment := WorldEnvironment.new(); environment.environment = Environment.new(); world.add_child(environment)
++	var light := DirectionalLight3D.new(); light.shadow_enabled = true; world.add_child(light)
++	TrackTheme.apply_lighting("desert",environment.environment,light)
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; world.add_child(camera)
++	camera.current = true
++	for pass_index: int in range(3):
++		var visual := NativeTrackVisual.new()
++		visual.cache_race_world = pass_index > 0
++		visual.persist_road_meshes = false; visual.cache_road_meshes = false
++		visual.preserve_relief_surfaces = true
++		world.add_child(visual)
++		await visual.build(track,BridgePresentation.new(track),pass_index > 0)
++		check(visual.world_built,"world completes pass "+str(pass_index))
++		var props: Array[MeshInstance3D] = []
++		var roads: Array[ShaderMaterial] = []
++		for child: Node in visual.get_children():
++			if child is MeshInstance3D:
++				if child.name.begins_with("EgyptianStonework"): props.append(child)
++				var material: ShaderMaterial = child.material_override as ShaderMaterial
++				if material != null and material.get_shader_parameter("asphalt_surface") == true and material.get_shader_parameter("edge_fringe") != true:
++					roads.append(material)
++		check(not props.is_empty(),"Egyptian scenery retained pass "+str(pass_index))
++		check(not roads.is_empty(),"textured road material retained pass "+str(pass_index))
++		for material: ShaderMaterial in roads:
++			check(material.get_shader_parameter("desert_road_albedo") == NativeTrackVisual.DESERT_ROAD_ALBEDO,"approved road artwork bound pass "+str(pass_index))
++		if DisplayServer.get_name() != "headless":
++			for view: String in ["overview","road","pyramid"]:
++				var target := Vector3.ZERO if view == "overview" else Vector3(0,0,18) if view == "road" else Vector3(-38,0,0)
++				camera.size = 95.0 if view == "overview" else 24.0
++				camera.position = target+Vector3(0,36,27); camera.look_at(target)
++				var before: Image = await draw()
++				before.save_png(folder+"pass%d-%s.png" % [pass_index,view])
++				if view == "pyramid":
++					for prop: MeshInstance3D in props: prop.hide()
++					var after: Image = await draw()
++					var count: int = pixels(before,after)
++					check(count > 1000,"Egyptian props visibly drawn pass "+str(pass_index))
++					rows.append({"pass":pass_index,"prop_pixels":count})
++					for prop: MeshInstance3D in props: prop.show()
++				if view == "road":
++					var flat_image := Image.create(4,4,false,Image.FORMAT_RGBA8); flat_image.fill(Color(0.5,0.5,0.5))
++					var flat := ImageTexture.create_from_image(flat_image)
++					for material: ShaderMaterial in roads: material.set_shader_parameter("desert_road_albedo",flat)
++					var after: Image = await draw()
++					var count: int = pixels(before,after)
++					check(count > 1000,"road artwork contributes visible pixels pass "+str(pass_index))
++					rows.append({"pass":pass_index,"road_texture_pixels":count})
++					for material: ShaderMaterial in roads: material.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
++		visual.free()
++		await process_frame
++	check(canonical == var_to_bytes([track.cells,track.deck_cells,track.route,track.metadata,track.content_hash]),"presentation preserves canonical track data")
++	world.free()
++	FileAccess.open(folder+"report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows},"\t"))
++	print("DESERT_APPEARANCE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_desert_app_appearance.gd
+@@ -0,0 +1,78 @@
++extends SceneTree
++## The actual App must install visible Desert props and road artwork after reload.
++const FIXTURE = preload("res://tests/test_desert_appearance.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String = "res://../docs/evidence/desert-appearance-fix-2026-11-07/app/"
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func draw(game: Node) -> Image:
++	game.paused = false
++	game.hud.pause_menu.hide(); game.hud.message_label.hide()
++	for frame: int in range(3):
++		await process_frame
++		RenderingServer.force_draw(false)
++	return root.get_texture().get_image()
++
++func run() -> void:
++	folder += RenderingServer.get_current_rendering_method()+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	root.size = Vector2i(1280,720)
++	var track: NativeTrack = TrackCompiler.compile(FIXTURE.document())
++	track.metadata.cloud_version = "desert-appearance-offline-fixture"
++	var private_folder: String = "user://desert_appearance"
++	DirAccess.make_dir_recursive_absolute(private_folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(private_folder)
++	app.records = LocalRecords.new(private_folder.path_join("records.json"))
++	app.cloud_root_override = private_folder.path_join("cloud")
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = private_folder.path_join("roads")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	NativeTrackVisual.PREPARED_WORLDS.entries.clear()
++	for pass_index: int in range(2):
++		app._show_screen("tracks"); app.selected_track = track
++		await app._start_race(track,false,true)
++		var game: Node = app.game
++		check(is_instance_valid(game) and game.preparation_complete,"actual App finishes Desert race installation pass "+str(pass_index))
++		if not is_instance_valid(game): break
++		game.set_physics_process(false); game.set_process(false); game.race_cues.hide()
++		check(game.track_ground.world_built,"actual App publishes a complete world pass "+str(pass_index))
++		var props: Array[Node] = game.track_ground.find_children("EgyptianStonework*","MeshInstance3D",true,false)
++		check(not props.is_empty(),"actual App retains authored Egyptian objects pass "+str(pass_index))
++		var roads: Array[ShaderMaterial] = []
++		for child: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
++			var material: ShaderMaterial = child.material_override as ShaderMaterial
++			if material != null and material.get_shader_parameter("asphalt_surface") == true and material.get_shader_parameter("edge_fringe") != true:
++				roads.append(material)
++		check(not roads.is_empty(),"actual App retains the Desert road pass "+str(pass_index))
++		for material: ShaderMaterial in roads:
++			check(material.get_shader_parameter("desert_road_albedo") == NativeTrackVisual.DESERT_ROAD_ALBEDO,"actual App binds approved road artwork pass "+str(pass_index))
++		if DisplayServer.get_name() != "headless":
++			for view: String in ["road","pyramid"]:
++				var at := Vector2(0,-18) if view == "road" else Vector2(-38,0)
++				game.camera.follow(at,Vector2.ZERO,0,0,true)
++				var before: Image = await draw(game)
++				before.save_png(folder+"pass%d-%s.png" % [pass_index,view])
++				if view == "road":
++					var flat_image := Image.create(4,4,false,Image.FORMAT_RGBA8); flat_image.fill(Color(0.5,0.5,0.5))
++					var flat := ImageTexture.create_from_image(flat_image)
++					for material: ShaderMaterial in roads: material.set_shader_parameter("desert_road_albedo",flat)
++				else:
++					for prop: Node3D in props: prop.hide()
++				var after: Image = await draw(game)
++				var count: int = FIXTURE.pixels(before,after)
++				check(count > 1000,"actual App visibly renders "+view+" pass "+str(pass_index))
++				rows.append({"pass":pass_index,"view":view,"pixels":count})
++				for material: ShaderMaterial in roads: material.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
++				for prop: Node3D in props: prop.show()
++		app._leave_race(); await process_frame
++	app.queue_free(); await process_frame
++	FileAccess.open(folder+"report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows},"\t"))
++	print("DESERT_APP_APPEARANCE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/scripts/run_desert_appearance_checks.py
+@@ -0,0 +1,38 @@
++"""Run Desert regression checks with a private offline profile and pinned Godot."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/desert-appearance-fix-2026-11-07"
++name, script, *options = sys.argv[1:]
++OUT.mkdir(parents=True, exist_ok=True)
++profile = ROOT / "tmp/desert-appearance-fix" / name
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--",
++           r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe",
++           "--path", str(ROOT / "game"), "--audio-driver", "Dummy",
++           "--position", "10000,10000", "--script", script, *options]
++start = time.monotonic()
++with (OUT / f"{name}.log").open("w", encoding="utf-8") as log:
++    try:
++        code = subprocess.run(command, env=env, cwd=ROOT, stdout=log,
++                              stderr=subprocess.STDOUT, timeout=300).returncode
++    except subprocess.TimeoutExpired:
++        code = "timeout"
++lines = (OUT / f"{name}.log").read_text(encoding="utf-8").splitlines()
++errors = [line for line in lines
++          if (line.startswith("SCRIPT ERROR:") or line.startswith("ERROR:"))
++          and line != "ERROR: Failed to read the root certificate store."]
++receipt = dict(command=command, exit_code=code, engine_errors=errors,
++               seconds=round(time.monotonic() - start, 3))
++(OUT / f"{name}.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++print(json.dumps(receipt))
++print("\n".join(lines[-25:]))
++sys.exit(0 if code == 0 and not errors else 1)
+--- /dev/null
++++ b/docs/DESERT_APPEARANCE_REGRESSION_2026_11_07.md
+@@ -0,0 +1,53 @@
++# Desktop Desert appearance regression — 2026-11-07
++
++DAR01 identifies the reported desktop failure; DAR02 checks the corrected source in fresh worlds and the actual App. The owner reported missing Desert objects and road texture and confirmed this was the desktop game.
++
++## Cause and source ownership
++
++The owner's desktop log contains `Cannot find member "sha256_text" in base "PackedByteArray"` at `track/scenery_mesh_lods.gd:12`. This prevented the scenery dependency graph from compiling, followed by missing `append_plan`, `prepare_source`, `apply` and `packets` calls, empty prop surfaces and failed spatial preparation. The [retained excerpt](evidence/desert-appearance-fix-2026-11-07/desktop-compile-error.log) records the initial compiler failure and its dependent-script failures. Only the diagnostic excerpt was copied; owner records and track files were not changed.
++
++The concurrent scenery task had already corrected `SceneryMeshLods.signature()` before this investigation inspected it: it uses `HashingContext.HASH_SHA256`, hashes the serialized geometry bytes and returns `finish().hex_encode()`. That correction is preserved and is not attributed to this task. A process that loaded the failed script needs a full game restart to load the corrected dependency graph. The source on disk passed all fresh-process appearance checks below. This task does not add a separate runtime workaround or change the approved artwork.
++
++The log directly establishes the scenery failure. The road-texture complaint was not independently reproduced in fresh processes: the actual bound approved road texture contributes substantial rendered pixels in both tested desktop renderers. After restarting the desktop game, the owner explicitly confirmed **both objects and road texture are restored**. Desktop acceptance for the reported regression is complete.
++
++## Changes
++
++- `game/tests/test_desert_appearance.gd`: valid authored Desert circuit with Egyptian props, rocks, slate, cliff, signs, flag and gantry; synchronous build, sliced first build and prepared-world reuse; artwork binding, actual prop/texture pixel contribution and unchanged canonical track data.
++- `game/tests/test_desert_app_appearance.gd`: fresh actual App startup and first/repeated race installation; complete world, Egyptian geometry, approved road binding and native prop/texture pixel contribution.
++- `scripts/run_desert_appearance_checks.py`: pinned standard 4.7.2 engine, crash-dialog wrapper, private offline APPDATA, Dummy audio, bounded execution, retained logs and command receipts. Nonzero exits and engine errors fail the runner; the sandbox's separately recorded certificate-store error is the only exempt error.
++- This report, source receipt, native pictures and task-only patch. No main Git index write.
++
++## Actual commands and outcomes
++
++Commands run from the repository root. Each invocation has its full command/exit/duration receipt and log in [the evidence folder](evidence/desert-appearance-fix-2026-11-07/).
++
++```powershell
++python scripts/run_desert_appearance_checks.py appearance-baseline-headless res://tests/test_desert_appearance.gd --headless -- --stage=baseline
++python scripts/run_desert_appearance_checks.py appearance-baseline-gl res://tests/test_desert_appearance.gd --rendering-method gl_compatibility -- --stage=baseline
++python scripts/run_desert_appearance_checks.py appearance-baseline-mobile res://tests/test_desert_appearance.gd --rendering-method mobile -- --stage=baseline
++python scripts/run_desert_appearance_checks.py app-headless res://tests/test_desert_app_appearance.gd --headless
++python scripts/run_desert_appearance_checks.py app-gl res://tests/test_desert_app_appearance.gd --rendering-method gl_compatibility
++python scripts/run_desert_appearance_checks.py app-mobile res://tests/test_desert_app_appearance.gd --rendering-method mobile
++python scripts/run_desert_appearance_checks.py final-headless res://tests/test_desert_appearance.gd --headless -- --stage=final
++python scripts/run_desert_appearance_checks.py shader-flags res://tests/test_surface_shader_pruning.gd --headless
++```
++
++| Check | Result |
++|---|---|
++| World, headless baseline and final | 14 checks / 0 failures each |
++| World, Compatibility | 20 / 0 |
++| World, desktop Mobile | 20 / 0 |
++| Actual App, headless | 40 / 0 |
++| Actual App, Compatibility | 44 / 0 |
++| Actual App, desktop Mobile | 44 / 0 |
++| Existing shader-pruning regression | 39 / 0 |
++
++The native world checks exercise three preparation paths per renderer. Compatibility's road-texture control changes 217,533 pixels and Egyptian-prop control changes 113,374 pixels in every path; desktop Mobile gives 154,214 and 95,399 respectively. In the actual Compatibility App, both first and repeated race controls change 183,168 road-texture pixels and 82,909 Egyptian-prop pixels. Both native App runs reach `APP_READY` and two `PLAYGROUND_READY` installations. Native views were inspected, including [the road](evidence/desert-appearance-fix-2026-11-07/app/gl_compatibility/pass0-road.png) and [the pyramid](evidence/desert-appearance-fix-2026-11-07/app/gl_compatibility/pass0-pyramid.png).
++
++## Retained findings and limits
++
++The existing `test_desert_visibility_regression.gd` was also run in private headless and Compatibility profiles with `--evidence=res://../docs/evidence/desert-appearance-fix-2026-11-07/baseline`. It returns **22 / 1** and **28 / 1**, respectively: its exact-array comparison against the archived October 24 deformation script fails. Its current prop retention, actual App cold/warm pyramid visibility and wind-sand gates pass. The failure is retained without weakening its assertion or claiming this investigation resolves that historical comparison.
++
++An initial standard `scripts/dev.ps1 -Action TestScript` invocation could not open the default `user://` log and reported Access denied; it exited 1. Subsequent checks use private offline profiles. The sandbox also denied a read-only process-command-line query; inspection proceeded through the existing desktop log. Fresh test runs retain the certificate-store diagnostic, and graphical App fixtures retain focus/compilation frame-hitch logs; no performance claim is made.
++
++No device test was performed. No APK, deployment, backend request, gameplay/physics change, owner-save edit, agent-initiated owner-process restart or manual cache deletion was performed. The owner restarted the desktop game and confirmed both reported symptoms are resolved. Concurrent scenery/vehicle/ranking work is preserved. Source hashes and task additions are recorded in `evidence/desert-appearance-fix-2026-11-07/source-receipt.json` and `task-additions.patch`.

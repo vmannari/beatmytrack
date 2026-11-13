@@ -1,6 +1,6 @@
 extends SceneTree
 
-const PRESETS = preload("res://vehicle/handling_test_presets.gd")
+const PRESETS = preload("res://tests/fixtures/hover_slide51_reference/presets.gd")
 var checks: int = 0
 var failures: int = 0
 
@@ -14,7 +14,7 @@ func check(ok: bool, description: String) -> void:
 		push_error(description)
 
 func _run() -> void:
-	var baseline := VehicleCatalog.config("hovercraft")
+	var baseline: HandlingConfig = load("res://tests/fixtures/hover_slide51_reference/hovercraft.tres")
 	var old_slide := baseline.duplicate() as HandlingConfig
 	old_slide.steering_rate = 19.0
 	old_slide.maximum_yaw_rate = 2.7

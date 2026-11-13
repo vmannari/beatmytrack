@@ -71,7 +71,7 @@ func run() -> void:
 	var music: Control = preload("res://ui/garage_records_menu.gd").new()
 	music.records = records
 	stage.add_child(music)
-	var shelf: Control = preload("res://ui/garage_cosmetic_shelf.gd").new()
+	var shelf: Control = preload("res://ui/garage_parts_list.gd").new()
 	stage.add_child(shelf)
 	var biomes := HBoxContainer.new()
 	stage.add_child(biomes)
@@ -81,7 +81,8 @@ func run() -> void:
 	var biome_picker := VBoxContainer.new()
 	stage.add_child(biome_picker)
 	biome_owner._choose_biome(biome_picker,true)
-	var part: CompactKitThumbnail = CompactKitThumbnail.make("hood",VehicleCustomisation.OPTIONS.hood[1],true,func() -> void: pass)
+	var part: Button = preload("res://ui/garage_part_option.gd").new()
+	part.setup(1,VehicleCustomisation.OPTIONS.hood[1],VehicleCustomisation.label("hood"),func() -> void: pass)
 	shelf.cards.add_child(part)
 	var album: Control = preload("res://ui/achievements_menu.gd").new()
 	album.service = service
@@ -152,9 +153,9 @@ func run() -> void:
 			check(not catalog.get_message(VehicleCustomisation.LABELS[category]).is_empty(),"part category "+category)
 			for option: Array in VehicleCustomisation.OPTIONS[category]:
 				check(not catalog.get_message(str(option[1])).is_empty(),"part option "+str(option[1]))
-		shelf.show_choice(null,"Twin louvres","Equipped","Owned",1,10)
-		check(text(shelf.title) == GameText.message("Twin louvres").to_upper(),"selected part translates before casing")
-		check(text(part.get_node("KitOptionTitle")) == GameText.message("Twin louvres"),"actual part thumbnail caption")
+		shelf.show_choice("Twin louvres",true,true,0,1,10,"hood")
+		check(shelf.selected_title == GameText.message("Twin louvres"),"selected part translates before casing")
+		check(text(part.title) == GameText.message("Twin louvres").to_upper(),"actual part option caption")
 		await present(shelf,"part-fi" if code == "fi" else "")
 		records.settings.music_enabled = true
 		music._refresh()

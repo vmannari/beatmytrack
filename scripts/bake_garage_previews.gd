@@ -1,6 +1,6 @@
 extends SceneTree
 ## Run with the pinned engine and a graphical renderer. Native game assets only.
-const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
 
 func _sources() -> Dictionary:
 	var sources: Dictionary = {}
@@ -23,6 +23,10 @@ func run() -> void:
 		quit(1)
 		return
 	var folder: String = ProjectSettings.globalize_path("res://assets/garage/previews_v1")
+	var provenance_path: String = folder.path_join("provenance.json")
+	var previous_text: String = FileAccess.get_file_as_string(provenance_path)
+	var previous: Dictionary = JSON.parse_string(previous_text)
+	var protected_hashes: Dictionary = {}
 	DirAccess.make_dir_recursive_absolute(folder)
 	var sources: Dictionary = _sources()
 	var hashes: Dictionary = {}
@@ -30,9 +34,22 @@ func run() -> void:
 	var prepared_scenes: Dictionary = {}
 	for id: String in VehicleCatalog.IDS:
 		geometry_revisions[id]=preload("res://vehicle/modular_car_base.gd").build_revision(id)
-		prepared_scenes[id]=FileAccess.get_sha256("res://assets/garage/cars_v1/"+id+".scn")
+		var reference:=CarVisual.new()
+		reference.vehicle_id=id;reference.simple_model=true
+		reference.editable_kits=VehicleCustomisation.supported(id)
+		prepared_scenes[id]=FileAccess.get_sha256(preload("res://vehicle/modular_car_base.gd").path_for(reference))
+		reference.free()
+		if ("--exclude-vehicle="+id) in OS.get_cmdline_user_args():
+			# Retain an explicitly protected photograph while updating the shared
+			# provenance receipt. Its unchanged model is checked independently.
+			hashes[id] = FileAccess.get_sha256(folder.path_join(id+".png"))
+			protected_hashes[id] = hashes[id]
+			geometry_revisions[id] = previous.geometry_revisions[id]
+			prepared_scenes[id] = previous.prepared_scenes[id]
+			continue
 		var view := preload("res://ui/garage_thumbnail_studio.gd").new()
 		view.vehicle_id = id
+		view.simple_model = true
 		view.read_only = true
 		view.garage_mode = true
 		view.framing_scale = 0.84
@@ -57,6 +74,15 @@ func run() -> void:
 		push_error("Native preview sources changed during the bake; repeat after those edits finish")
 		quit(1)
 		return
-	var output := FileAccess.open(folder.path_join("provenance.json"),FileAccess.WRITE)
-	output.store_string(JSON.stringify({"source":"Dedicated thumbnail studio, full car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"geometry_revisions":geometry_revisions,"prepared_scenes":prepared_scenes,"sources":sources},"\t")+"\n")
+	if FileAccess.get_file_as_string(provenance_path)!=previous_text:
+		push_error("Concurrent preview provenance changed; preserve it and repeat this bake")
+		quit(1)
+		return
+	for id: String in protected_hashes:
+		if protected_hashes[id]!=FileAccess.get_sha256(folder.path_join(id+".png")):
+			push_error("Concurrent protected picture changed; preserve its provenance and repeat")
+			quit(1)
+			return
+	var output := FileAccess.open(provenance_path,FileAccess.WRITE)
+	output.store_string(JSON.stringify({"simple":true,"source":"Dedicated thumbnail studio, reduced car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"geometry_revisions":geometry_revisions,"prepared_scenes":prepared_scenes,"sources":sources},"\t")+"\n")
 	quit()

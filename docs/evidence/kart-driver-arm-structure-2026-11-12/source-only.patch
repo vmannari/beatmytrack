@@ -1,0 +1,442 @@
+diff --git a/game/legal/kart_driver_notices.txt b/game/legal/kart_driver_notices.txt
+index d3f05c8..5d95daa 100644
+--- a/game/legal/kart_driver_notices.txt
++++ b/game/legal/kart_driver_notices.txt
+@@ -18,3 +18,5 @@ Anatomy/contact revision (2026-11-08): sole planes aligned to the actual pedals;
+ Cockpit-fit revision (2026-11-08): torso reclined and curved to the actual back padding; knees spread around the centre fairing; forearm and proximal hand axes aligned, with subdivided gloves and curled fingers around the rim; boots splayed with fitted outsole contact. Original kart controls and seat are unchanged.
+ 
+ Driver refinement (2026-11-12): original Beat my track native helmet replaces the source head/face/helmet imagery; continuous suit shading and seam contrast refined. Six offline steering poses animate the sleeves and gloves with the wheel, retaining supported pelvis, knees and pedal contact. The steering wheel and hand reach move 45 mm toward the driver. Source driver attribution remains.
++
++Arm silhouette correction (2026-11-12): straight upper-arm and forearm shafts, a compact rounded elbow, tapered oval sections, fitted cuffs and local cloth compression folds replace the full-length curved sleeves. Original driver scale, hands, supported body and native helmet remain.
+diff --git a/game/tests/bake_kart_driver_polish.gd b/game/tests/bake_kart_driver_polish.gd
+index 72cbfb4..e5c96a2 100644
+--- a/game/tests/bake_kart_driver_polish.gd
++++ b/game/tests/bake_kart_driver_polish.gd
+@@ -12,13 +12,23 @@ const SIDES: int = 16
+ func _initialize() -> void: run.call_deferred()
+ 
+ func sleeve_center(t: float, shoulder: Vector3, elbow: Vector3, wrist: Vector3) -> Vector3:
+-	var middle: Vector3 = (wrist-shoulder).normalized()*minf(shoulder.distance_to(elbow),elbow.distance_to(wrist))
+-	var u: float = fmod(t*2,1.0) if t < 1 else 1.0
+-	var a: Vector3 = shoulder if t < 0.5 else elbow
+-	var b: Vector3 = elbow if t < 0.5 else wrist
+-	var start: Vector3 = elbow-shoulder if t < 0.5 else middle
+-	var end: Vector3 = middle if t < 0.5 else wrist-elbow
+-	return a*(2*u*u*u-3*u*u+1)+start*(u*u*u-2*u*u+u)+b*(-2*u*u*u+3*u*u)+end*(u*u*u-u*u)
++	# Straight limb shafts meet in a short rounded elbow. Curving both entire
++	# shafts into one spline made the old silhouette read as a rubber hose.
++	var root: Vector3 = shoulder+Vector3(0,-0.010,-0.045)
++	var entry: Vector3 = elbow+(root-elbow).normalized()*0.035
++	var exit: Vector3 = elbow+(wrist-elbow).normalized()*0.035
++	if t <= 0.45: return root.lerp(entry,t/0.45)
++	if t >= 0.55: return exit.lerp(wrist,(t-0.55)/0.45)
++	var u: float = (t-0.45)/0.10
++	return entry*(1-u)*(1-u)+elbow*2*u*(1-u)+exit*u*u
++
++func sleeve_radius(t: float) -> float:
++	# Deltoid, upper arm, elbow, forearm muscle and narrow wrist/cuff.
++	var profile: Array[Vector2] = [Vector2(0,0.064),Vector2(0.12,0.063),Vector2(0.35,0.053),Vector2(0.50,0.046),Vector2(0.62,0.050),Vector2(0.82,0.039),Vector2(0.94,0.033),Vector2(1,0.034)]
++	for index: int in range(profile.size()-1):
++		if t <= profile[index+1].x:
++			return lerpf(profile[index].y,profile[index+1].y,smoothstep(profile[index].x,profile[index+1].x,t))
++	return profile[-1].y
+ 
+ func sleeve(input: float, side: float) -> Array:
+ 	var shoulder: Vector3 = STEERING.mirrored(STEERING.SHOULDER,side)
+@@ -26,6 +36,7 @@ func sleeve(input: float, side: float) -> Array:
+ 	var rotation: Basis = STEERING.wheel_basis(input)*STEERING.REST.inverse()
+ 	var wrist: Vector3 = STEERING.CENTER+rotation*(STEERING.mirrored(STEERING.WRIST,side)-STEERING.SOURCE_CENTER)
+ 	var elbow: Vector3 = STEERING.elbow_for(shoulder,wrist,pole)
++	var outer_elbow: Vector3 = ((elbow-shoulder).normalized()-(wrist-elbow).normalized()).normalized()
+ 	var vertices := PackedVector3Array()
+ 	var reference := PackedVector3Array()
+ 	var uv := PackedVector2Array()
+@@ -34,21 +45,28 @@ func sleeve(input: float, side: float) -> Array:
+ 	for row: int in range(RINGS+1):
+ 		var t: float = float(row)/RINGS
+ 		var point: Vector3 = sleeve_center(t,shoulder,elbow,wrist)
+-		point += Vector3(0,-0.010,-0.045)*(1-smoothstep(0.0,0.25,t))
+ 		var tangent: Vector3 = (sleeve_center(minf(1,t+0.001),shoulder,elbow,wrist)-sleeve_center(maxf(0,t-0.001),shoulder,elbow,wrist)).normalized()
+ 		var across: Vector3 = (Vector3.RIGHT-tangent*tangent.dot(Vector3.RIGHT)).normalized()
+ 		var up: Vector3 = tangent.cross(across).normalized()
+-		var radius: float = lerpf(0.073,0.039,t)+0.004*exp(-pow((t-0.46)/0.14,2))
++		var radius: float = sleeve_radius(t)
+ 		for column: int in range(SIDES+1):
+ 			var a: float = TAU*column/SIDES
+ 			var normal: Vector3 = across*cos(a)+up*sin(a)
+-			var fold: float = 0.0012*sin(t*PI*18)*exp(-pow((t-0.5)/0.13,2))*maxf(0,sin(a))
+-			var cuff: float = 0.0015*exp(-pow((t-0.95)/0.025,2))
+-			vertices.append(point+normal*(radius+fold+cuff))
++			var inner: float = maxf(0,-normal.dot(outer_elbow))
++			var fold: float = (0.003*exp(-pow((t-0.43)/0.024,2))-0.0025*exp(-pow((t-0.49)/0.020,2))+0.002*exp(-pow((t-0.55)/0.025,2)))*inner*inner
++			var elbow_tip: float = 0.004*exp(-pow((t-0.50)/0.055,2))*pow(maxf(0,normal.dot(outer_elbow)),3)
++			var cuff: float = 0.001*exp(-pow((t-0.96)/0.020,2))
++			# The sleeve is slightly flatter across the arm than in its bend plane.
++			var section: Vector3 = across*cos(a)*0.91+up*sin(a)
++			vertices.append(point+section*radius+normal*(fold+elbow_tip+cuff))
+ 			reference.append(normal)
+ 			uv.append(Vector2(float(column)/SIDES,t))
+-			var color: Color = Color("465861").lerp(Color("26343a"),smoothstep(0.88,0.93,t))
+-			colors.append(color.lerp(Color("61767e"),(1-smoothstep(0.14,0.24,t))*smoothstep(0.2,0.8,sin(a))*0.55))
++			var color: Color = Color("465861").lerp(Color("26343a"),smoothstep(0.94,0.97,t))
++			var elbow_panel: float = exp(-pow((t-0.5)/0.09,4))*maxf(0,normal.dot(outer_elbow))*0.55
++			color = color.lerp(Color("354852"),elbow_panel)
++			var seam: float = exp(-pow(wrapf(a-0.35,-PI,PI)/0.08,2))*smoothstep(0.02,0.10,t)*(1-smoothstep(0.88,0.94,t))
++			color = color.lerp(Color("61767e"),seam*0.30)
++			colors.append(color.lerp(Color("61767e"),(1-smoothstep(0.14,0.24,t))*smoothstep(0.2,0.8,sin(a))*0.45))
+ 	for row: int in range(RINGS):
+ 		for column: int in range(SIDES):
+ 			var a: int = row*(SIDES+1)+column
+@@ -127,6 +145,9 @@ func welded_normals(arrays: Array) -> PackedVector3Array:
+ 	return result
+ 
+ func run() -> void:
++	var evidence_root: String = OUT
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	var original: ArrayMesh = load(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
+ 	assert(original != null)
+ 	var neutral := ArrayMesh.new()
+@@ -256,6 +277,6 @@ func run() -> void:
+ 	result.custom_aabb = bounds.grow(0.002)
+ 	result.set_meta("kart_suit_static_vertices",static_vertex_count)
+ 	assert(ResourceSaver.save(result,DEST,ResourceSaver.FLAG_COMPRESS) == OK)
+-	FileAccess.open(OUT+"/bake.json",FileAccess.WRITE).store_string(JSON.stringify({"triangles":result.get_faces().size()/3,"surfaces":result.get_surface_count(),"steering_shapes":result.get_blend_shape_count(),"bounds":str(bounds),"source":FileAccess.get_sha256(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")},"\t"))
++	FileAccess.open(evidence_root+"/bake.json",FileAccess.WRITE).store_string(JSON.stringify({"triangles":result.get_faces().size()/3,"surfaces":result.get_surface_count(),"steering_shapes":result.get_blend_shape_count(),"bounds":str(bounds),"source":FileAccess.get_sha256(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")},"\t"))
+ 	print("KART_DRIVER_POLISH_BAKE ",result.get_faces().size()/3," triangles; ",result.get_surface_count()," materials; ",result.get_blend_shape_count()," steering poses")
+ 	quit()
+diff --git a/game/tests/review_kart_arm_structure.gd b/game/tests/review_kart_arm_structure.gd
+new file mode 100644
+index 0000000..eb6dcab
+--- /dev/null
++++ b/game/tests/review_kart_arm_structure.gd
+@@ -0,0 +1,59 @@
++extends SceneTree
++## Offline source/pose preview; never reads owner records or contacts the backend.
++const OUT: String = "res://../docs/evidence/kart-driver-arm-structure-2026-11-12"
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var before: bool = "--before" in OS.get_cmdline_user_args()
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	var imported := MeshInstance3D.new()
++	var path: String = OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res" if before else "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res"
++	imported.mesh = load(path)
++	assert(imported.mesh != null)
++	if DisplayServer.get_name() == "headless":
++		imported.free()
++		quit()
++		return
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(1100,850)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var world := Node3D.new()
++	viewport.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "kart"
++	car.simple_model = "--simple" in OS.get_cmdline_user_args()
++	car.batch_parts = prepared
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	if not prepared:
++		# Preview the imported driver in the real kart before replacing production.
++		for child: Node in car.body.get_children():
++			var label: String = str(child.name)
++			if label.begins_with("TailoredRaceSuit") or label.begins_with("Collar") or label.begins_with("Balaclava") or label.begins_with("Suit") or label.begins_with("ContinuousTrouser") or label.begins_with("RaceBoot") or label.begins_with("BootSole") or label.begins_with("UpperSleeve") or label.begins_with("Sleeve") or label.begins_with("RacingGlove") or label.begins_with("GloveGrip") or label.begins_with("TrouserKnee") or label == "HelmetMount" or label == "TomkartDriver":
++				child.queue_free()
++		car.body.add_child(imported)
++	else:
++		imported.free()
++		var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
++		assert(driver != null and driver.mesh.get_blend_shape_count() == 6)
++		assert(preload("res://vehicle/modular_car_base.gd").hits > 0)
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	world.add_child(camera)
++	camera.current = true
++	camera.fov = 32
++	for shot: Array in [["front",Vector3(-1.8,1.35,-2.7),Vector3(0,.57,-.12)], ["side",Vector3(-2.3,.82,.15),Vector3(0,.53,-.12)], ["side-right",Vector3(2.3,.82,.15),Vector3(0,.53,-.12)], ["rear",Vector3(1.8,1.2,2.3),Vector3(0,.57,0)], ["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)], ["feet",Vector3(1.1,.63,-1.3),Vector3(0,.27,-.83)], ["body",Vector3(1.1,.87,-.9),Vector3(0,.68,-.015)], ["knees",Vector3(0,1.6,-1.2),Vector3(0,.44,-.43)], ["wrists",Vector3(1.0,.95,-.9),Vector3(0,.56,-.25)], ["backrest",Vector3(1.25,.70,.35),Vector3(0,.49,.22)]]:
++		camera.position = shot[1]
++		camera.look_at(shot[2])
++		for frame: int in range(6):
++			await process_frame
++			await RenderingServer.frame_post_draw
++		assert(viewport.get_texture().get_image().save_png(OUT+("/cached-" if prepared else "/before-" if before else "/after-")+shot[0]+".png") == OK)
++	viewport.free()
++	quit()
+diff --git a/game/tests/review_kart_arm_structure.gd.uid b/game/tests/review_kart_arm_structure.gd.uid
+new file mode 100644
+index 0000000..a538af0
+--- /dev/null
++++ b/game/tests/review_kart_arm_structure.gd.uid
+@@ -0,0 +1 @@
++uid://2aegketwonj6
+diff --git a/game/tests/test_kart_arm_structure.gd b/game/tests/test_kart_arm_structure.gd
+new file mode 100644
+index 0000000..9a69a0d
+--- /dev/null
++++ b/game/tests/test_kart_arm_structure.gd
+@@ -0,0 +1,68 @@
++extends SceneTree
++## KAR01/KAR02: actual native shafts, elbow/cuff volume and unchanged controls.
++const OUT: String = "res://../docs/evidence/kart-driver-arm-structure-2026-11-12"
++const PATH: String = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res"
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("ARM_STRUCTURE_FAIL ",label)
++
++func ring(points: PackedVector3Array, offset: int, row: int) -> Vector3:
++	var sum := Vector3.ZERO
++	for index: int in range(16): sum += points[offset+row*17+index]
++	return sum/16
++
++func deviation(point: Vector3, a: Vector3, b: Vector3) -> float:
++	return (point-a).cross(b-a).length()/a.distance_to(b)
++
++func run() -> void:
++	var before: ArrayMesh = load(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++	var after: ArrayMesh = load(PATH)
++	var mesh: ArrayMesh = before if "--before" in OS.get_cmdline_user_args() else after
++	check(after.get_faces().size() == before.get_faces().size(),"same driver triangle budget")
++	check(after.get_blend_shape_count() == before.get_blend_shape_count(),"same six steering targets")
++	var static_count: int = int(mesh.get_meta("kart_suit_static_vertices"))
++	for surface: int in range(mesh.get_surface_count()):
++		var material: Material = mesh.surface_get_material(surface)
++		var arrays: Array = mesh.surface_get_arrays(surface)
++		var old_arrays: Array = before.surface_get_arrays(surface)
++		var points: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		if material.resource_name != "RT_DriverSuit":
++			check(arrays == old_arrays,"unchanged helmet/gloves/trim/hardware "+material.resource_name)
++			check(mesh.surface_get_blend_shape_arrays(surface) == before.surface_get_blend_shape_arrays(surface),"unchanged non-sleeve steering targets "+material.resource_name)
++			continue
++		var stable: bool = true
++		for attribute: int in [Mesh.ARRAY_VERTEX,Mesh.ARRAY_NORMAL,Mesh.ARRAY_TEX_UV,Mesh.ARRAY_COLOR]:
++			for index: int in range(static_count): stable = stable and arrays[attribute][index] == old_arrays[attribute][index]
++		check(stable,"torso, legs, soles and centre seam remain byte-exact decoded attributes")
++		var poses: Array[PackedVector3Array] = [points]
++		for shape: Array in mesh.surface_get_blend_shape_arrays(surface): poses.append(shape[Mesh.ARRAY_VERTEX])
++		for pose: int in range(poses.size()):
++			for side: int in range(2):
++				var vertices: PackedVector3Array = poses[pose]
++				var offset: int = static_count+side*21*17
++				var upper_a: Vector3 = ring(vertices,offset,1)
++				var upper_b: Vector3 = ring(vertices,offset,8)
++				var lower_a: Vector3 = ring(vertices,offset,12)
++				var lower_b: Vector3 = ring(vertices,offset,19)
++				var upper_bow: float = 0
++				var lower_bow: float = 0
++				for row: int in range(2,8): upper_bow = maxf(upper_bow,deviation(ring(vertices,offset,row),upper_a,upper_b))
++				for row: int in range(13,19): lower_bow = maxf(lower_bow,deviation(ring(vertices,offset,row),lower_a,lower_b))
++				check(upper_bow < 0.001 and lower_bow < 0.001,"upper arm and forearm each retain a straight anatomical shaft")
++				var angle: float = rad_to_deg((upper_b-upper_a).angle_to(lower_b-lower_a))
++				check(angle > 20 and angle < 120,"bend is concentrated at a believable elbow angle")
++				var radii: Array[float] = []
++				for row: int in [3,10,13,19]:
++					var center: Vector3 = ring(vertices,offset,row)
++					var sum: float = 0
++					for index: int in range(16): sum += center.distance_to(vertices[offset+row*17+index])
++					radii.append(sum/16)
++				check(radii[3] < radii[2]*0.8 and radii[1] < radii[0]*0.9,"wrist tapers and elbow has a distinct fitted section")
++				measurements.append({"pose":pose,"side":side,"upper_bow_mm":upper_bow*1000,"forearm_bow_mm":lower_bow*1000,"elbow_degrees":angle,"section_radii":radii})
++	FileAccess.open(OUT+("/structure-before.json" if "--before" in OS.get_cmdline_user_args() else "/structure-after.json"),FileAccess.WRITE).store_string(JSON.stringify(measurements,"\t"))
++	print("KART_ARM_STRUCTURE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_kart_arm_structure.gd.uid b/game/tests/test_kart_arm_structure.gd.uid
+new file mode 100644
+index 0000000..dba1207
+--- /dev/null
++++ b/game/tests/test_kart_arm_structure.gd.uid
+@@ -0,0 +1 @@
++uid://ck06ivebnyrc0
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+index 29be76a..68fb9f1 100644
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -435,3 +435,5 @@ The torso is fitted to the actual backrest, wrists use aligned forearm/palm axes
+ The tomkart-derived garment, gloves and boots retain CC BY 4.0 attribution. The source head, face and helmet surfaces and all their photographic imagery are replaced by the original Beat my track shaped helmet shell, opaque visor, lining, vents and hardware from `kart_helmet.gd`. Six native morph poses follow the steering wheel. The established seated scale, support and pedal fit are retained; wheel and hand reach move 45 mm rearward for turning clearance. Native matte garment shading and a quieter centre seam replace the earlier static finish. No new raster artwork is generated. Sources, native views and verification: `docs/KART_DRIVER_POLISH_2026_11_12.md`.
+ 
+ The final body is reconstructed from the existing posed source garment with the sleeve sections omitted before the union. New curved sleeves retain volume through the six poses; source boot soles and fitted seam remain. The final native driver is 12,048 triangles / six materials.
++
++Owner arm correction (2026-11-12): the original Beat my track sleeve geometry now uses straight upper-arm/forearm sections with concentrated elbow bending, tapered oval cross-sections, cuffs and local compression folds. The six steering poses and tomkart attribution remain. See `docs/KART_DRIVER_ARM_STRUCTURE_2026_11_12.md`.
+diff --git a/scripts/rebuild_kart_arm_structure.py b/scripts/rebuild_kart_arm_structure.py
+new file mode 100644
+index 0000000..02c52b2
+--- /dev/null
++++ b/scripts/rebuild_kart_arm_structure.py
+@@ -0,0 +1,85 @@
++"""Ordered native refresh with exact source/revision fences and private profiles."""
++from concurrent.futures import ThreadPoolExecutor
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/kart-driver-arm-structure-2026-11-12"
++WORK = ROOT / "build/kart-driver-arm-structure-2026-11-12"
++RUNNER = ROOT / "scripts/run_kart_arm_structure.py"
++
++
++def run(name, script, *args):
++    subprocess.run([sys.executable, str(RUNNER), name, script, *args], cwd=ROOT,
++                   check=True, stdout=subprocess.DEVNULL)
++    print(name, "passed", flush=True)
++
++
++def identity(name):
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
++               "$ErrorActionPreference='Stop'; . ./scripts/build_identity.ps1; "
++               "Write-ClientBuildIdentity (Get-Location).Path 'build/kart-driver-arm-structure-2026-11-12/identity'"]
++    with (OUT / f"{name}.log").open("w", encoding="utf-8") as log:
++        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    data = json.loads((WORK / "identity/client-build-identity.json").read_text(encoding="utf-8-sig"))
++    (OUT / f"{name}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
++    return data
++
++
++def sources():
++    files = []
++    for folder in ("game/vehicle", "game/resources", "game/ui", "game/track"):
++        files.extend(p for p in (ROOT / folder).rglob("*")
++                     if p.suffix in (".gd", ".tres", ".json", ".gdshader", ".gdshaderinc"))
++    files.extend(p for p in (ROOT / "game/assets/vehicles").rglob("*")
++                 if p.is_file() and p.suffix in (".res", ".json", ".png")
++                 and "modular_car_bases_v1" not in p.parts and "modular_kits_v1" not in p.parts
++                 and p.name != "manifest.json")
++    files.extend(p for p in (ROOT / "game/assets/liveries").rglob("*") if p.suffix in (".png", ".svg", ".json"))
++    files.extend(ROOT / f for f in ("scripts/build_identity.ps1", "scripts/garage_preview_identity.ps1",
++                                    "scripts/prepared_asset_identity.ps1", "godot-version.txt"))
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
++
++
++def main():
++    OUT.mkdir(parents=True, exist_ok=True)
++    identity("identity-for-art")
++    for name, script in (("art-bases", "bake_modular_car_bases"), ("art-kits", "bake_modular_car_kits"),
++                         ("art-garage", "bake_garage_cars")):
++        run(name, "res://tests/" + script + ".gd", "--headless", "--", "--vehicle=kart")
++    run("catalogue-art", "res://tests/test_kart_refinement_ui.gd", "--rendering-method", "gl_compatibility",
++        "--", "--bake-art", "--evidence-root=res://../docs/evidence/kart-driver-arm-structure-2026-11-12/catalogue")
++    run("news-art", "res://tests/bake_news_car_photos.gd", "--rendering-method", "gl_compatibility", "--",
++        "--vehicle=kart", "--evidence-root=res://../docs/evidence/kart-driver-arm-structure-2026-11-12/news")
++    run("livery-art", "res://tests/bake_livery_previews.gd", "--rendering-method", "gl_compatibility", "--", "--vehicle=kart")
++    run("header-art", "res://tests/bake_kart_finishing_art.gd", "--rendering-method", "gl_compatibility", "--", "--header-only")
++    before = sources()
++    first = identity("identity-final-before")
++    (OUT / "refresh-inputs.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++    run("final-all-bases", "res://tests/bake_modular_car_bases.gd", "--headless")
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(run, "final-kits-" + car, "res://tests/bake_modular_car_kits.gd",
++                            "--headless", "--", "--vehicle=" + car)
++                for car in ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")]
++        for job in jobs:
++            job.result()
++    run("final-all-garage", "res://tests/bake_garage_cars.gd", "--headless")
++    run("final-header-template", "res://tests/bake_header_simple_compact.gd", "--headless")
++    run("final-garage-pictures", "res://../scripts/bake_garage_previews.gd", "--rendering-method", "gl_compatibility")
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    (OUT / "refresh-source-receipt.json").write_text(json.dumps({"input_count": len(before), "changed": changed}, indent=2))
++    assert not changed, "Sources changed during final native refresh"
++    final = identity("identity-final-after")
++    assert first["modular_car_sha256"] == final["modular_car_sha256"], "Prepared geometry fingerprints changed"
++    run("prepared-preflight", "res://tests/check_prepared_assets.gd", "--headless")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    print("KART_DRIVER_REFRESH: stable sources and both strict preflights passed", flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/run_kart_arm_structure.py b/scripts/run_kart_arm_structure.py
+new file mode 100644
+index 0000000..9937737
+--- /dev/null
++++ b/scripts/run_kart_arm_structure.py
+@@ -0,0 +1,75 @@
++"""Pinned Godot runner for the offline driver adaptation and native captures.
++
++The standard dev.ps1 entry point kills native tests on the Windows certificate
++store diagnostic. This bounded runner retains that diagnostic in the log.
++"""
++import json
++import os
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/kart-driver-arm-structure-2026-11-12"
++
++
++def main():
++    name, script, *options = sys.argv[1:]
++    project_root = Path(os.environ.get("BMT_DRIVER_PROJECT_ROOT", str(ROOT))).resolve()
++    if not project_root.is_relative_to(ROOT):
++        raise ValueError("Driver review project must stay within this workspace")
++    OUT.mkdir(parents=True, exist_ok=True)
++    profile = ROOT / ("build/kart-driver-arm-structure-2026-11-12/profile" if project_root == ROOT else "build/kart-driver-arm-structure-2026-11-12/profile-frozen")
++    for folder in [profile / "roaming", profile / "local"]:
++        folder.mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"),
++               LOCALAPPDATA=str(profile / "local"), BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++    engine = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
++    actual = subprocess.check_output([sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine, "--version"], text=True).strip()
++    assert actual == (project_root / "godot-version.txt").read_text().strip(), actual
++    command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", engine,
++               "--path", str(project_root / "game"), "--audio-driver", "Dummy", "--position", "10000,10000"]
++    command += (["--editor", "--headless", "--import", "--quit"] if script == "@import"
++                else ["--script", script])
++    command += options
++    started = time.monotonic()
++    with (OUT / (name + ".log")).open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
++                                   stderr=subprocess.STDOUT)
++        (OUT / (name + "-process.json")).write_text(json.dumps({"pid": process.pid, "command": command}), encoding="utf-8")
++        try:
++            while process.poll() is None:
++                time.sleep(0.1)
++                output = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
++                if "SCRIPT ERROR:" in output:
++                    stopped = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                                             stdout=log, stderr=subprocess.STDOUT, check=False)
++                    if stopped.returncode:
++                        # A parse failure may have exited between poll and kill.
++                        try:
++                            process.wait(timeout=5)
++                        except subprocess.TimeoutExpired as error:
++                            raise RuntimeError(f"Cannot stop owned failed test PID {process.pid}; explicit process cleanup required") from error
++                    break
++                if time.monotonic() - started > 900:
++                    raise subprocess.TimeoutExpired(command, 900)
++            code = process.wait()
++        except subprocess.TimeoutExpired:
++            # Kill only this runner's owned child tree, including native Godot.
++            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                           stdout=log, stderr=subprocess.STDOUT, check=False)
++            code = 124
++    lines = (OUT / (name + ".log")).read_text(encoding="utf-8").splitlines()
++    errors = [line for line in lines if line.startswith(("ERROR:", "SCRIPT ERROR:"))
++              and line != "ERROR: Failed to read the root certificate store."]
++    receipt = dict(command=command, exit_code=code, errors=errors,
++                   seconds=round(time.monotonic() - started, 3), engine=actual)
++    (OUT / (name + ".json")).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(receipt))
++    print("\n".join(lines[-18:]))
++    return int(code != 0 or bool(errors))
++
++
++if __name__ == "__main__":
++    sys.exit(main())

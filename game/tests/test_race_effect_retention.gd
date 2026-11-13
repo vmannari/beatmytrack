@@ -1,0 +1,67 @@
+extends "res://tests/test_selective_scenery_budget.gd"
+## Complete draw preparation survives cheaper, independent road-cache eviction.
+const Effects = preload("res://vehicle/effect_render_preparation.gd")
+const Pool = preload("res://vehicle/effect_preparation_pool.gd")
+var policy: GDScript = Memory
+
+func run() -> void:
+	if "--control" in OS.get_cmdline_user_args():
+		policy = load("res://../docs/evidence/loading-half-2026-11-06/race/editor_memory.before.gd")
+	Worlds.trim_cache(); NativeTrackVisual.trim_editor_cache()
+	var owner := Existing.MemoryOwner.new(); root.add_child(owner)
+	var visual := NativeTrackVisual.new(); root.add_child(visual)
+	var shared: ArrayMesh = mesh(3)
+	var part := MeshInstance3D.new(); part.mesh = shared; visual.add_child(part)
+	var track := NativeTrack.new(); track.metadata = {"theme":"winter"}
+	Worlds.remember(["effect-retention","visual","contact","props","winter",[],true],visual,track)
+	var environment := Environment.new(); var sun := DirectionalLight3D.new()
+	TrackTheme.apply_lighting("winter",environment,sun)
+	var sky: Sky = environment.sky
+	var pool := Pool.new(); pool.name = Effects.POOL_NAME; owner.add_child(pool)
+	var proxies: Array[GPUParticles3D] = []
+	for index: int in range(4):
+		var particles := GPUParticles3D.new()
+		particles.set_meta("preparation_key","CoveredFixture"+str(index))
+		pool.measure(particles); pool.put(particles,true); proxies.append(particles)
+	var proxy_bytes: int = pool.bytes
+	var independent: ArrayMesh = mesh(3000)
+	NativeTrackVisual._road_mesh_cache.assign([
+		{"key":["shared"],"meshes":[{"mesh":shared}],"bytes":288,"geometry_key":"shared"},
+		{"key":["independent"],"meshes":[{"mesh":independent}],"bytes":288000,"geometry_key":"independent"}])
+	Roads.account_gpu(NativeTrackVisual._road_mesh_cache)
+	var data := PackedByteArray(); data.resize(512*1024)
+	Roads.section_write("clip/old",data); Roads.section_write("piece/new",data)
+	var before: Dictionary = policy.retained(owner)
+	# Inflate only the reservation to exercise the unchanged real allowance.
+	# The required release exceeds all CPU sections, so both cheaper tiers run.
+	Worlds.entries[0].bytes += policy.RETAINED_BUDGET-int(before.retained_bytes)+int(before.road_section_bytes)+100000
+	check(policy.retained(owner).retained_bytes>policy.RETAINED_BUDGET,"fixture actually requires ordinary arbitration")
+	var manager: RefCounted = policy.new(); manager.tick(owner)
+	check(Roads.residency().sections==0,"CPU intermediates retire before completed effect preparation")
+	check(NativeTrackVisual._road_mesh_cache.size()==1 and NativeTrackVisual._road_mesh_cache[0].geometry_key=="shared","independent road buffers retire before completed effect preparation")
+	check(Worlds.entries.size()==1 and TrackTheme.winter_reflection_sky==sky,"completed scene and exact Winter sky stay available")
+	check(pool.entries.size()==4 and pool.bytes==proxy_bytes and pool.retaining,"all initialized effect proxies survive cheaper road eviction")
+	check(proxies.all(func(particle: Variant) -> bool: return is_instance_valid(particle) and particle.get_parent()==pool and not particle.visible),"exact hidden proxy identities are retained")
+	check(policy.retained(owner).retained_bytes<=policy.RETAINED_BUDGET,"retained resources meet the unchanged allowance")
+	# If private roads cannot satisfy a later excess, proxies remain evictable.
+	Worlds.entries[0].bytes += policy.RETAINED_BUDGET-int(policy.retained(owner).retained_bytes)+100000
+	manager.next_sample=0; manager.tick(owner)
+	check(Worlds.entries.size()==1 and pool.entries.size()<4 and pool.retaining,"residual excess still evicts idle proxies before completed scenery")
+	check(policy.retained(owner).retained_bytes<=policy.RETAINED_BUDGET,"residual arbitration meets the same allowance")
+	if pool.entries.is_empty():
+		var replacement := GPUParticles3D.new()
+		replacement.set_meta("preparation_key","PressureFixture")
+		pool.measure(replacement); pool.put(replacement,true)
+	var in_flight: GPUParticles3D = pool.take(str(pool.entries.back().label))
+	in_flight.reparent(visual,false)
+	manager.pressure_requested=true; manager.next_sample=0; manager.tick(owner)
+	check(Worlds.entries.is_empty() and pool.entries.is_empty() and not pool.retaining,"real pressure clears optional scenery and suppresses proxy returns")
+	check(is_instance_valid(in_flight) and in_flight.get_parent()==visual,"pressure preserves a currently borrowed preparation node")
+	pool.put(in_flight,true)
+	check(not is_instance_valid(in_flight) and pool.entries.is_empty(),"in-flight return cannot republish after pressure")
+	check(TrackTheme.winter_reflection_sky==null and environment.sky==sky,"pressure drops only cached sky ownership")
+	check(part.mesh==shared and part.visible,"live scene geometry remains exact after both kinds of trim")
+	check(policy.RETAINED_BUDGET==64*1024*1024 and Roads.BUDGET==32*1024*1024 and Worlds.MAX_BYTES==64*1024*1024 and Pool.MAX_BYTES==12*1024*1024,"no retention budgets increase")
+	owner.free(); visual.free(); sun.free(); environment.sky=null; NativeTrackVisual.trim_editor_cache()
+	print("RACE_EFFECT_RETENTION ",checks," checks, ",failures," failures")
+	quit(1 if failures else 0)

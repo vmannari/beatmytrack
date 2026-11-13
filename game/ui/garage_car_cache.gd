@@ -8,8 +8,8 @@ static var hits: int=0
 static var source_hashes: Dictionary={}
 
 static func geometry_key(car: CarVisual) -> Array:
-	var config: HandlingConfig=VehicleCatalog.config(car.vehicle_id)
-	return [SCHEMA,Engine.get_version_info().string,preload("res://vehicle/modular_car_base.gd").build_revision(car.vehicle_id),car.vehicle_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+	var config: HandlingConfig=VehicleCatalog.config(car.model_id)
+	return [SCHEMA,Engine.get_version_info().string,preload("res://vehicle/modular_car_base.gd").build_revision(car.model_id),car.model_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
 static func geometry_sources(id: String="compact") -> Dictionary:
 	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes(id)
@@ -18,15 +18,15 @@ static func geometry_sources(id: String="compact") -> Dictionary:
 
 static func restore(car: CarVisual) -> bool:
 	if not enabled or car.simple_model or car.customisation!=VehicleCustomisation.defaults(): return false
-	var path: String=DIRECTORY+car.vehicle_id+".scn"
+	var path: String=DIRECTORY+car.model_id+".scn"
 	if not ResourceLoader.exists(path): return false
 	var scene: PackedScene=load(path)
 	var holder: Node3D=scene.instantiate()
 	var data: Dictionary=holder.get_meta("garage_rest",{})
 	if OS.has_feature("editor") and FileAccess.file_exists("res://vehicle/car_visual.gd"):
 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
-		if not source_hashes.has(car.vehicle_id): source_hashes[car.vehicle_id]=validation.runtime_hashes(car.vehicle_id)
-		if validation.runtime_projection(data.get("sources",{}))!=source_hashes[car.vehicle_id]:
+		if not source_hashes.has(car.model_id): source_hashes[car.model_id]=validation.runtime_hashes(car.model_id)
+		if validation.runtime_projection(data.get("sources",{}))!=source_hashes[car.model_id]:
 			holder.free()
 			return false
 	if data.get("key",[])!=geometry_key(car):
@@ -73,7 +73,7 @@ static func bake(car: CarVisual) -> Error:
 			saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(index))
 			saved.surface_set_material(index,node.mesh.surface_get_material(index))
 		node.mesh=saved
-	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(car.vehicle_id),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
+	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(car.model_id),"key":geometry_key(car),"vehicle":car.model_id,"editable":car.editable_kits,
 		"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,
 		"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field]=entry[field]
@@ -89,6 +89,6 @@ static func bake(car: CarVisual) -> Error:
 	var error: Error=scene.pack(holder)
 	if error==OK:
 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
-		error=ResourceSaver.save(scene,DIRECTORY+car.vehicle_id+".scn",ResourceSaver.FLAG_COMPRESS)
+		error=ResourceSaver.save(scene,DIRECTORY+car.model_id+".scn",ResourceSaver.FLAG_COMPRESS)
 	holder.free()
 	return error

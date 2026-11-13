@@ -76,8 +76,6 @@ class Host extends Node:
 	func _open_account() -> void: action = "account"
 	func _open_race_area() -> void: action = "race"
 	func _new_document() -> void: action = "create"
-	func _open_profile_tracks() -> void: action = "tracks"
-	func _open_profile_achievements(family: String = "") -> void: action = "achievement:"+family
 	func _open_published_track(entry: Dictionary) -> void: action = str(entry.get("track_id",""))
 
 func _initialize() -> void: run.call_deferred()

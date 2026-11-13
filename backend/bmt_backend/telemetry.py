@@ -24,7 +24,7 @@ POLICY = "bmt-product-telemetry-v1"
 SCHEMA = "bmt-product-events-v1"
 MAX_EVENTS, MAX_BYTES = 50, 65536
 MAX_AGE, FUTURE_ALLOWANCE = 7 * 86400, 300
-CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"}
+CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft", "super_rally"}
 BIOMES = {"pine", "desert", "night_city", "winter", "storm"}
 PRODUCTS = {"creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"}
 SERVER_NAMES = {"race_accepted", "creator_validated", "track_published", "challenge_created", "challenge_joined"}
@@ -43,7 +43,7 @@ ALLOWED = {
     "publish_requested": {"biome", "reason"},
     "challenge_opened": {"challenge_id", "reason"}, "challenge_joined": {"challenge_id", "reason"},
     "challenge_created": {"challenge_id", "reason"}, "share_clicked": {"challenge_id", "reason"},
-    "collection_summary": {"dropped_events", "rejected_events", "persistence_failures"},
+    "collection_summary": {"dropped_events", "rejected_events", "persistence_failures", "counter_id"},
     "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
 }
 ALLOWED.update(quality.FIELDS)
@@ -99,7 +99,9 @@ def properties(name, value):
         if name in quality.NAMES and key != "track_version_id":
             result[key] = item
             continue
-        if key in ("track_version_id", "ticket_id", "challenge_id"):
+        if key == "counter_id":
+            item = uuid_value(item, version=4)
+        elif key in ("track_version_id", "ticket_id", "challenge_id"):
             item = uuid_value(item)
         elif key == "car_id":
             if item not in CARS:
@@ -187,7 +189,8 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
         raise HTTPException(503, "TELEMETRY_DISABLED")
     if batch.schema_version != SCHEMA or batch.purpose_policy != POLICY:
         raise HTTPException(422, "UNSUPPORTED_TELEMETRY_CONTRACT")
-    if len(json.dumps(batch.model_dump(), separators=(",", ":")).encode()) > MAX_BYTES:
+    if len(json.dumps(batch.model_dump(by_alias=True, exclude_unset=True),
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_BYTES:
         raise HTTPException(413, "TELEMETRY_BATCH_TOO_LARGE")
     for optional in (batch.batch_id, batch.install_id):
         if optional is not None:

@@ -128,7 +128,9 @@ func run() -> void:
 		var loaded: int = 0
 		for sample: int in range(3):
 			var began: int = Time.get_ticks_usec()
-			loaded = history_cloud.upload_jobs().size()
+			loaded = 0
+			for history_page: int in range((population+99)/100):
+				loaded += (await history_cloud.upload_history(history_page)).size()
 			samples.append(float(Time.get_ticks_usec()-began)/1000.0)
 		var began: int = Time.get_ticks_usec()
 		await history_cloud.flush_outbox()

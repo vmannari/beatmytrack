@@ -58,6 +58,13 @@ class ProductEvent(Base):
     credit_bucket: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class ProductLossSource(Base):
+    __tablename__ = "product_loss_sources"
+    player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    counters: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class ProductPlayerDay(Base):
     __tablename__ = "product_player_days"
     day: Mapped[int] = mapped_column(Integer, primary_key=True)

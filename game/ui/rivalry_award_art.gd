@@ -28,10 +28,6 @@ func laurel_geometry() -> Dictionary:
 func crown_rect() -> Rect2:
 	return Rect2(size.x*0.5-13,1,26,17.3333) if badge else Rect2(size.x*0.5-24,crown_center_y-12,48,32)
 
-func crown_geometry() -> PackedVector2Array:
-	var rect: Rect2 = crown_rect()
-	return PackedVector2Array([rect.position,Vector2(rect.end.x,rect.position.y),rect.end,Vector2(rect.position.x,rect.end.y)])
-
 func _draw() -> void:
 	if tier == 0: return
 	var geometry: Dictionary = laurel_geometry()

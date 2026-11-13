@@ -15,11 +15,25 @@ from .rivalry import active_contract, week_window
 from .rivalry_models import RivalryBest, RivalryGroup, RivalryMember
 from .runs import board_manifest
 from .security import digest as token_digest
-from .track_models import Board, PersonalBest, Run, RunTicket, Track, TrackVersion, digest, now
+from .track_models import (
+    Board,
+    PersonalBest,
+    Run,
+    RunTicket,
+    Track,
+    TrackVersion,
+    digest,
+    now,
+)
 
 
 def golden_fixture():
     return json.loads((Path(__file__).resolve().parents[1]/"tests/fixtures/verified_oval.json").read_text())
+
+
+def load_fixture():
+    """Recorded five-lap trajectory, distinct from historical physics fixtures."""
+    return json.loads((Path(__file__).resolve().parents[1]/"tests/fixtures/load_trajectory.json").read_text())
 
 
 class SyntheticVerifier:
@@ -34,26 +48,31 @@ class SyntheticVerifier:
         return self.manifest()
 
     def verify_run(self, _document, replay, _vehicle, *, creator_test=False):
-        ticks = len(replay["frames"])-sum(e["from_tick"]-e["to_tick"] for e in replay.get("rewinds",[]))
+        from .trajectory_verifier import duration
+        ticks = duration(replay)
         laps = 1 if creator_test else 5
         return {"manifest":self.manifest(),"time_ticks":ticks,"lap_ticks":[ticks//laps]*(laps-1)+[ticks-ticks//laps*(laps-1)],
             "ghost":{"ticks":ticks,"poses":[[0,0,0,0,0,0,0],[ticks,0,0,0,0,0,0]]}}
 
 
 def pack_replay(replay):
+    if replay.get("schema") == "bmt-trajectory-v1":
+        return copy.deepcopy(replay)
     controls = bytearray()
     for frame in replay["frames"]:
         controls.extend((len(frame),frame[0]+127,frame[1],frame[2],frame[3] if len(frame)>3 else 0,frame[4] if len(frame)>4 else 0))
     value = {"schema":"bmt-packed-input-v1","replay_schema":replay["schema"],
         "frame_count":len(replay["frames"]),"controls":base64.b64encode(controls).decode("ascii")}
     if "rewinds" in replay:
-        value["rewinds"] = replay["rewinds"]
+        value["rewinds"] = copy.deepcopy(replay["rewinds"])
+    if "race_proof" in replay:
+        value["race_proof"] = copy.deepcopy(replay["race_proof"])
     return value
 
 
 def seed(app, *, players=1000, tracks=100, actors=40, boards=5, tie_every=0, memberships=True):
     """Batch seeding; no credentials or IDs enter reports. All data is isolated."""
-    fixture = golden_fixture()
+    fixture = load_fixture()
     factory, stamp = app.state.session_factory, now()
     actors = min(actors,players)
     ids = [str(uuid.uuid4()) for _ in range(players)]
@@ -117,6 +136,17 @@ def seed(app, *, players=1000, tracks=100, actors=40, boards=5, tie_every=0, mem
                 session.execute(insert(Run),attempts)
                 session.execute(insert(PersonalBest),bests)
                 session.commit()
+    from .daily_fixed_limits import prepare
+    from .discovery_models import TrackOfDay
+    from .discovery_projection import settle_for_diagnostics
+    from .track_of_day import POLICY
+    settle_for_diagnostics(factory)
+    with factory() as session:
+        version = session.get(TrackVersion, versions[0])
+        session.merge(TrackOfDay(day=stamp//86400, policy=POLICY, track_id=version.track_id,
+                              version_id=version.id, reason="load_fixture", selected_at=stamp,
+                              lap_limits=prepare(session, version, stamp//86400, stamp)))
+        session.commit()
     # Seed only a bounded set of viewing groups. Population size still drives
     # board/eligibility queries, without allocating 100K HTTP clients at once.
     group_ids = []

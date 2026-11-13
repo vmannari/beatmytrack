@@ -226,13 +226,16 @@ func run() -> void:
 	await emit_app_timer(0.5)
 	check(paths(client,client.phase).is_empty(),"Hidden challenge/rivalry results have no polling consumer")
 	client.phase = "visible_challenge_result"
-	app._show_screen("challenges")
+	await app._show_screen("challenges")
 	app.challenges._next_poll = 0
 	app.challenges.poll_result()
 	await frames()
 	check(paths(client,client.phase).any(func(path: String) -> bool: return path.begins_with("/challenge-results/")),"Visible pending challenge result still polls")
 	client.phase = "visible_rivalry_result"
-	app._show_screen("rivalry")
+	await app._show_screen("rivalry")
+	var rivalry_probe_deadline: int = Time.get_ticks_msec()+3000
+	while app.rivalry.busy and Time.get_ticks_msec()<rivalry_probe_deadline: await process_frame
+	check(not app.rivalry.busy,"Rivalry entry read completes before the result polling probe")
 	app.rivalry._next_poll_msec = 0
 	app.rivalry.poll_result()
 	await frames()
@@ -251,16 +254,17 @@ func run() -> void:
 	await empty_cloud.flush_outbox()
 	check(empty_cloud.profile_flush_passes>empty_passes and paths(client,client.phase).any(func(path: String) -> bool: return path.contains("audit-existing-run-2")),"New durable result wakes an idle outbox")
 	check(app.cloud.upload_job(ticket).key == "audit-existing-operation","Race deferral preserves original upload identity")
-	for asynchronous: bool in [false,true]:
+	for retry: bool in [false,true]:
 		var writer: Node = load("res://backend/cloud_tracks.gd").new()
-		writer.client = client; writer.root_override = folder.path_join("writer-"+str(asynchronous))
+		writer.client = client; writer.root_override = folder.path_join("writer-"+str(retry))
 		app.add_child(writer)
 		await writer.flush_outbox()
 		var before_write: int = writer.profile_flush_passes
-		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(asynchronous),"_submit_key":"audit-writer-original-key"}
-		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]]) if asynchronous else writer.queue_run(ticket_data,[[0,255,0]])
+		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(retry),"_submit_key":"audit-writer-original-key"}
+		if retry: await writer.queue_run_async(ticket_data,[[0,255,0]])
+		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]])
 		await writer.flush_outbox()
-		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual synchronous/asynchronous result writer wakes idle outbox with original key")
+		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual asynchronous result writer wakes idle outbox with original key")
 	client.phase = "empty_resume_recovery"
 	await client.resume_recovery.reconcile()
 	var recovery_callbacks: int = client.resume_recovery.profile_callback_us

@@ -409,3 +409,35 @@ Logo upper-curve correction (2026-10-29, LUC01-LUC02): The owner-preferred swept
 
 
 Marked B-logo bend correction (2026-10-29, MBC01-MBC02): The owner-marked shoulder in `game/assets/menu/logo.svg` receives an original tangent-matched curve. The preferred earlier inner return and lower tracks are restored; the outer B and lettering remain exact. The startup PNG is an offline bake of that SVG. No external artwork, font or dependency is added. See `docs/LOGO_MARKED_BEND_2026_10_29.md`.
+
+
+## Kart driver by tomkart (2026-11-08)
+
+The kart driver is adapted from [Race Car Driver - Low Poly](https://sketchfab.com/3d-models/race-car-driver-low-poly-0fedfae53537473ba2ee3d9b722e0c66) by [tomkart](https://sketchfab.com/tomkart), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The owner supplied the downloaded archive. The original 1,445-triangle geometry and UV topology are retained; limbs are posed offline to reach the existing wheel and pedals. Suit, glove and helmet lettering/brand marks are removed with imagegen retouching. Material roughness is adapted to the game. Native asset: `game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res`. Attribution and modification notes are bundled in `game/legal/kart_driver_notices.txt` and exposed in Settings > Licences > Kart driver. The kart chassis and open seat remain original Beat my track assets. This supersedes earlier original-driver provenance for the current kart only.
+
+
+## Imported kart driver fit/style feedback (2026-11-08)
+
+Owner feedback supersedes the first imported driver pose/materials: anatomy scale increases 23.53%, knees bend in the original bucket and the helmet looks forward. The 102-triangle neck restraint is removed (1,343 triangles remain). Original suit/glove photographic textures retire from production in favour of native matte toon cloth with a four-colour garment/boot palette. The selected tomkart model, remaining source topology/UVs and CC BY 4.0 attribution remain. No new generated raster is used; prior helmet retouching is retained. Sources, commands, pictures and qualification: `docs/KART_DRIVER_FIT_STYLE_2026_11_08.md`.
+
+
+## Kart driver anatomy and control contact (2026-11-08)
+
+The source suit sections are now subdivided, reshaped into rounded garment sections, posed, joined volumetrically and remeshed as continuous cloth. The final static driver has 7,319 triangles / seven materials, including retained source helmet, gloves and boots plus a fitted centre seam. Both soles are flattened and rotated to the actual pedal faces; two-bone targets place the knees and elbows. Native matte garment panels/cuffs replace the earlier four-colour layout. The enlarged helmet and previous unbranded helmet retouch remain. This revision deliberately supersedes the source-topology retention and 1,343-triangle descriptions above. Attribution remains CC BY 4.0 by tomkart. No new raster generation or runtime posing is added. Evidence and limitations: `docs/KART_DRIVER_ANATOMY_2026_11_08.md`.
+
+
+## Kart driver cockpit-fit feedback (2026-11-08)
+
+The torso is fitted to the actual backrest, wrists use aligned forearm/palm axes with subdivided curled gloves, and knees are spread around the actual fairing. Boots retain measured pedal contact while clearing the wider fairings. Final static mesh: 8,717 triangles / seven materials; original seat, controls and handling remain. This supersedes the previous pose and 7,319-triangle description. The existing tomkart CC BY 4.0 credit and text-free matte suit remain. No new raster generation or runtime rig is added. Sources, comparisons, checks and limits: `docs/KART_DRIVER_COCKPIT_FIT_2026_11_08.md`.
+
+### Kart driver native finish and steering revision (2026-11-12)
+
+The tomkart-derived garment, gloves and boots retain CC BY 4.0 attribution. The source head, face and helmet surfaces and all their photographic imagery are replaced by the original Beat my track shaped helmet shell, opaque visor, lining, vents and hardware from `kart_helmet.gd`. Six native morph poses follow the steering wheel. The established seated scale, support and pedal fit are retained; wheel and hand reach move 45 mm rearward for turning clearance. Native matte garment shading and a quieter centre seam replace the earlier static finish. No new raster artwork is generated. Sources, native views and verification: `docs/KART_DRIVER_POLISH_2026_11_12.md`.
+
+The final body is reconstructed from the existing posed source garment with the sleeve sections omitted before the union. New curved sleeves retain volume through the six poses; source boot soles and fitted seam remain. The final native driver is 12,048 triangles / six materials.
+
+Owner arm correction (2026-11-12): the original Beat my track sleeve geometry now uses straight upper-arm/forearm sections with concentrated elbow bending, tapered oval cross-sections, cuffs and local compression folds. The six steering poses and tomkart attribution remain. See `docs/KART_DRIVER_ARM_STRUCTURE_2026_11_12.md`.
+
+Shoulder correction (2026-11-12): continuous sewn torso-to-sleeve topology, rounded deltoid transitions and balanced shoulder placement replace the open sleeve roots. Native cloth winding and shoulder shading are corrected; supported lower body, helmet, hands and steering remain. Sources and checks: docs/KART_DRIVER_SHOULDER_FIT_2026_11_12.md.
+
+Driver visibility revision (2026-11-12): native helmet enlarged 20%; upper torso made taller and broader and sleeves refitted with additional volume. Fitted lower body, hands and neutral wrist axes remain; the six steering poses and unchanged camera/kart scale are retained. See docs/KART_DRIVER_RACE_SCALE_2026_11_12.md.

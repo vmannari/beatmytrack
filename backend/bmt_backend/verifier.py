@@ -382,7 +382,7 @@ class GodotVerifier:
         _json_bytes(normalized, MAX_TRACK_BYTES)
         return normalized, manifest
 
-    def verify_run(self, document: dict | None, replay: dict, vehicle_id: str, *, creator_test: bool = False, capture_ghost: bool = True, geometry: dict | None = None) -> dict:
+    def verify_run(self, document: dict | None, replay: dict, vehicle_id: str, *, creator_test: bool = False, capture_ghost: bool = True, geometry: dict | None = None, daily_laps: bool = False) -> dict:
         """Check the path; a prepared descriptor needs no source-document read."""
         from .trajectory_verifier import check, duration, validate_envelope
         self._check_stopping()
@@ -395,7 +395,7 @@ class GodotVerifier:
         if vehicle_id not in geometry["maximum_speed"]:
             raise VerificationError("Unsupported vehicle")
         started = time.perf_counter_ns()
-        result = check(geometry,replay["race_proof"],duration(replay),vehicle_id,creator_test=creator_test)
+        result = check(geometry,replay["race_proof"],duration(replay),vehicle_id,creator_test=creator_test,daily_laps=daily_laps)
         result["verification_compute_ms"] = (time.perf_counter_ns()-started)/1_000_000
         # Ghosts are optional presentation supplied alongside the recording.
         # They never influence score acceptance and need no physics/elevation pass.

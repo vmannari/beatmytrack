@@ -73,5 +73,5 @@ static func repaint_preview(view: Control, paint: Dictionary) -> void:
 	# Icon batches retain geometry, camera, lights and radiance. Only paint changes.
 	view.livery = paint.duplicate(true)
 	view.car.apply_livery(paint)
-	if view.car.vehicle_id!="compact":
+	if view.car.chassis_id!="compact":
 		preload("res://ui/rivalry_podium_studio.gd")._garage_paint(view.car)

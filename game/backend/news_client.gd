@@ -7,6 +7,8 @@ var friends: Array = []
 var next_cursor: String = ""
 var refreshing: bool = false
 var busy: bool = false
+## Settles after the first usable page, completed empty edition or error.
+var feed_loaded: bool = false
 var error: String = ""
 var checked_day: int = -1
 var _scope: String = ""
@@ -63,6 +65,7 @@ func identity_changed() -> void:
 	next_cursor = ""
 	refreshing = false
 	busy = false
+	feed_loaded = false
 	error = ""
 	checked_day = -1
 	_fetched_at = -60001
@@ -141,6 +144,7 @@ func refresh(poll: bool = false) -> void:
 		error = _message(str(response.get("error","")))
 	_filter_blocks()
 	# Existing stories can be read while the daily comparison is being queued.
+	if not items.is_empty() or not error.is_empty(): feed_loaded = true
 	changed.emit()
 	if request_daily:
 		var demand: Dictionary = await client.request_api("/news/refresh",HTTPClient.METHOD_POST,{},"",true)
@@ -150,6 +154,9 @@ func refresh(poll: bool = false) -> void:
 		else:
 			error = _message(str(demand.get("error","")))
 	busy = false
+	# An initially empty daily pass may still be producing the first stories.
+	# Keep that first edition pending until polling settles it or a read fails.
+	if not refreshing or not error.is_empty(): feed_loaded = true
 	changed.emit()
 
 func more() -> void:

@@ -243,6 +243,7 @@ func run() -> void:
 	check(menu._using_examples() and menu.find_child("LeadStory",true,false) != null,"older server also shows normal local stories")
 	backend._capabilities = {"garage_news_version":1}
 	news.items = backend.remote_items.duplicate(true)
+	news.feed_loaded = true
 	news.changed.emit()
 	check(not menu._using_examples() and menu._stories() == news.items,"actual news automatically replaces local stories")
 	news.items.clear()

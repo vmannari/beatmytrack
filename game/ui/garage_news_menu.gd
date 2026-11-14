@@ -377,7 +377,7 @@ func _rule(parent: Node, width: int = 1) -> void:
 	parent.add_child(line)
 
 func _using_examples() -> bool:
-	return _tab == "news" and (service == null or not service.available() or service.items.is_empty())
+	return _tab == "news" and (service == null or not service.available() or (service.items.is_empty() and service.feed_loaded))
 
 func _stories() -> Array:
 	if _using_examples():
@@ -599,6 +599,12 @@ func _render(direction: int = 0, tab_turn: bool = false) -> void:
 		_text(_list,"The drivers' directory",28,INK,true)
 		if service.friends.is_empty(): _text(_list,"Add a racing name above to keep up with friends on the track.",16,MUTED)
 		for item: Dictionary in service.friends: _friend_card(item)
+		return
+	if stories.is_empty():
+		# An unanswered account read is not an empty edition. Keep the paper's
+		# existing loading status without printing or marking a fallback story.
+		_status.text = "UPDATING YOUR EDITION…"
+		_folio.text = ""
 		return
 	var index: int = _index()
 	var item: Dictionary = stories[index]

@@ -1,0 +1,158 @@
+"""Private, source-fenced reduced model production and native qualification."""
+import hashlib, json, os, re, shutil, subprocess, sys, time
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts'))
+from qualify_rivalry_real_previews import geometry_inputs, source_fingerprint
+from qualify_rivalry_simple_cars import ENGINE
+WORK = Path(__file__).resolve().parent
+OUT = ROOT/'docs/evidence/profile-icons-finalise-2026-11-13'
+PROJECT = ROOT/'build/rivalry-real-previews-2026-11-13/project/game'
+OUT.mkdir(parents=True,exist_ok=True)
+def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+def targets():
+    ids=['compact','kart','forklift','electric','hovercraft','super_rally']
+    return sorted(
+        [f'game/assets/vehicles/modular_car_bases_v1/{id}_simple_{mode}.scn' for id in ids for mode in ['fixed','editable']]+ 
+        [p.relative_to(ROOT).as_posix() for p in (ROOT/'game/assets/vehicles/modular_kits_v1').glob('*/simple/*/*.scn')]+
+        ['game/assets/menu/header_car_templates_v1/compact.scn'])
+def identity(label,destination):
+    env=dict(os.environ,BMT_SOURCE=str(ROOT),BMT_DEST=str(destination),BMT_RECEIPT=str(OUT/label))
+    cmd=['powershell','-NoProfile','-ExecutionPolicy','Bypass','-Command',
+         "$ErrorActionPreference='Stop'; . (Join-Path $env:BMT_SOURCE 'scripts/build_identity.ps1'); Write-ClientBuildIdentity $env:BMT_SOURCE $env:BMT_RECEIPT $env:BMT_DEST"]
+    result=subprocess.run(cmd,env=env,capture_output=True,text=True)
+    (OUT/(label+'.log')).write_text(result.stdout+result.stderr,encoding='utf-8')
+    assert result.returncode==0, result.stdout+result.stderr
+    return json.loads((OUT/label/'client-build-identity.json').read_text())
+def run(name,script,renderer='gl_compatibility',headless=False,args=(),mutate=False,profile=None):
+    for p in ['tests/check_prepared_assets.gd','tests/test_header_icon_capture.gd','tests/profile_header_icon_loading.gd','tests/test_header_equipped_cache.gd','tests/test_profile_car_startup.gd','tests/bake_modular_car_bases.gd','tests/bake_modular_car_kits.gd','tests/bake_header_simple_compact.gd']:
+        if (ROOT/'game'/p).resolve() != (PROJECT/p).resolve(): shutil.copy2(ROOT/'game'/p,PROJECT/p)
+    user=WORK/'profiles'/(profile or name)
+    for rel in ['roaming','local']: (user/rel).mkdir(parents=True,exist_ok=True)
+    captures=OUT/name; captures.mkdir(exist_ok=True)
+    env=dict(os.environ,APPDATA=str(user/'roaming'),LOCALAPPDATA=str(user/'local'),BMT_API_URL='',BMT_DEV_AUTH_KEY='',BMT_RIVALRY_CARS_EVIDENCE_DIR=str(captures))
+    cmd=[sys.executable,str(ROOT/'scripts/run_no_crash_dialog.py'),'--',str(ENGINE),'--path',str(PROJECT),'--audio-driver','Dummy','--position','20000,20000','--rendering-method',renderer,'--script',script]
+    if headless: cmd+=['--headless']
+    cmd+=['--','--output='+str(captures),*args]
+    if os.environ.get('BMT_HEADER_TEST_VERBOSE')=='1': cmd.insert(cmd.index('--script'),'--verbose')
+    logpath=OUT/(name+'.log'); began=time.monotonic()
+    with logpath.open('w',encoding='utf-8') as log:
+        p=subprocess.Popen(cmd,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT)
+        while p.poll() is None:
+            time.sleep(.5)
+            content=logpath.read_text(encoding='utf-8',errors='replace')
+            if 'SCRIPT ERROR:' in content or time.monotonic()-began>1800:
+                subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],stdout=log,stderr=subprocess.STDOUT)
+                break
+        code=p.wait()
+    content=logpath.read_text(encoding='utf-8',errors='replace')
+    diagnostics=[s for s in content.splitlines() if s.startswith(('SCRIPT ERROR:','ERROR:','WARNING:','FAIL:'))]
+    result=dict(command=cmd,exit_code=code,seconds=round(time.monotonic()-began,3),diagnostics=diagnostics,profile=str(user.relative_to(ROOT)),isolated_project=PROJECT!=ROOT/'game',private_user_profile=True)
+    (OUT/(name+'-receipt.json')).write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+    print(json.dumps(result),flush=True); print('\n'.join(content.splitlines()[-4:]),flush=True)
+    assert code==0 and not diagnostics, name+' failed'
+    return result
+def prepare():
+    source=geometry_inputs()
+    assert all(sha(PROJECT.parent/p)==v for p,v in source.items()), 'Refresh private source snapshot first'
+    first=identity('candidate-identity',PROJECT.parent)
+    assert source==geometry_inputs(), 'Live geometry changed during identity'
+    paths=targets()
+    assert len(paths)==273, len(paths)
+    state=dict(sources=source,targets={p:sha(ROOT/p) for p in paths},identity=first)
+    (WORK/'candidate-state.json').write_text(json.dumps(state,indent=2)+'\n',encoding='utf-8')
+    print(json.dumps(dict(targets=len(paths),sources=len(source),modular_keys=first['modular_car_sha256'])),flush=True)
+def publish():
+    state=json.loads((WORK/'candidate-state.json').read_text())
+    assert geometry_inputs()==state['sources'], 'Live geometry changed; rebuild private candidates'
+    current=identity('publication-identity-check',PROJECT.parent)
+    assert current['modular_car_sha256']==state['identity']['modular_car_sha256'], 'Live geometry identity changed'
+    assert all(sha(ROOT/p)==v for p,v in state['targets'].items()), 'Another producer changed publication targets'
+    # Only the declared simple-tier outputs and generated identity files may change.
+    paths=[*state['targets'],'game/core/build_identity.gd','game/project.godot']
+    backup=WORK/'publication-before'; before={p:sha(ROOT/p) for p in paths}
+    for p in paths:
+        target=backup/p; target.parent.mkdir(parents=True,exist_ok=True)
+        if (ROOT/p).exists(): shutil.copy2(ROOT/p,target)
+    written={}
+    try:
+        for p in state['targets']:
+            if p in state.get('adopted',[]): continue
+            assert sha(ROOT/p)==before[p], 'Concurrent target changed '+p
+            shutil.copy2(PROJECT.parent/p,ROOT/p); written[p]=sha(ROOT/p)
+        final=identity('published-identity',ROOT)
+        for p in paths[-2:]: written[p]=sha(ROOT/p)
+        assert final['modular_car_sha256']==state['identity']['modular_car_sha256'], 'Geometry changed during publication'
+        assert geometry_inputs()==state['sources'], 'Sources changed during publication'
+        assert all(sha(ROOT/p)==sha(PROJECT.parent/p) for p in state['targets']), 'Published geometry mismatch'
+        # Runtime validation must use the exact final generated identity.
+        for p in paths[-2:]: shutil.copy2(ROOT/p,PROJECT.parent/p)
+    except BaseException:
+        for p,digest in written.items():
+            if sha(ROOT/p)==digest:
+                if (backup/p).exists(): shutil.copy2(backup/p,ROOT/p)
+                else: (ROOT/p).unlink()
+        raise
+    (OUT/'publication.json').write_text(json.dumps(dict(outputs=written,adopted=state.get('adopted',[]),sources=source_fingerprint(state['sources']),source_count=len(state['sources']),modular_keys=final['modular_car_sha256'],source_fence=True),indent=2)+'\n',encoding='utf-8')
+    print('QUALIFIED '+str(len(state['targets']))+' current simple-tier resources; published '+str(len(written)-2),flush=True)
+if __name__=='__main__':
+    action=sys.argv[1]
+    if action=='prepare': prepare()
+    elif action in ['adopt-electric','adopt-current']:
+        state=json.loads((WORK/'candidate-state.json').read_text())
+        paths=[p for p,h in state['targets'].items() if ('/modular_kits_v1/electric/simple/' in p if action=='adopt-electric' else sha(ROOT/p)!=h)]
+        before={p:sha(ROOT/p) for p in paths}
+        for p in paths: shutil.copy2(ROOT/p,PROJECT.parent/p)
+        assert all(sha(ROOT/p)==h and sha(PROJECT.parent/p)==h for p,h in before.items()), 'Concurrent Electric output changed while adopting'
+        run('adopted-preflight' if action=='adopt-electric' else 'adopted-header-preflight','res://tests/check_prepared_assets.gd',headless=True,args=['--simple-only'])
+        assert all(sha(ROOT/p)==h for p,h in before.items()), 'Concurrent Electric output changed during validation'
+        state['targets'].update(before); state['adopted']=sorted(set(state.get('adopted',[])+paths))
+        (WORK/'candidate-state.json').write_text(json.dumps(state,indent=2)+'\n',encoding='utf-8')
+        (OUT/('adopted-electric.json' if action=='adopt-electric' else 'adopted-header.json')).write_text(json.dumps(dict(files=before,complete_current_sources_validated=True),indent=2)+'\n',encoding='utf-8')
+        print('PRESERVED '+str(len(paths))+' concurrent prepared resources',flush=True)
+    elif action=='bake':
+        run('bake-simple-bases','res://tests/bake_modular_car_bases.gd',headless=True,args=['--quality=simple'],mutate=True)
+        run('bake-simple-kits','res://tests/bake_modular_car_kits.gd',headless=True,args=['--quality=simple'],mutate=True)
+        run('bake-header-template','res://tests/bake_header_simple_compact.gd',headless=True,mutate=True)
+        run('candidate-preflight','res://tests/check_prepared_assets.gd',headless=True,args=['--simple-only'])
+    elif action=='publish': publish()
+    elif action=='run':
+        if '--live' in sys.argv: PROJECT=ROOT/'game'
+        if '--procedural' in sys.argv: os.environ['BMT_HEADER_PROCEDURAL_CONTROL']='1'
+        run(sys.argv[2],sys.argv[3],renderer=sys.argv[4] if len(sys.argv)>4 else 'gl_compatibility',headless='--headless' in sys.argv[5:],args=['--simple-only'] if '--simple-only' in sys.argv else [])
+    elif action=='startup':
+        if '--live' in sys.argv: PROJECT=ROOT/'game'
+        for phase in ['seed','reuse']:
+            os.environ['BMT_HEADER_STARTUP_PHASE']=phase
+            os.environ['BMT_HEADER_STARTUP_PROFILE']=str(WORK/'startup-records')
+            run('startup-'+phase,'res://tests/test_profile_car_startup.gd',profile='startup-shared')
+    elif action=='suite':
+        PROJECT=ROOT/'game'
+        run('live-preflight','res://tests/check_prepared_assets.gd',headless=True,args=['--simple-only'])
+        for renderer,label in [('gl_compatibility','gl'),('mobile','mobile')]:
+            run('live-models-'+label,'res://tests/test_header_icon_capture.gd',renderer=renderer)
+            os.environ['BMT_HEADER_PROCEDURAL_CONTROL']='1'
+            run('procedural-'+label,'res://tests/profile_header_icon_loading.gd',renderer=renderer)
+            os.environ.pop('BMT_HEADER_PROCEDURAL_CONTROL')
+            run('prepared-'+label,'res://tests/profile_header_icon_loading.gd',renderer=renderer)
+        run('equipped-app','res://tests/test_header_equipped_cache.gd')
+        for phase in ['seed','reuse']:
+            os.environ['BMT_HEADER_STARTUP_PHASE']=phase
+            os.environ['BMT_HEADER_STARTUP_PROFILE']=str(WORK/'startup-records')
+            run('live-startup-'+phase,'res://tests/test_profile_car_startup.gd',profile='live-startup-shared')
+    elif action=='fence':
+        state=json.loads((WORK/'candidate-state.json').read_text())
+        publication=json.loads((OUT/'publication.json').read_text())
+        assert geometry_inputs()==state['sources'], 'Model sources changed after publication'
+        final=identity('final-key-check',PROJECT.parent)
+        live=(ROOT/'game/core/build_identity.gd').read_text()
+        live_keys=json.loads(re.search(r'MODULAR_CAR_SHA256: Dictionary = (.*)',live)[1])
+        live_header=re.search(r'HEADER_PREVIEW_SHA256: String = "([^"]+)"',live)[1]
+        assert live_keys==final['modular_car_sha256']==publication['modular_keys']
+        assert live_header==final['header_preview_sha256'], 'Header identity changed'
+        assert all(sha(ROOT/p)==sha(PROJECT.parent/p) for p in state['targets']), 'Qualified assets changed'
+        controls=json.loads((WORK/'controls-before.json').read_text())
+        changed=[p for p,h in controls.items() if sha(ROOT/p)!=h]
+        result=dict(model_source_fence=True,model_sources=len(state['sources']),current_modular_keys=True,current_header_key=True,qualified_resources=len(state['targets']),resource_hashes={p:sha(ROOT/p) for p in state['targets']},control_count=len(controls),concurrent_control_changes=changed,no_index_write_performed=True)
+        (OUT/'final-fence.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+        print(json.dumps({k:v for k,v in result.items() if k!='resource_hashes'}),flush=True)

@@ -6,9 +6,9 @@ var checks: int = 0
 var failures: int = 0
 var app: Node
 var output: String
-var profile: String
-var phase: String = "seed"
-var vehicle: String = "compact"
+var profile: String = OS.get_environment("BMT_HEADER_STARTUP_PROFILE")
+var phase: String = OS.get_environment("BMT_HEADER_STARTUP_PHASE") if not OS.get_environment("BMT_HEADER_STARTUP_PHASE").is_empty() else "seed"
+var vehicle: String = OS.get_environment("BMT_HEADER_STARTUP_CAR") if not OS.get_environment("BMT_HEADER_STARTUP_CAR").is_empty() else "compact"
 var wrong_draws: int = 0
 var metrics: Dictionary = {}
 
@@ -35,7 +35,13 @@ func shot(label: String) -> void:
 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
 func wait_cache() -> void:
 	var deadline: int = Time.get_ticks_msec()+30000
-	while not app.header_car_cache.idle() and Time.get_ticks_msec()<deadline: await process_frame
+	while not app.header_car_cache.idle() and Time.get_ticks_msec()<deadline:
+		app._publishing_slots_foreground = true
+		app._garage_preloader.foreground = true
+		# This fixture represents an idle account page, not active text input.
+		var focus: Control = root.gui_get_focus_owner()
+		if focus is LineEdit or focus is TextEdit: focus.release_focus()
+		await process_frame
 	check(app.header_car_cache.idle(),"account-screen appearance work finishes")
 	await create_timer(0.35).timeout
 
@@ -79,11 +85,21 @@ func run() -> void:
 		app._publishing_slots_foreground = true
 		await process_frame
 	metrics.startup_ms = (Time.get_ticks_usec()-began)/1000.0
-	app._garage_preloader.idle_ms = 100000
+	# Suppress optional Garage work without changing the shared idle threshold
+	# that also admits header captures after the first menu.
+	app._garage_preloader.set_process(false)
+	# Startup presents the menu before optional appearance captures. Exercise
+	# that real contract without requiring another navigation or wrong stock art.
+	var icon_deadline: int = Time.get_ticks_msec()+30000
+	while not Icons.ready(vehicle,records) and Time.get_ticks_msec()<icon_deadline:
+		app._publishing_slots_foreground = true
+		app._garage_preloader.foreground = true
+		await process_frame
+	metrics.icon_ready_ms = (Time.get_ticks_usec()-began)/1000.0
 	check(app.screen == "tracks","inspect the first startup menu without follow-up navigation")
 	check(VehicleCatalog.selected == vehicle and VehicleLivery.for_car(records.settings,vehicle) == paint and VehicleCustomisation.for_car(records.settings,vehicle) == parts,"startup loads the exact saved selection and appearance")
 	var key: String = Icons.appearance_key(vehicle,records)
-	check(Icons.customized.has(key),"equipped image is ready before startup completes")
+	check(Icons.customized.has(key),"equipped image follows the first menu without extra navigation")
 	check(picture() != null and picture() == Icons.customized.get(key),"first header picture has the equipped livery")
 	check(picture() != Icons.texture(vehicle),"first header picture does not use factory paint")
 	check(app._retained_profile_car._change == null,"startup does not fade out a wrong factory picture")
@@ -126,10 +142,10 @@ func reference(paint: Dictionary, parts: Dictionary) -> void:
 	canvas.transparent_bg = true
 	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	root.add_child(canvas)
-	var view: Control = Profile.make_preview(vehicle,paint,parts)
+	var view: Control = load("res://ui/header_icon_renderer.gd").make_preview(vehicle,paint,parts)
 	view.size = Vector2(Icons.SIZE)
 	canvas.add_child(view)
-	Profile.apply_presentation(view)
+	while not view.presentation_ready: await process_frame
 	for _frame: int in range(7): await RenderingServer.frame_post_draw
 	var expected: Image = canvas.get_texture().get_image()
 	var actual: Image = picture().get_image()

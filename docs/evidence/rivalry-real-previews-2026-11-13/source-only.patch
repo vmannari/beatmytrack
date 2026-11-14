@@ -1,0 +1,1006 @@
+diff --git a/game/ui/rivalry_simple_car.gd b/game/ui/rivalry_simple_car.gd
+--- a/game/ui/rivalry_simple_car.gd
++++ b/game/ui/rivalry_simple_car.gd
+@@ -1,202 +1,44 @@
+ extends Control
+-## Tiny faceted podium models. Project once into the existing menu canvas so
+-## entry needs no CarVisual, SubViewport, lighting, reflections or car shaders.
++## Small photographs of the actual production models. Only paint is resolved
++## at runtime; opening the podium creates no car geometry or 3D render world.
++const DIRECTORY: String = "res://assets/menu/rivalry_cars_v2/"
++const IDS: Array[String] = ["compact","kart","forklift","electric","hovercraft","super_rally"]
++const FINISH: Shader = preload("res://ui/rivalry_car_photo.gdshader")
+ var vehicle_id: String = "compact"
+ var livery: Dictionary = {}
+-var customisation: Dictionary = {} # Preserve the appearance payload; omit fitted detail.
++var customisation: Dictionary = {} # Payload preserved; these are stock-shape photographs.
+ var condition: Dictionary = {}
+ var fit_to_frame: bool = true
++var photo: Texture2D
++var paint_mask: Texture2D
++var photo_vehicle: String
++var triangle_count: int = 2
++var _photo_valid: bool = false
+ var presentation_ready: bool:
+-	get: return not faces.is_empty() and size.x > 1 and size.y > 1
+-var faces: Array[Dictionary] = []
+-var model_bounds: Rect2
+-var triangle_count: int = 0
+-var canvas_triangle_count: int = 0
+-var _canvas_mesh: ArrayMesh
+-var _layer: int = 0
+-var _view := Vector3(-6,4,-8).normalized()
+-var _right := Vector3(8,0,-6).normalized()
+-var _up := _right.cross(_view)
+-var _light := Vector3(-3,7,-5).normalized()
+-const RUBBER := Color("202832")
+-const GLASS := Color("314d60")
++	get: return _photo_valid and size.x>1 and size.y>1
+ 
+ func _ready() -> void:
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	_build()
++	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++	photo_vehicle = vehicle_id if vehicle_id in IDS else "compact"
++	photo = load(DIRECTORY+photo_vehicle+"_image.res") as Texture2D
++	paint_mask = load(DIRECTORY+photo_vehicle+"_mask.res") as Texture2D
++	if photo==null or paint_mask==null: return
++	_photo_valid = photo.get_meta("schema","")=="rivalry-actual-car-photos-2" and paint_mask.get_meta("schema","")=="rivalry-actual-car-photos-2" and photo.get_meta("vehicle_id","")==photo_vehicle and paint_mask.get_meta("vehicle_id","")==photo_vehicle and photo.get_meta("image_role","")=="image" and paint_mask.get_meta("image_role","")=="mask" and photo.get_size()==Vector2(512,320) and paint_mask.get_size()==photo.get_size()
++	var finish := ShaderMaterial.new()
++	finish.shader = FINISH
++	finish.set_shader_parameter("paint_mask",paint_mask)
++	finish.set_shader_parameter("neutral_color",Color("808080"))
++	var defaults: Dictionary = photo.get_meta("paint_defaults",{})
++	for role: String in ["body","accent","detail"]:
++		var color: Color = Color.from_string(str(livery.get("colors",{}).get(role,defaults.get(role,"ffffff"))),Color.WHITE)
++		finish.set_shader_parameter(role+"_color",color)
++	material = finish
+ 	resized.connect(queue_redraw)
+-
+-func _pigment(slot: String, fallback: String) -> Color:
+-	return Color.from_string(str(livery.get("colors",{}).get(slot,fallback)),Color(fallback))
+-
+-func _build() -> void:
+-	var paint: Color = _pigment("body","30627d")
+-	var accent: Color = _pigment("accent","e0d5b5")
+-	var detail: Color = _pigment("detail","a4abad")
+-	match vehicle_id:
+-		"kart":
+-			_box(Vector3(0,0.31,0),Vector3(1.25,0.16,1.95),RUBBER)
+-			_hull([Vector3(-1.2,0.47,0.37),Vector3(-0.58,0.55,0.46),Vector3(0.9,0.46,0.39)],0.28,paint)
+-			_box(Vector3(0,0.64,0.35),Vector3(0.55,0.6,0.22),RUBBER)
+-			_box(Vector3(0,0.72,0.08),Vector3(0.46,0.5,0.38),accent)
+-			_box(Vector3(0,1.08,0.09),Vector3(0.41,0.34,0.38),detail)
+-			_box(Vector3(0,1.09,-0.108),Vector3(0.35,0.13,0.02),GLASS)
+-			_wheels(0.8,0.79,0.27,0.29,detail)
+-		"forklift":
+-			_box(Vector3(0,0.65,0.28),Vector3(1.4,0.68,1.85),paint)
+-			_box(Vector3(0,0.95,0.36),Vector3(0.62,0.54,0.57),RUBBER)
+-			for side: float in [-1.0,1.0]:
+-				for end: float in [-0.35,1.0]:
+-					_box(Vector3(side*0.59,1.38,end),Vector3(0.1,1.05,0.1),RUBBER)
+-				_box(Vector3(side*0.5,1.12,-0.99),Vector3(0.12,2.0,0.15),RUBBER)
+-				_box(Vector3(side*0.47,0.2,-1.5),Vector3(0.15,0.09,1.1),detail)
+-			_box(Vector3(0,1.94,0.31),Vector3(1.42,0.13,1.6),accent)
+-			_box(Vector3(0,0.65,-1.05),Vector3(1.16,0.17,0.14),detail)
+-			_wheels(0.72,0.67,0.35,0.3,detail)
+-		"hovercraft":
+-			_hull([Vector3(-1.85,0.72,0.4),Vector3(-1.3,1.04,0.5),Vector3(1.5,1.04,0.5),Vector3(1.85,0.76,0.4)],0.1,RUBBER)
+-			_hull([Vector3(-1.65,0.65,0.58),Vector3(-1.0,0.92,0.68),Vector3(1.45,0.84,0.65)],0.38,paint)
+-			_cabin(-0.75,0.7,-0.25,0.6,0.57,0.67,1.17,accent)
+-			for side: float in [-1.0,1.0]:
+-				_cylinder(Vector3(side*0.6,0.99,1.35),0.4,0.27,RUBBER,false)
+-				_cylinder(Vector3(side*0.6,0.99,1.19),0.26,0.02,detail,false)
+-		_:
+-			var coupe: bool = vehicle_id == "super_rally"
+-			var volt: bool = vehicle_id == "electric"
+-			var length: float = 2.13 if coupe else 2.0 if volt else 1.85
+-			_hull([Vector3(-length,0.69,0.62),Vector3(-length+0.4,0.87,0.8),Vector3(length-0.27,0.86,0.81),Vector3(length,0.72,0.66)],0.3,paint)
+-			_cabin(-0.4 if coupe else -1.05 if volt else -0.84,1.15 if coupe else 1.4,-0.04 if coupe else -0.47 if volt else -0.39,0.64 if coupe else 0.95 if volt else 0.88,0.73,0.79,1.22 if coupe else 1.29 if volt else 1.44,accent)
+-			_wheels(0.87,1.27 if coupe else 1.14,0.34,0.25,detail)
+-			_box(Vector3(0,0.47,-length-0.01),Vector3(1.33,0.15,0.09),RUBBER)
+-			_box(Vector3(0,0.66,-length-0.015),Vector3(0.59,0.17,0.03),RUBBER)
+-			for side: float in [-1.0,1.0]:
+-				_box(Vector3(side*0.54,0.69,-length-0.025),Vector3(0.27,0.13,0.035),Color("e8dfb5"))
+-	faces.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.layer < b.layer if a.layer != b.layer else a.depth < b.depth)
+-	var first: bool = true
+-	for face: Dictionary in faces:
+-		for point: Vector2 in face.points:
+-			model_bounds = Rect2(point,Vector2.ZERO) if first else model_bounds.expand(point)
+-			first = false
+-	_batch_faces()
+ 	queue_redraw()
+-
+-func _batch_faces() -> void:
+-	var vertices := PackedVector2Array()
+-	var colors := PackedColorArray()
+-	var indices := PackedInt32Array()
+-	for face: Dictionary in faces:
+-		var offset: int = vertices.size()
+-		vertices.append_array(face.points)
+-		for point: Vector2 in face.points: colors.append(face.color)
+-		for index: int in Geometry2D.triangulate_polygon(face.points): indices.append(offset+index)
+-		# A narrow alpha fringe softens edges without a separate line draw for
+-		# every facet. All fill/fringe triangles share the same canvas batch.
+-		var center := Vector2.ZERO
+-		for point: Vector2 in face.points: center += point/face.points.size()
+-		for edge: int in range(face.points.size()):
+-			var a: Vector2 = face.points[edge]
+-			var b: Vector2 = face.points[(edge+1)%face.points.size()]
+-			var direction: Vector2 = (b-a).normalized()
+-			var outward := Vector2(direction.y,-direction.x)
+-			if outward.dot((a+b)*0.5-center)<0: outward = -outward
+-			offset = vertices.size()
+-			vertices.append_array(PackedVector2Array([a,b,b+outward*0.014,a+outward*0.014]))
+-			var clear: Color = face.color
+-			clear.a = 0
+-			colors.append_array(PackedColorArray([face.color,face.color,clear,clear]))
+-			indices.append_array(PackedInt32Array([offset,offset+1,offset+2,offset,offset+2,offset+3]))
+-	var arrays: Array = []
+-	arrays.resize(Mesh.ARRAY_MAX)
+-	arrays[Mesh.ARRAY_VERTEX] = vertices
+-	arrays[Mesh.ARRAY_COLOR] = colors
+-	arrays[Mesh.ARRAY_INDEX] = indices
+-	_canvas_mesh = ArrayMesh.new()
+-	_canvas_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+-	canvas_triangle_count = indices.size()/3
+-
+-func _project(point: Vector3) -> Vector2:
+-	return Vector2(point.dot(_right),-point.dot(_up))
+-
+-func _face(points: PackedVector3Array, color: Color, center: Vector3) -> void:
+-	var middle := Vector3.ZERO
+-	for point: Vector3 in points: middle += point/points.size()
+-	var normal: Vector3 = (points[1]-points[0]).cross(points[2]-points[0]).normalized()
+-	if normal.dot(middle-center) < 0: normal = -normal
+-	triangle_count += points.size()-2
+-	if normal.dot(_view) <= 0: return
+-	var polygon := PackedVector2Array()
+-	for point: Vector3 in points: polygon.append(_project(point))
+-	var light: float = 0.57+0.43*maxf(0.0,normal.dot(_light))
+-	faces.append({"points":polygon,"color":Color(color.r*light,color.g*light,color.b*light,1.0),"depth":middle.dot(_view),"layer":_layer})
+-
+-func _prism(points: PackedVector3Array, colors: Array[Color]) -> void:
+-	var center := Vector3.ZERO
+-	for point: Vector3 in points: center += point/points.size()
+-	for side: int in range(6):
+-		var indices: Array = [[0,1,2,3],[4,7,6,5],[0,4,5,1],[1,5,6,2],[2,6,7,3],[3,7,4,0]][side]
+-		var face := PackedVector3Array()
+-		for index: int in indices: face.append(points[index])
+-		_face(face,colors[mini(side,colors.size()-1)],center)
+-
+-func _box(center: Vector3, extent: Vector3, color: Color) -> void:
+-	var points := PackedVector3Array()
+-	for point: Vector3 in [Vector3(-1,-1,-1),Vector3(1,-1,-1),Vector3(1,-1,1),Vector3(-1,-1,1),Vector3(-1,1,-1),Vector3(1,1,-1),Vector3(1,1,1),Vector3(-1,1,1)]:
+-		points.append(center+point*extent*0.5)
+-	_prism(points,[color])
+-
+-func _cabin(front: float, rear: float, roof_front: float, roof_rear: float, width: float, low: float, high: float, roof: Color) -> void:
+-	_layer = 1
+-	_prism(PackedVector3Array([Vector3(-width,low,front),Vector3(width,low,front),Vector3(width,low,rear),Vector3(-width,low,rear),Vector3(-width*0.79,high,roof_front),Vector3(width*0.79,high,roof_front),Vector3(width*0.79,high,roof_rear),Vector3(-width*0.79,high,roof_rear)]),[RUBBER,roof,GLASS])
+-	_layer = 0
+-
+-func _hull(sections: Array[Vector3], bottom: float, color: Color) -> void:
+-	var rings: Array[PackedVector3Array] = []
+-	var center := Vector3(0,(bottom+sections[0].z)*0.5,(sections[0].x+sections[-1].x)*0.5)
+-	# Short longitudinal faces keep painter ordering correct where the cabin
+-	# covers the deck. This is a fixed-angle illustration, not a general renderer.
+-	var slices: Array[Vector3] = []
+-	for index: int in range(sections.size()-1):
+-		var count: int = maxi(1,ceili(absf(sections[index+1].x-sections[index].x)/0.4))
+-		for step: int in range(count): slices.append(sections[index].lerp(sections[index+1],float(step)/count))
+-	slices.append(sections[-1])
+-	for section: Vector3 in slices:
+-		var ring := PackedVector3Array()
+-		var bevel: float = minf(0.07,(section.z-bottom)*0.25)
+-		for xy: Vector2 in [Vector2(-section.y+0.09,bottom),Vector2(section.y-0.09,bottom),Vector2(section.y,bottom+bevel),Vector2(section.y,section.z-bevel),Vector2(section.y-0.09,section.z),Vector2(-section.y+0.09,section.z),Vector2(-section.y,section.z-bevel),Vector2(-section.y,bottom+bevel)]:
+-			ring.append(Vector3(xy.x,xy.y,section.x))
+-		rings.append(ring)
+-	_face(rings[0],color,center)
+-	_face(rings[-1],color,center)
+-	for ring: int in range(rings.size()-1):
+-		for side: int in range(8):
+-			var next: int = (side+1)%8
+-			_face(PackedVector3Array([rings[ring][side],rings[ring][next],rings[ring+1][next],rings[ring+1][side]]),color,center)
+-
+-func _wheels(x: float, z: float, radius: float, width: float, hub: Color) -> void:
+-	for side: float in [-1.0,1.0]:
+-		# Fixed camera: far wheels sit behind the body, near wheels cover it.
+-		_layer = 2 if side < 0 else -1
+-		for end: float in [-1.0,1.0]:
+-			_cylinder(Vector3(side*x,radius,end*z),radius,width,RUBBER)
+-			_cylinder(Vector3(side*(x+width*0.51),radius,end*z),radius*0.51,0.015,hub)
+-	_layer = 0
+-
+-func _cylinder(center: Vector3, radius: float, width: float, color: Color, axle_x: bool = true) -> void:
+-	var rings: Array[PackedVector3Array] = []
+-	for end: float in [-0.5,0.5]:
+-		var ring := PackedVector3Array()
+-		for index: int in range(8):
+-			var angle: float = TAU*(index+0.5)/8.0
+-			ring.append(center+(Vector3(end*width,cos(angle)*radius,sin(angle)*radius) if axle_x else Vector3(sin(angle)*radius,cos(angle)*radius,end*width)))
+-		rings.append(ring)
+-	_face(rings[0],color,center)
+-	_face(rings[1],color,center)
+-	for side: int in range(8):
+-		var next: int = (side+1)%8
+-		_face(PackedVector3Array([rings[0][side],rings[0][next],rings[1][next],rings[1][side]]),color,center)
+ 
+ func _draw() -> void:
+ 	if not presentation_ready: return
+-	var zoom: float = minf(size.x/maxf(model_bounds.size.x,0.01),size.y/maxf(model_bounds.size.y,0.01))*0.9
+-	draw_set_transform(size*0.5-model_bounds.get_center()*zoom,0,Vector2.ONE*zoom)
+-	draw_mesh(_canvas_mesh,null)
++	var dimensions: Vector2 = photo.get_size()
++	var zoom: float = minf(size.x/dimensions.x,size.y/dimensions.y)
++	draw_texture_rect(photo,Rect2((size-dimensions*zoom)*0.5,dimensions*zoom),false)
+diff --git a/game/tests/test_rivalry_simple_car.gd b/game/tests/test_rivalry_simple_car.gd
+--- a/game/tests/test_rivalry_simple_car.gd
++++ b/game/tests/test_rivalry_simple_car.gd
+@@ -1,16 +1,19 @@
+ extends SceneTree
+-## Isolated geometry, native raster and lifecycle checks for the tiny podium cars.
++## Real-model thumbnail identity, paint isolation, raster and draw-call budget.
+ const Preview = preload("res://ui/rivalry_simple_car.gd")
+ const IDS: Array[String] = ["compact","super_rally","electric","kart","forklift","hovercraft"]
+ var checks: int = 0
+ var failures: int = 0
+-var evidence: String = OS.get_environment("BMT_SIMPLE_CARS_EVIDENCE")
++var evidence: String = OS.get_environment("BMT_REAL_CAR_EVIDENCE")
+ var measurements: Array = []
+ 
+ func _initialize() -> void: run.call_deferred()
+ func check(ok: bool, label: String) -> void:
+ 	checks += 1
+ 	if not ok: failures += 1; printerr("FAIL: ",label)
++func drawn() -> void:
++	await process_frame
++	await RenderingServer.frame_post_draw
+ 
+ func run() -> void:
+ 	root.size = Vector2i(1200,610)
+@@ -20,30 +23,26 @@
+ 	root.add_child(backdrop)
+ 	var baseline_draws: int = 0
+ 	if DisplayServer.get_name()!="headless":
+-		await process_frame
+-		await RenderingServer.frame_post_draw
++		await drawn()
+ 		baseline_draws = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+-	var shapes: Array[String] = []
+ 	var views: Array[Control] = []
++	var pictures: Array[Texture2D] = []
+ 	for index: int in range(IDS.size()):
+ 		var preview: Control = Preview.new()
+ 		preview.vehicle_id = IDS[index]
+ 		preview.position = Vector2(20+(index%3)*400,40+(index/3)*300)
+ 		preview.size = Vector2(360,230)
+-		preview.livery = {"colors":{"body":"be4d32","accent":"d8c9a6","detail":"a0adb3"}}
+-		var original: Dictionary = preview.livery.duplicate(true)
+ 		var began: int = Time.get_ticks_usec()
+ 		root.add_child(preview)
+ 		var built_us: int = Time.get_ticks_usec()-began
+-		check(preview.presentation_ready,IDS[index]+" prepares synchronously")
+-		check(preview.triangle_count > 24 and preview.triangle_count <= 600,IDS[index]+" bounded tiny model")
+-		check(preview.canvas_triangle_count<1600,IDS[index]+" bounded canvas fill and antialias geometry")
+-		check(preview.get_child_count()==0 and not preview.is_processing(),IDS[index]+" needs no 3D resources or frame processing")
+-		check(preview.livery==original,IDS[index]+" preserves appearance data")
+-		var signature: String = var_to_bytes(preview.faces).hex_encode().sha256_text()
+-		check(signature not in shapes,IDS[index]+" has a distinct silhouette")
+-		shapes.append(signature)
+-		measurements.append({"vehicle":IDS[index],"triangles":preview.triangle_count,"canvas_triangles":preview.canvas_triangle_count,"visible_faces":preview.faces.size(),"build_us":built_us})
++		check(preview.presentation_ready,IDS[index]+" prepares without a 3D world")
++		check(preview.triangle_count==2 and preview.get_child_count()==0,IDS[index]+" draws one picture without car geometry")
++		check(not preview.is_processing() and not preview.is_physics_processing(),IDS[index]+" requires no frame processing")
++		check(preview.photo_vehicle==IDS[index] and preview.photo.get_meta("vehicle_id")==IDS[index],IDS[index]+" uses its actual vehicle photograph")
++		check(preview.photo.get_size()==Vector2(512,320) and preview.paint_mask.get_size()==preview.photo.get_size(),IDS[index]+" bounded paint/photo dimensions")
++		check(preview.photo not in pictures,IDS[index]+" has its own real shape")
++		pictures.append(preview.photo)
++		measurements.append({"vehicle":IDS[index],"picture":preview.photo.resource_path,"size":[512,320],"build_us":built_us})
+ 		var label := Label.new()
+ 		label.text = IDS[index].to_upper()
+ 		label.position = preview.position+Vector2(120,225)
+@@ -53,29 +52,45 @@
+ 	if DisplayServer.get_name()!="headless":
+ 		await RenderingServer.frame_post_draw
+ 		var draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)-baseline_draws
+-		print("SIMPLE_CAR_DRAW_WORK ",JSON.stringify({"six_models_and_labels":draws}))
+-		check(draws>0 and draws<=18,"six models and labels retain bounded canvas draw work")
++		print("REAL_CAR_DRAW_WORK ",JSON.stringify({"six_models_and_labels":draws}))
++		check(draws>0 and draws<=18,"six actual cars and labels retain bounded draw work")
+ 		var picture: Image = root.get_texture().get_image()
+ 		for preview: Control in views:
+ 			var colored: int = 0
+-			var paint: int = 0
+ 			var crop: Image = picture.get_region(Rect2i(preview.get_global_rect()))
+ 			for y: int in range(crop.get_height()):
+ 				for x: int in range(crop.get_width()):
+ 					var pixel: Color = crop.get_pixel(x,y)
+-					if pixel.r>pixel.b*1.4 and pixel.r>0.25: paint += 1
+ 					if absf(pixel.r-backdrop.color.r)+absf(pixel.g-backdrop.color.g)+absf(pixel.b-backdrop.color.b)>0.15: colored += 1
+-			check(colored>1000 and paint>100,preview.vehicle_id+" renders a visible coloured model")
+-		if not evidence.is_empty():
+-			DirAccess.make_dir_recursive_absolute(evidence)
+-			check(picture.save_png(evidence.path_join("models-"+RenderingServer.get_current_rendering_method()+".png"))==OK,"save six-model native gallery")
++			check(colored>1000,preview.vehicle_id+" actual car is visible")
++		check(picture.save_png(evidence.path_join("gallery-"+RenderingServer.get_current_rendering_method()+".png"))==OK,"save actual six-car native gallery")
++		var peers: Array[Control] = []
++		for index: int in range(2):
++			var peer: Control = Preview.new()
++			peer.vehicle_id = "compact"
++			peer.livery = {"colors":{"body":"c43c28" if index==0 else "247995","accent":"e0d5b5","detail":"c78e4c"}}
++			peer.position = Vector2(10+index*200,5)
++			peer.size = Vector2(160,88)
++			root.add_child(peer)
++			check(peer.photo==views[0].photo and peer.paint_mask==views[0].paint_mask,"players share only immutable photographs")
++			peers.append(peer)
++		check(peers[0].material!=peers[1].material,"player pigments are isolated")
++		await drawn()
++		var screen: Image = root.get_texture().get_image()
++		var changed: int = 0
++		for y: int in range(88):
++			for x: int in range(160):
++				var a: Color = screen.get_pixel(10+x,5+y)
++				var b: Color = screen.get_pixel(210+x,5+y)
++				if absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b)>0.15: changed += 1
++		check(changed>300,"different players visibly retain different body colours")
++		for peer: Control in peers: peer.free()
+ 	for preview: Control in views:
+-		var original: String = var_to_bytes(preview.faces).hex_encode().sha256_text()
++		var original: Texture2D = preview.photo
+ 		preview.size = Vector2(160,88)
+-		check(preview.presentation_ready and original==var_to_bytes(preview.faces).hex_encode().sha256_text(),"resizing fits retained geometry")
+-		preview.hide()
++		check(preview.presentation_ready and preview.photo==original,"resizing retains the real photograph")
+ 		preview.free()
+ 	await process_frame
+-	print("SIMPLE_CAR_METRICS ",JSON.stringify(measurements))
++	print("REAL_CAR_METRICS ",JSON.stringify(measurements))
+ 	print("RIVALRY_SIMPLE_CARS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
+diff --git a/game/tests/test_rivalry_custom_cars.gd b/game/tests/test_rivalry_custom_cars.gd
+--- a/game/tests/test_rivalry_custom_cars.gd
++++ b/game/tests/test_rivalry_custom_cars.gd
+@@ -55,9 +55,9 @@
+ 		for index: int in range(3):
+ 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+ 			check(car != null,"all three ranked players get their own native car")
+-			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.triangle_count<=600,"podium uses the tiny faceted model")
++			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.photo.get_meta("vehicle_id")==model.vehicle_id,"podium uses a photograph of the actual car")
+ 			check(car.get_child_count()==0,"podium creates no viewport or reflection studio")
+-			check(car.presentation_ready,"projected podium model is ready in its first layout")
++			check(car.presentation_ready,"actual car photograph is ready in its first layout")
+ 			check(car.vehicle_id == "compact" and car.livery == appearance(index).livery,"podium retains each player's appearance payload and pigments")
+ 			check(car.customisation == appearance(index).customisation,"simplified podium preserves fitted-part metadata without building it")
+ 			check(car.condition.is_empty(),"remote podium never receives local dirt or washing")
+@@ -145,7 +145,7 @@
+ 		for index: int in range(3):
+ 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
+ 			check(car.vehicle_id == id and car.livery == appearance(index,id).livery,id+" retains each player's identity and paint")
+-			check(car.triangle_count<=600 and car.get_child_count()==0,id+" podium uses the tiny projected geometry")
++			check(car.triangle_count==2 and car.get_child_count()==0,id+" podium draws its actual car as one picture")
+ 			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
+ 			var occupied: int = 0
+ 			var pigment := Color(str(appearance(index,id).livery.colors.body))
+@@ -153,7 +153,8 @@
+ 			for y: int in range(picture.get_height()):
+ 				for x: int in range(picture.get_width()):
+ 					var pixel: Color = picture.get_pixel(x,y)
+-					if Vector3(pixel.r,pixel.g,pixel.b).normalized().dot(target)>0.9995 and pixel.v>0.1: occupied += 1
++					# Native photographs retain the Garage's warm/cool light colours.
++					if Vector3(pixel.r,pixel.g,pixel.b).normalized().dot(target)>0.99 and pixel.v>0.1: occupied += 1
+ 			check(occupied > picture.get_width()*picture.get_height()*0.015,id+" visible body pixels retain that player's pigment")
+ 		check(root.get_texture().get_image().save_png(evidence.path_join("car-"+id+".png")) == OK,id+" native podium evidence saved")
+ 		page.free()
+diff --git a/game/tests/test_rivalry_ready_entry.gd b/game/tests/test_rivalry_ready_entry.gd
+--- a/game/tests/test_rivalry_ready_entry.gd
++++ b/game/tests/test_rivalry_ready_entry.gd
+@@ -97,8 +97,8 @@
+ 			for y: int in range(0,picture.get_height(),4):
+ 				for x: int in range(0,picture.get_width(),4):
+ 					var pixel: Color = picture.get_pixel(x,y)
+-					if pixel.r>pixel.b*1.08 and pixel.r>0.4: pixels += 1
+-			check(pixels>10,"fully visible page contains the rendered stock roof pigments")
++					if minf(pixel.r,minf(pixel.g,pixel.b))>0.55: pixels += 1
++			check(pixels>10,"fully visible page contains the actual car's light roof and hood")
+ 
+ func run() -> void:
+ 	var profile: String = ProjectSettings.globalize_path("user://").replace("\\","/").simplify_path()
+@@ -110,6 +110,10 @@
+ 		quit(1)
+ 		return
+ 	OS.set_environment("BMT_API_URL","")
++	create_timer(45,true,false,true).timeout.connect(func() -> void:
++		check(false,"readiness suite completes without a stalled frame wait")
++		print("RIVALRY_READY_ENTRY: %d checks, %d failures" % [checks,failures])
++		quit(1))
+ 	var offline := ConfigFile.new()
+ 	offline.set_value("backend","url","")
+ 	check(offline.save("user://backend.cfg")==OK,"disable real service access")
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -378,6 +378,8 @@
+ 	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
+ 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')
+ 	if ($LASTEXITCODE) { throw 'Garage preview assets are stale or missing. Bake native previews before exporting.' }
++	& python (Join-Path $PSScriptRoot 'check_rivalry_car_previews.py')
++	if ($LASTEXITCODE) { throw 'Rivalry car photographs are stale or missing. Refresh their actual-model bake before exporting.' }
+     Test-AndroidTools
+     Prepare-AndroidGradle
+     Invoke-Validation
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1023,7 +1023,10 @@
+ 		if page.ready_for_display():
+ 			prepared_draws += 1
+ 		else: prepared_draws = 0
+-		if prepared_draws >= (1 if DisplayServer.get_name() == "headless" else 4):
++		# Canvas photographs draw with the incoming menu. A static error page
++		# may stop requesting draws, so only actual 3D views need radiance warmup.
++		var required_draws: int = 1 if DisplayServer.get_name() == "headless" or page.find_children("*","SubViewport",true,false).is_empty() else 4
++		if prepared_draws >= required_draws:
+ 			_preparing_rivalry_motion = null
+ 			motion.play()
+ 			return
+diff --git a/game/ui/rivalry_car_photo.gdshader b/game/ui/rivalry_car_photo.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_car_photo.gdshader
+@@ -0,0 +1,23 @@
++shader_type canvas_item;
++render_mode unshaded;
++
++uniform sampler2D paint_mask : filter_linear_mipmap, repeat_disable;
++uniform vec4 body_color : source_color = vec4(1.0);
++uniform vec4 accent_color : source_color = vec4(1.0);
++uniform vec4 detail_color : source_color = vec4(1.0);
++uniform vec4 neutral_color : source_color = vec4(0.5,0.5,0.5,1.0);
++varying vec4 canvas_tint;
++
++void vertex() { canvas_tint = COLOR; }
++
++void fragment() {
++	vec4 picture = texture(TEXTURE, UV);
++	vec4 mask = texture(paint_mask, UV);
++	vec3 weights = clamp(mask.rgb / max(mask.a, 0.001), vec3(0.0), vec3(1.0));
++	float painted = clamp(weights.r + weights.g + weights.b, 0.0, 1.0);
++	vec3 pigment = vec3(1.0 - painted) + (weights.r * body_color.rgb + weights.g * accent_color.rgb + weights.b * detail_color.rgb) / neutral_color.rgb;
++	// Keep a little of the photographed highlight when the selected paint is dark.
++	vec3 glint = pow(clamp(picture.rgb, vec3(0.0), vec3(1.0)), vec3(8.0)) * 0.10;
++	vec3 color = picture.rgb * pigment + glint * painted * (vec3(1.0) - clamp(pigment,vec3(0.0),vec3(1.0)));
++	COLOR = vec4(color, picture.a) * canvas_tint;
++}
+diff --git a/game/tests/bake_rivalry_car_previews.gd b/game/tests/bake_rivalry_car_previews.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_rivalry_car_previews.gd
+@@ -0,0 +1,138 @@
++extends SceneTree
++## Offline photographs and paint masks from the actual production car geometry.
++const SIZE := Vector2i(512,320)
++const OUTPUT: String = "res://assets/menu/rivalry_cars_v2"
++var evidence: String = OS.get_environment("BMT_REAL_CAR_EVIDENCE")
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	if not ok: failures += 1; printerr("BAKE_FAIL ",label)
++
++func drawn() -> void:
++	await process_frame
++	await RenderingServer.frame_post_draw
++
++func mask_material(color: Color, source: Material) -> StandardMaterial3D:
++	var material := StandardMaterial3D.new()
++	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++	material.albedo_color = color
++	material.cull_mode = source.cull_mode if source is BaseMaterial3D else BaseMaterial3D.CULL_DISABLED
++	return material
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless": quit(1); return
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	DirAccess.make_dir_recursive_absolute(OUTPUT)
++	DirAccess.make_dir_recursive_absolute(evidence)
++	var report: Dictionary = {"schema":"rivalry-actual-car-photos-2","engine":Engine.get_version_info().string,"size":[SIZE.x,SIZE.y],"neutral":"808080","baker_sha256":FileAccess.get_sha256("res://tests/bake_rivalry_car_previews.gd"),"cars":{},"source":"Canonical reduced CarVisual construction; stock kits; original mesh positions/normals/UVs; original materials and Garage lighting"}
++	for id: String in VehicleCatalog.IDS:
++		var only: String = OS.get_environment("BMT_REAL_CAR_ONLY")
++		if not only.is_empty() and id!=only: continue
++		var viewport := SubViewport.new()
++		viewport.size = SIZE*2
++		viewport.own_world_3d = true
++		viewport.transparent_bg = true
++		viewport.msaa_3d = Viewport.MSAA_DISABLED
++		viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++		root.add_child(viewport)
++		var world := Node3D.new()
++		viewport.add_child(world)
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		car.simple_model = true
++		car.cache_rest_pose = false
++		car.rotation.y = PI
++		car.livery = VehicleLivery.defaults(id)
++		car.customisation = VehicleCustomisation.defaults()
++		world.add_child(car)
++		while not car.model_ready: await process_frame
++		GarageEnvironment.build_lighting(world,false,true)
++		ShowroomStudio._studio_glass(car,{})
++		var camera := Camera3D.new()
++		camera.position = Vector3(-5,2.5,6)
++		world.add_child(camera)
++		camera.look_at(Vector3(0,0.65,0))
++		camera.current = true
++		var view: Transform3D = camera.global_transform.affine_inverse()
++		var extent: float = 0
++		var mesh_count: int = 0
++		var triangles: int = 0
++		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++			if part.mesh==null or not part.is_visible_in_tree(): continue
++			if part.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: part.hide(); continue
++			part.force_update_transform()
++			mesh_count += 1
++			triangles += part.mesh.get_faces().size()/3
++			var bounds: AABB = part.get_aabb()
++			for x: float in [bounds.position.x,bounds.end.x]:
++				for y: float in [bounds.position.y,bounds.end.y]:
++					for z: float in [bounds.position.z,bounds.end.z]:
++						var point: Vector3 = view*part.to_global(Vector3(x,y,z))
++						var depth: float = maxf(0.01,-point.z)
++						extent = maxf(extent,maxf(absf(point.y)/depth,absf(point.x)/(depth*float(SIZE.x)/SIZE.y)))
++		camera.keep_aspect = Camera3D.KEEP_HEIGHT
++		camera.fov = rad_to_deg(2*atan(extent*1.10))
++		for _i: int in range(5): await drawn()
++		var reference: Image = viewport.get_texture().get_image()
++		check(reference.get_used_rect().size.x>100,id+" actual native geometry is visible")
++		var neutral: Dictionary = VehicleLivery.defaults(id)
++		for role: String in VehicleLivery.SLOTS: neutral.colors[role] = "808080"
++		car.apply_livery(neutral)
++		for _i: int in range(3): await drawn()
++		var base: Image = viewport.get_texture().get_image()
++		var slots: Dictionary = {}
++		for slot: String in car.paint_materials: slots[car.paint_materials[slot]] = slot
++		if car.accent_roof!=null: slots[car.accent_roof] = "accent"
++		for variant: Dictionary in car.paint_variants: slots[variant.material] = variant.slot
++		var mask_colors: Dictionary = {"body":Color.RED,"accent":Color.GREEN,"detail":Color.BLUE}
++		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++			if part.mesh==null or not part.is_visible_in_tree(): continue
++			var active: Array[Material] = []
++			for surface: int in range(part.mesh.get_surface_count()): active.append(part.get_active_material(surface))
++			part.material_override = null
++			part.material_overlay = null
++			part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++			for surface: int in range(active.size()):
++				var source: Material = active[surface]
++				var original: Material = source.get_meta("livery_source") if source!=null and source.has_meta("livery_source") else source
++				part.set_surface_override_material(surface,mask_material(mask_colors.get(slots.get(original,""),Color.BLACK),original))
++		for _i: int in range(3): await drawn()
++		var mask: Image = viewport.get_texture().get_image()
++		for image: Image in [reference,base,mask]:
++			image.convert(Image.FORMAT_RGBA8)
++			image.resize(SIZE.x,SIZE.y,Image.INTERPOLATE_LANCZOS)
++		# Downsample coverage in premultiplied form, then store straight-alpha
++		# colour for ordinary canvas sampling. Leave mask coverage premultiplied.
++		for image: Image in [reference,base]:
++			for y: int in range(SIZE.y):
++				for x: int in range(SIZE.x):
++					var pixel: Color = image.get_pixel(x,y)
++					if pixel.a>0.001 and pixel.a<0.999:
++						image.set_pixel(x,y,Color(minf(1,pixel.r/pixel.a),minf(1,pixel.g/pixel.a),minf(1,pixel.b/pixel.a),pixel.a))
++		var reference_path: String = evidence.path_join(id+"-actual.png")
++		check(reference.save_png(reference_path)==OK,id+" reference saved")
++		check(base.save_png(evidence.path_join(id+"-neutral.png"))==OK,id+" neutral saved")
++		check(mask.save_png(evidence.path_join(id+"-mask.png"))==OK,id+" masks saved")
++		var files: Dictionary = {}
++		for item: Array in [["image",base],["mask",mask]]:
++			var image: Image = item[1]
++			image.generate_mipmaps()
++			var texture := ImageTexture.create_from_image(image)
++			texture.set_meta("schema","rivalry-actual-car-photos-2")
++			texture.set_meta("vehicle_id",id)
++			texture.set_meta("image_role",str(item[0]))
++			texture.set_meta("paint_defaults",VehicleLivery.defaults(id).colors)
++			texture.set_meta("baker_sha256",report.baker_sha256)
++			var path: String = OUTPUT.path_join(id+"_"+str(item[0])+".res")
++			check(ResourceSaver.save(texture,path,ResourceSaver.FLAG_COMPRESS)==OK,id+" texture saved")
++			files[item[0]] = FileAccess.get_sha256(path)
++		report.cars[id] = {"meshes":mesh_count,"source_triangles":triangles,"fov":camera.fov,"rotation_y":car.rotation.y,"hashes":files,"default_paint":VehicleLivery.defaults(id).colors,"reference_sha256":FileAccess.get_sha256(reference_path)}
++		viewport.free()
++		await process_frame
++		print("ACTUAL_CAR_BAKED ",id," ",JSON.stringify(report.cars[id]))
++	FileAccess.open(evidence.path_join("bake.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("ACTUAL_CAR_BAKE ",report.cars.size()," cars, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_rivalry_car_photos.gd b/game/tests/test_rivalry_car_photos.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_rivalry_car_photos.gd
+@@ -0,0 +1,78 @@
++extends SceneTree
++## Compare runtime paintable photographs with their actual canonical native car.
++const Preview = preload("res://ui/rivalry_simple_car.gd")
++var checks: int = 0
++var failures: int = 0
++var evidence: String = OS.get_environment("BMT_REAL_CAR_EVIDENCE")
++var metrics: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("FAIL: ",label)
++func drawn() -> void:
++	await process_frame
++	await RenderingServer.frame_post_draw
++
++func run() -> void:
++	root.size = Vector2i(1200,480)
++	var backdrop := ColorRect.new()
++	backdrop.color = Color("172b3b")
++	backdrop.size = Vector2(1200,480)
++	root.add_child(backdrop)
++	var bake: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(evidence.path_join("bake.json")))
++	for id: String in bake.cars:
++		var source: Image = Image.load_from_file(evidence.path_join(id+"-actual.png"))
++		var left := TextureRect.new()
++		left.texture = ImageTexture.create_from_image(source)
++		left.position = Vector2(30,90)
++		left.size = Vector2(512,320)
++		left.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
++		root.add_child(left)
++		var preview: Control = Preview.new()
++		preview.vehicle_id = id
++		preview.livery = {"colors":bake.cars[id].default_paint.duplicate(true)}
++		preview.position = Vector2(650,90)
++		preview.size = Vector2(512,320)
++		var start: int = Time.get_ticks_usec()
++		root.add_child(preview)
++		var built_us: int = Time.get_ticks_usec()-start
++		check(preview.presentation_ready and preview.photo_vehicle==id,id+" exact vehicle photograph is ready")
++		check(preview.get_child_count()==0 and not preview.is_processing(),id+" creates no geometry, viewport or frame processing")
++		var photo: Image = preview.photo.get_image()
++		check(photo.get_size()==Vector2i(512,320),id+" photograph has bounded detail resolution")
++		var alpha_differences: int = 0
++		for y: int in range(320):
++			for x: int in range(512):
++				if photo.get_pixel(x,y).a!=source.get_pixel(x,y).a: alpha_differences += 1
++		check(alpha_differences==0,id+" silhouette coverage equals the actual car at every pixel")
++		for _i: int in range(3): await drawn()
++		var image: Image = root.get_texture().get_image()
++		var actual: Image = image.get_region(Rect2i(30,90,512,320))
++		var result: Image = image.get_region(Rect2i(650,90,512,320))
++		var error: float = 0
++		var pixels: int = 0
++		for y: int in range(320):
++			for x: int in range(512):
++				if source.get_pixel(x,y).a<0.99: continue
++				var a: Color = actual.get_pixel(x,y)
++				var b: Color = result.get_pixel(x,y)
++				error += (absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b))/3
++				pixels += 1
++		error /= maxi(1,pixels)
++		check(error<0.08,id+" stock paint retains native source appearance")
++		metrics.append({"vehicle":id,"build_us":built_us,"opaque_pixels":pixels,"mean_rgb_error":error,"alpha_differences":alpha_differences})
++		for entry: Array in [[30,"ACTUAL GAME MODEL"],[650,"LIGHTWEIGHT RIVALRY PREVIEW"]]:
++			var label := Label.new()
++			label.position = Vector2(entry[0],45)
++			label.text = id.to_upper()+" — "+str(entry[1])
++			root.add_child(label)
++		await drawn()
++		check(root.get_texture().get_image().save_png(evidence.path_join(id+"-comparison-"+RenderingServer.get_current_rendering_method()+".png"))==OK,id+" source comparison saved")
++		for child: Node in root.get_children():
++			if child!=backdrop: child.free()
++		await process_frame
++	FileAccess.open(evidence.path_join("photo-comparison-"+RenderingServer.get_current_rendering_method()+".json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"\t"))
++	print("REAL_PHOTO_COMPARISONS ",JSON.stringify(metrics))
++	print("RIVALRY_PHOTOS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/scripts/qualify_rivalry_real_previews.py b/scripts/qualify_rivalry_real_previews.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/qualify_rivalry_real_previews.py
+@@ -0,0 +1,211 @@
++"""Private native renders of real cars and offline Rivalry UI qualification."""
++import argparse
++import fnmatch
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import sys
++
++import qualify_rivalry_simple_cars as runner
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / "build/rivalry-real-previews-2026-11-13"
++OUT = ROOT / "docs/evidence/rivalry-real-previews-2026-11-13"
++PROJECT = WORK / "project/game"
++USE_PHOTO = False
++USE_OLD_APP = False
++USE_OLD_PHOTO = False
++OWNED = ["ui/rivalry_simple_car.gd", "ui/rivalry_car_photo.gdshader",
++         "core/app.gd",
++         "tests/bake_rivalry_car_previews.gd", "tests/test_rivalry_car_photos.gd", "tests/test_rivalry_simple_car.gd",
++         "tests/test_rivalry_custom_cars.gd", "tests/profile_deep_loading.gd",
++         "tests/test_rivalry_ready_entry.gd", "tests/test_rivalry_view_polish.gd"]
++
++
++def geometry_inputs():
++    spec = json.loads((ROOT / "game/vehicle/prepared_asset_dependencies.json").read_text())
++    paths = []
++    for directory in ["vehicle", "resources", "assets/vehicles", "assets/liveries", "assets/fonts"]:
++        for p in (ROOT / "game" / directory).rglob("*"):
++            if not p.is_file() or p.suffix in (".uid", ".import"): continue
++            rel = p.relative_to(ROOT).as_posix()
++            # Catalogue pictures are generated outputs, not inputs to the
++            # stock, plain-paint car construction used by this photograph.
++            if "/previews_v2/" in rel: continue
++            if any(fnmatch.fnmatchcase(rel, pattern) for pattern in spec["excluded"]): continue
++            paths.append(p)
++    paths += [ROOT / "game" / p for p in ["ui/garage_environment.gd", "ui/showroom_studio.gd", "ui/studio_sky.gdshader"]]
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
++
++
++def source_fingerprint(inputs):
++    """Retain every path/hash while keeping packaged provenance small."""
++    direct, trees = {}, {}
++    for rel, digest in inputs.items():
++        if rel.startswith("game/assets/"):
++            tree = "/".join(rel.split("/")[:3])
++            trees.setdefault(tree,{})[rel] = digest
++        else:
++            direct[rel] = digest
++    for tree, files in trees.items():
++        direct["tree:"+tree] = hashlib.sha256(json.dumps(files,sort_keys=True).encode()).hexdigest()
++    return direct
++
++
++def prepare(full=False):
++    if (WORK / "snapshot.json").exists():
++        prior = json.loads((WORK / "snapshot.json").read_text())
++        if prior["geometry_inputs"].pop("game/tests/bake_rivalry_car_previews.gd",None) is not None:
++            prior["baker_tracked_per_capture"] = True
++            (WORK / "snapshot.json").write_text(json.dumps(prior,indent=2))
++            (OUT / "snapshot.json").write_text(json.dumps(prior,indent=2))
++    if not (WORK / "snapshot.json").exists():
++        paths = [p for p in (ROOT / "game").rglob("*") if p.is_file()
++                 and p.relative_to(ROOT / "game").parts[0] not in (".godot", "android", "tmp", "build")]
++        before = geometry_inputs()
++        for p in paths:
++            target = PROJECT / p.relative_to(ROOT / "game")
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copy2(p, target)
++        cache = PROJECT / ".godot"
++        cache.mkdir(exist_ok=True)
++        for name in ("global_script_class_cache.cfg", "extension_list.cfg", "uid_cache.bin"):
++            source = ROOT / "game/.godot" / name
++            if source.exists(): shutil.copy2(source, cache / name)
++        shutil.copytree(ROOT / "game/.godot/imported", cache / "imported", dirs_exist_ok=True)
++        shutil.copytree(ROOT / "backend/tests/fixtures", PROJECT.parent / "backend/tests/fixtures", dirs_exist_ok=True)
++        after = geometry_inputs()
++        mismatches = [rel for rel in before.keys() | after.keys() if before.get(rel) != after.get(rel)
++                      or not (PROJECT.parent / rel).is_file()
++                      or hashlib.sha256((PROJECT.parent / rel).read_bytes()).hexdigest() != after.get(rel)]
++        receipt = {"geometry_inputs":after, "changed_during_copy":mismatches,
++                   "scope":"Real private source/assets/imports; no junctions, hardlinks or shared profile"}
++        (WORK / "snapshot-attempt.json").write_text(json.dumps(receipt, indent=2))
++        if mismatches: raise RuntimeError(f"Snapshot inputs changed: {mismatches[:12]}")
++        (WORK / "snapshot.json").write_text(json.dumps(receipt, indent=2))
++        (OUT / "snapshot.json").write_text(json.dumps(receipt, indent=2))
++    for rel in OWNED:
++        if (ROOT / "game" / rel).exists():
++            target = PROJECT / rel
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copy2(ROOT / "game" / rel, target)
++    if USE_PHOTO:
++        shutil.copy2(WORK / "proposed/rivalry_simple_car.gd", PROJECT / "ui/rivalry_simple_car.gd")
++    if USE_OLD_APP:
++        shutil.copy2(WORK / "before/game/core/app.gd", PROJECT / "core/app.gd")
++    if USE_OLD_PHOTO:
++        shutil.copy2(WORK / "before/game/ui/rivalry_simple_car.gd", PROJECT / "ui/rivalry_simple_car.gd")
++    if full: return PROJECT
++    minimal = WORK / "minimal"
++    minimal.mkdir(exist_ok=True)
++    (minimal / "project.godot").write_text('config_version=5\n[application]\nconfig/name="Real Rivalry car previews"\n[display]\nwindow/size/viewport_width=1200\nwindow/size/viewport_height=610\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n', encoding="utf-8")
++    for rel in ["ui/rivalry_simple_car.gd", "ui/rivalry_car_photo.gdshader", "tests/test_rivalry_car_photos.gd", "tests/test_rivalry_simple_car.gd"]:
++        target = minimal / rel
++        target.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copy2(PROJECT / rel, target)
++    shutil.copytree(PROJECT / "assets/menu/rivalry_cars_v2", minimal / "assets/menu/rivalry_cars_v2", dirs_exist_ok=True)
++    return minimal
++
++
++def publish():
++    snapshot = json.loads((WORK / "snapshot.json").read_text())
++    current = geometry_inputs()
++    if current != snapshot["geometry_inputs"]:
++        changed = [rel for rel in current.keys() | snapshot["geometry_inputs"].keys()
++                   if current.get(rel) != snapshot["geometry_inputs"].get(rel)]
++        raise RuntimeError(f"Refuse stale preview publication: {changed[:12]}")
++    report = json.loads((OUT / "bake.json").read_text())
++    assert report["baker_sha256"] == hashlib.sha256((ROOT / "game/tests/bake_rivalry_car_previews.gd").read_bytes()).hexdigest()
++    assert set(report["cars"]) == {"compact", "super_rally", "electric", "kart", "forklift", "hovercraft"}
++    dest = ROOT / "game/assets/menu/rivalry_cars_v2"
++    dest.mkdir(parents=True, exist_ok=True)
++    files = {}
++    for vehicle, data in report["cars"].items():
++        for role, expected in data["hashes"].items():
++            name = vehicle+"_"+role+".res"
++            src = PROJECT / "assets/menu/rivalry_cars_v2" / name
++            assert hashlib.sha256(src.read_bytes()).hexdigest() == expected
++            shutil.copy2(src, dest / name)
++            files[name] = expected
++    provenance = dict(report, sources=source_fingerprint(current), source_input_count=len(current), textures=files)
++    (dest / "provenance.json").write_text(json.dumps(provenance, indent=2)+"\n")
++    (OUT / "publication.json").write_text(json.dumps({"textures":files,"input_fence_exact":True},indent=2)+"\n")
++    print(json.dumps({"published_textures":len(files),"source_inputs":len(current)}))
++
++
++def refresh():
++    before = geometry_inputs()
++    for p in (ROOT / "game").rglob("*"):
++        if not p.is_file() or p.relative_to(ROOT / "game").parts[0] in ("assets", ".godot", "android", "tmp", "build"): continue
++        target = PROJECT / p.relative_to(ROOT / "game")
++        target.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copy2(p,target)
++    for rel in before:
++        target = PROJECT.parent / rel
++        target.parent.mkdir(parents=True,exist_ok=True)
++        shutil.copy2(ROOT / rel,target)
++    for name in ("global_script_class_cache.cfg", "extension_list.cfg", "uid_cache.bin"):
++        source = ROOT / "game/.godot" / name
++        if source.exists(): shutil.copy2(source,PROJECT / ".godot" / name)
++    after = geometry_inputs()
++    changed = [rel for rel in before.keys() | after.keys() if before.get(rel)!=after.get(rel)
++               or not (PROJECT.parent/rel).is_file()
++               or hashlib.sha256((PROJECT.parent/rel).read_bytes()).hexdigest()!=after.get(rel)]
++    prior = json.loads((WORK/"snapshot.json").read_text())
++    history_path = OUT/"refreshes.json"
++    history = json.loads(history_path.read_text()) if history_path.exists() else []
++    history.append({"previous_inputs_changed":[rel for rel in before.keys()|prior["geometry_inputs"].keys() if before.get(rel)!=prior["geometry_inputs"].get(rel)],"copy_changed":changed})
++    history_path.write_text(json.dumps(history,indent=2))
++    if changed: raise RuntimeError(f"Refresh inputs changed: {changed[:12]}")
++    receipt = {"geometry_inputs":after,"changed_during_copy":[],"scope":"Refreshed real private source/assets; no shared links"}
++    (WORK/"snapshot.json").write_text(json.dumps(receipt,indent=2))
++    (OUT/"snapshot.json").write_text(json.dumps(receipt,indent=2))
++    print(json.dumps({"refreshed_inputs":len(after),"previous_differences":len(history[-1]["previous_inputs_changed"])}))
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("name")
++    parser.add_argument("--bake", action="store_true")
++    parser.add_argument("--publish", action="store_true")
++    parser.add_argument("--photo", action="store_true")
++    parser.add_argument("--refresh", action="store_true")
++    parser.add_argument("--before-canvas-wait", action="store_true")
++    parser.add_argument("--before-photo", action="store_true")
++    parser.add_argument("--only", default="")
++    args, forwarded = parser.parse_known_args()
++    global USE_PHOTO, USE_OLD_APP, USE_OLD_PHOTO
++    USE_PHOTO = args.photo
++    USE_OLD_APP = args.before_canvas_wait
++    USE_OLD_PHOTO = args.before_photo
++    WORK.mkdir(parents=True, exist_ok=True)
++    OUT.mkdir(parents=True, exist_ok=True)
++    if args.publish: publish(); return 0
++    if args.refresh: refresh(); return 0
++    os.environ["BMT_REAL_CAR_EVIDENCE"] = str(OUT)
++    os.environ["BMT_REAL_CAR_ONLY"] = args.only
++    runner.WORK = WORK
++    runner.OUT = OUT
++    runner.prepare = prepare
++    sys.argv = [sys.argv[0],args.name,*forwarded]
++    if args.bake: sys.argv += ["--full","--script","res://tests/bake_rivalry_car_previews.gd"]
++    status = runner.main()
++    receipt_path = OUT / (args.name+"-receipt.json")
++    if receipt_path.exists():
++        receipt = json.loads(receipt_path.read_text())
++        receipt["source_scope"] = "Real private source/assets/import copies; no shared links"
++        if args.bake and receipt["exit_code"]==0 and not receipt["diagnostics"]:
++            changed = receipt["changed_files"]
++            allowed = {"assets/menu/rivalry_cars_v2/"+car+"_"+role+".res" for car in ["compact","kart","forklift","electric","hovercraft","super_rally"] for role in ["image","mask"]}
++            if set(changed) <= allowed:
++                receipt["input_unchanged_except_declared_bake_outputs"] = True
++                receipt["declared_output_changes"] = changed
++                status = 0
++        receipt_path.write_text(json.dumps(receipt,indent=2)+"\n")
++    return status
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/check_rivalry_car_previews.py b/scripts/check_rivalry_car_previews.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/check_rivalry_car_previews.py
+@@ -0,0 +1,40 @@
++"""Reject missing, altered or stale photographs of the actual Rivalry cars."""
++import hashlib
++import json
++from pathlib import Path
++import re
++
++from qualify_rivalry_real_previews import geometry_inputs, source_fingerprint
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def check():
++    folder = ROOT / "game/assets/menu/rivalry_cars_v2"
++    provenance = json.loads((folder / "provenance.json").read_text(encoding="utf-8"))
++    catalog = (ROOT / "game/vehicle/vehicle_catalog.gd").read_text(encoding="utf-8")
++    match = re.search(r'const IDS: Array\[String\] = \[([^\]]+)\]',catalog)
++    assert match, "Cannot read active vehicle IDs"
++    vehicles = set(re.findall(r'"([^"]+)"',match[1]))
++    assert provenance["schema"] == "rivalry-actual-car-photos-2", "Wrong Rivalry photograph schema"
++    assert provenance["size"] == [512,320] and provenance["neutral"] == "808080", "Wrong image/paint contract"
++    assert set(provenance["cars"]) == vehicles, "Every active car needs its actual photograph"
++    expected = {vehicle+"_"+role+".res" for vehicle in vehicles for role in ("image","mask")}
++    assert set(provenance["textures"]) == expected, "Rivalry image/mask pairs are incomplete"
++    pinned = (ROOT / "godot-version.txt").read_text().strip().split(".")
++    display_version = ".".join(pinned[:3])+"-"+pinned[3]+" ("+pinned[4]+")"
++    assert provenance["engine"]==display_version, "Rebake Rivalry pictures with the pinned engine"
++    baker = ROOT / "game/tests/bake_rivalry_car_previews.gd"
++    assert hashlib.sha256(baker.read_bytes()).hexdigest() == provenance["baker_sha256"], "Rivalry photograph baker changed; rebake"
++    inputs = geometry_inputs()
++    current = source_fingerprint(inputs)
++    if current != provenance["sources"]:
++        changed = sorted(rel for rel in current.keys() | provenance["sources"].keys() if current.get(rel) != provenance["sources"].get(rel))
++        raise ValueError("Actual-car Rivalry pictures are stale; refresh/bake/publish with scripts/qualify_rivalry_real_previews.py: "+", ".join(changed[:8]))
++    for name, expected_hash in provenance["textures"].items():
++        assert hashlib.sha256((folder/name).read_bytes()).hexdigest() == expected_hash, "Altered Rivalry picture: "+name
++    print(f"RIVALRY_CAR_PREVIEWS: {len(vehicles)} actual vehicles, {len(expected)} exact textures, {len(inputs)} current inputs / {len(current)} fingerprints")
++
++
++if __name__ == "__main__":
++    check()
+diff --git a/docs/RIVALRY_REAL_CAR_PREVIEWS_2026_11_13.md b/docs/RIVALRY_REAL_CAR_PREVIEWS_2026_11_13.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_REAL_CAR_PREVIEWS_2026_11_13.md
+@@ -0,0 +1,40 @@
++# Rivalry previews use the actual cars — 13 November 2026
++
++RRP01–RRP05: owner rejects the generic faceted cars because they no longer resemble the actual vehicles. The Rivalry podium now displays small native renders of the real reduced stock models, retaining the body proportions, glazing, wheels, lights, Forklift structure, Hover fans and current Kart driver. Player body/accent/detail colours are applied through image masks. There is no runtime car geometry or 3D viewport in this podium view.
++
++[All six updated cars](evidence/rivalry-real-previews-2026-11-13/gallery-gl_compatibility.png) · [Actual Rivalry page](evidence/rivalry-real-previews-2026-11-13/qualified-real-entry-gl/rivalry.png) · [Real model versus preview](evidence/rivalry-real-previews-2026-11-13/super_rally-comparison-gl_compatibility.png)
++
++## Appearance and implementation
++
++The offline baker constructs canonical CarVisual models with prepared caches disabled, stock kits, the original vertex positions/normals/UVs and actual materials under the Garage lighting rig. It captures a default-paint reference, a neutral-grey shaded image and a three-channel paint mask at the same camera/pose. Supersampling, straight-alpha resolution and mipmaps preserve fine edges. Runtime shading recolours only the painted regions and retains a small highlight for dark paints; glass, tyres, lamps and other fixed details remain photographed.
++
++Each car has a 512×320 colour/mask pair. All twelve compressed native textures total 1,105,485 bytes. The six-car gallery measures twelve draw calls including six labels: one call and one quad per car. Immutable pictures are shared, while each player owns its pigment material. There is no per-frame script work or new persistent runtime cache. Stock photographs deliberately omit fitted-kit geometry, wraps/stickers and dirt; their source payloads remain intact. This is not a claim to render a fully equipped Garage replica.
++
++The native comparison tests verify the alpha value at every pixel against the full actual-model reference, without an alpha tolerance. All six cars are exact on both desktop renderers. Average per-channel RGB differences over opaque pixels are about 0.6–3.7% from the tint approximation; these are averages, not a maximum-pixel bound or full pixel identity. The reference is a native OpenGL bake displayed on each renderer. Owner appearance acceptance and actual Android qualification remain.
++
++Navigation treats these as ordinary canvas views and keeps the existing four-step radiance preparation for pages that own 3D SubViewports. Delayed membership, navigation cancellation, first-visible content and the actionable failure page pass on both desktop renderers. The previous unlit hue assumption in the fixture did not describe the real model’s bright roof/hood highlights and was updated.
++
++## Loading and checks
++
++| Desktop renderer | First actual App entry ms | Repeat ms | Rivalry feature load ms |
++| --- | ---: | ---: | ---: |
++| OpenGL Compatibility | 613.4 | 61.2 | 385.4 |
++| Vulkan Mobile (desktop) | 535.5 | 72.2 | 318.7 |
++
++Pinned official Godot 4.7.2 (`ed1daf0bf`), i7-11700K/RTX 3090, Windows, 1280×720 offscreen native windows, Dummy audio, offline API configuration, private profiles and suppressed optional Garage warming. Runs are sequential; renderer/OS caches and other owner work are uncontrolled. These are individual desktop observations, not statistical speedups, a pure GPU-time measurement or Android FPS/thermal results. The detailed 3D podium’s earlier native first-use stall is avoided by drawing photographs.
++
++Selected checks total 1,115 passing runtime assertions plus 552 production scripts compiled in the private fixture: actual-source comparisons 36/0 each renderer, photo lifecycle/draw/colour isolation 54/0 each, custom appearance/layout/scope 204/0 each, actual App entry 6/0 each, delayed/cancelled/error entry 67/0 each and layout refresh 381/0. Every selected run records unchanged private inputs. The original vehicle scripts/configurations were not edited by this task; concurrent owner changes are listed separately in the protected-source receipt.
++
++The final actual-source comparisons and gallery checks were repeated after concurrent vehicle-asset changes. The wider App matrix and timing rows describe the earlier pinned asset revision with the same preview implementation; they are not a whole-project qualification of every subsequent concurrent change.
++
++Strict cleanup qualification is not universally clean: some GL App/profile/layout runs retain two ObjectDB instances and one resource at exit. The same diagnostics reproduce with the before-photo faceted view. Those strict runs are retained as cleanup-gate failures, not silently counted as clean passes; the functional assertions and timing rows still complete. Isolated photo/gallery tests, both readiness routes and the production parser are clean. Two earlier readiness observations were rejected after an overlapping retry changed the fixture; no measurements from them support the conclusions. See `retained-findings.json` and the raw receipts.
++
++## Source parity, build integration and limits
++
++The source-checked publication fence rejected concurrent model changes, then an immediate refresh/bake/publish sequence accepted all six current captures. The final live check verifies six vehicles, twelve exact textures and 21,297 input paths through 166 fingerprints. Tree fingerprints retain the hash of every path and content hash, reducing packaged provenance to 24,953 bytes. The Android export workflow now calls this freshness check; later car or lighting changes require a rebake. No export or device action was invoked.
++
++A fresh bake uses `python scripts/qualify_rivalry_real_previews.py NAME --bake --renderer gl_compatibility`, followed by `python scripts/qualify_rivalry_real_previews.py NAME --publish` and `python scripts/check_rivalry_car_previews.py`. When reusing a fixture after art changes, run the helper with `--refresh` first. Native-only construction occurs offline in a real private source/assets/import copy; no frozen vehicle binary is published into live. Only the new thumbnail family is copied. Export validation fails closed on missing, changed or stale photographs.
++
++[Evidence](evidence/rivalry-real-previews-2026-11-13/) includes actual-model references, native comparisons, stable input digests, strict exit diagnostics, publication fences, generated-asset hashes and a task-only source checkpoint. The source patch has exact forward/reverse validation in a small disposable fixture and leaves the main index unchanged. Native resources are listed separately, rather than embedding large binary payloads in the source checkpoint.
++
++The temporary build pin is removed at completion and the owner’s retention cleaner applied. Project copies, profiles and shader caches remain disposable build output under normal active-work grace/retention, not permanent evidence. Relevant comparisons and concise receipts remain; `cleanup.json` records disposition. No Android query/test, APK, live backend request, deployment, owner-save edit or owner-process change was performed. Reload the game to see the updated previews.

@@ -16,6 +16,7 @@ func frames(count: int = 5) -> void:
 	for _frame: int in range(count): await process_frame
 
 func ready_cache() -> void:
+	print("HEADER_PHASE wait screen=",app.screen," stage=",app.header_car_cache._stage," jobs=",app.header_car_cache._jobs.size())
 	var deadline: int = Time.get_ticks_msec()+60000
 	while not app.header_car_cache.idle() and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.header_car_cache.idle(),"equipped picture work completes within deadline")
@@ -41,10 +42,10 @@ func compare_reference(paint: Dictionary, parts: Dictionary) -> void:
 	canvas.transparent_bg = true
 	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	root.add_child(canvas)
-	var reference: Control = Profile.make_preview("compact",paint,parts)
+	var reference: Control = load("res://ui/header_icon_renderer.gd").make_preview("compact",paint,parts)
 	reference.size = Vector2(Icons.SIZE)
 	canvas.add_child(reference)
-	Profile.apply_presentation(reference)
+	while not reference.presentation_ready: await process_frame
 	for _frame: int in range(7): await RenderingServer.frame_post_draw
 	var expected: Image = canvas.get_texture().get_image()
 	var actual: Image = picture().get_image()
@@ -64,7 +65,7 @@ func run() -> void:
 	OS.set_environment("BMT_API_URL","")
 	root.size = Vector2i(1280,720)
 	root.gui_embed_subwindows = true
-	output = ProjectSettings.globalize_path("res://../docs/evidence/header-car-appearance-cache-2026-10-26/"+RenderingServer.get_current_rendering_method())
+	output = OS.get_environment("BMT_RIVALRY_CARS_EVIDENCE_DIR").path_join(RenderingServer.get_current_rendering_method())
 	DirAccess.make_dir_recursive_absolute(output)
 	Icons.customized.clear()
 	var folder: String = "user://header-equipped-"+TrackLibrary.unique_id()
@@ -74,12 +75,15 @@ func run() -> void:
 	app.cloud_root_override = folder.path_join("cloud")
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	print("HEADER_PHASE startup ready")
 	app.race_area_mode = "free"
 	app._show_screen("tracks")
+	print("HEADER_PHASE tracks requested")
 	app._select_header_vehicle(0)
 	await ready_cache()
 	var cache: Node = app.header_car_cache
 	check(cache.captures==0,"stock pictures require no runtime captures")
+	print("HEADER_PHASE stock ready")
 	var paint: Dictionary = VehicleLivery.defaults("compact")
 	paint.colors.body = "c82e37"
 	paint.pattern = str(LiveryCatalog.patterns[3].id)
@@ -87,6 +91,7 @@ func run() -> void:
 	parts.hood = "cowl"
 	parts.aero = "splitwing"
 	save_look(paint,parts)
+	print("HEADER_PHASE custom saved")
 	await ready_cache()
 	var key: String = Icons.appearance_key("compact",app.records)
 	check(Icons.customized.has(key) and picture()==Icons.texture("compact",app.records),"header receives the exact equipped appearance")
@@ -102,7 +107,7 @@ func run() -> void:
 		app._refresh_account_car()
 	await ready_cache()
 	check(cache.captures==captures and picture()==first_texture,"menu refreshes reuse the exact cached image without rendering")
-	app._select_header_vehicle(6)
+	app._select_header_vehicle(1)
 	await create_timer(0.3).timeout
 	var picker: MenuButton = app.account_button.get_node("MenuCarPicker")
 	picker.show_popup()
@@ -110,7 +115,7 @@ func run() -> void:
 	var popup: PopupMenu = picker.get_popup()
 	var row: int = popup.get_item_index(0)
 	check(row>=0 and popup.get_item_icon(row)==first_texture,"dropdown uses the same equipped picture")
-	check(popup.item_count==6 and popup.get_item_index(6)==-1,"active car stays excluded")
+	check(popup.item_count==VehicleCatalog.IDS.size()-1 and popup.get_item_index(1)==-1,"active car stays excluded")
 	await shot("equipped-dropdown")
 	popup.hide()
 	app._select_header_vehicle(0)

@@ -97,8 +97,8 @@ func arrival(id: String) -> void:
 			for y: int in range(0,picture.get_height(),4):
 				for x: int in range(0,picture.get_width(),4):
 					var pixel: Color = picture.get_pixel(x,y)
-					if pixel.r>pixel.b*1.08 and pixel.r>0.4: pixels += 1
-			check(pixels>10,"fully visible page contains the rendered stock roof pigments")
+					if minf(pixel.r,minf(pixel.g,pixel.b))>0.55: pixels += 1
+			check(pixels>10,"fully visible page contains the actual car's light roof and hood")
 
 func run() -> void:
 	var profile: String = ProjectSettings.globalize_path("user://").replace("\\","/").simplify_path()
@@ -110,6 +110,10 @@ func run() -> void:
 		quit(1)
 		return
 	OS.set_environment("BMT_API_URL","")
+	create_timer(45,true,false,true).timeout.connect(func() -> void:
+		check(false,"readiness suite completes without a stalled frame wait")
+		print("RIVALRY_READY_ENTRY: %d checks, %d failures" % [checks,failures])
+		quit(1))
 	var offline := ConfigFile.new()
 	offline.set_value("backend","url","")
 	check(offline.save("user://backend.cfg")==OK,"disable real service access")

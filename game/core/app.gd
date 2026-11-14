@@ -1023,7 +1023,10 @@ func _start_prepared_race_mode(generation: int, motion: Tween) -> void:
 		if page.ready_for_display():
 			prepared_draws += 1
 		else: prepared_draws = 0
-		if prepared_draws >= (1 if DisplayServer.get_name() == "headless" else 4):
+		# Canvas photographs draw with the incoming menu. A static error page
+		# may stop requesting draws, so only actual 3D views need radiance warmup.
+		var required_draws: int = 1 if DisplayServer.get_name() == "headless" or page.find_children("*","SubViewport",true,false).is_empty() else 4
+		if prepared_draws >= required_draws:
 			_preparing_rivalry_motion = null
 			motion.play()
 			return

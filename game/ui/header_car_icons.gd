@@ -1,7 +1,7 @@
 extends RefCounted
 ## Header widgets only display textures. Equipped appearances are cached by App.
 const Build = preload("res://core/build_identity.gd")
-const VERSION: String = "header-equipped-1"
+const VERSION: String = "header-equipped-simple-2"
 const CUSTOM_LIMIT: int = 14
 const SIZE := Vector2i(176,112)
 const DIRECTORY: String = "res://assets/menu/header_cars_v1/"

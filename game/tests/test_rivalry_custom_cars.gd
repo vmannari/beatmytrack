@@ -51,15 +51,16 @@ func run() -> void:
 		page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		root.add_child(page)
 		for _frame: int in range(12): await process_frame
+		await equipped_ready(page)
 		check_podium_alignment(page)
 		for index: int in range(3):
 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
 			check(car != null,"all three ranked players get their own native car")
-			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.triangle_count<=600,"podium uses the tiny faceted model")
-			check(car.get_child_count()==0,"podium creates no viewport or reflection studio")
-			check(car.presentation_ready,"projected podium model is ready in its first layout")
+			check(car.get_script()==preload("res://ui/rivalry_simple_car.gd") and car.car.vehicle_id==model.vehicle_id,"podium uses the player's actual equipped car")
+			check(car.find_children("*","WorldEnvironment",true,false).is_empty(),"podium creates no reflection studio")
+			check(car.presentation_ready,"equipped car is ready before publication")
 			check(car.vehicle_id == "compact" and car.livery == appearance(index).livery,"podium retains each player's appearance payload and pigments")
-			check(car.customisation == appearance(index).customisation,"simplified podium preserves fitted-part metadata without building it")
+			check(car.car.customisation == appearance(index).customisation,"podium builds each player's fitted parts")
 			check(car.condition.is_empty(),"remote podium never receives local dirt or washing")
 			check(Rect2(Vector2.ZERO,Vector2(dimensions)).encloses(car.get_global_rect()),"native cars remain within the smaller hub bounds")
 		if DisplayServer.get_name() != "headless":
@@ -128,6 +129,16 @@ func check_podium_alignment(page: Control) -> void:
 				"ranked heights retain aligned card bottoms")
 	print("PODIUM_ROW_BOUNDS: size=%s rows=%s" % [root.size,reference])
 
+func equipped_ready(page: Control) -> void:
+	var deadline: int = Time.get_ticks_msec()+20000
+	while Time.get_ticks_msec()<deadline:
+		var ready: bool = true
+		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
+			if not car.presentation_ready: ready = false
+		if ready: return
+		await process_frame
+	check(false,"all equipped podium cars finish within the fixture deadline")
+
 func all_vehicle_views() -> void:
 	root.size = Vector2i(1280,720)
 	for id: String in VehicleCatalog.IDS:
@@ -141,20 +152,22 @@ func all_vehicle_views() -> void:
 		page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		root.add_child(page)
 		for _frame: int in range(12): await process_frame
+		await equipped_ready(page)
 		await RenderingServer.frame_post_draw
 		for index: int in range(3):
 			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
 			check(car.vehicle_id == id and car.livery == appearance(index,id).livery,id+" retains each player's identity and paint")
-			check(car.triangle_count<=600 and car.get_child_count()==0,id+" podium uses the tiny projected geometry")
-			var picture: Image = root.get_texture().get_image().get_region(Rect2i(car.get_global_rect()))
+			check(car.car.model_ready and car.viewport.render_target_update_mode==SubViewport.UPDATE_DISABLED,id+" equipped podium freezes after rendering")
+			var picture: Image = car.viewport.get_texture().get_image()
 			var occupied: int = 0
 			var pigment := Color(str(appearance(index,id).livery.colors.body))
-			var target := Vector3(pigment.r,pigment.g,pigment.b).normalized()
 			for y: int in range(picture.get_height()):
 				for x: int in range(picture.get_width()):
 					var pixel: Color = picture.get_pixel(x,y)
-					if Vector3(pixel.r,pixel.g,pixel.b).normalized().dot(target)>0.9995 and pixel.v>0.1: occupied += 1
-			check(occupied > picture.get_width()*picture.get_height()*0.015,id+" visible body pixels retain that player's pigment")
+					if pixel.a>0.5: occupied += 1
+			# A real wrap may cover most of the body pigment, particularly on
+			# the small Forklift. Check the actual raster and paint independently.
+			check(occupied>500 and car.car.paint_materials.body.albedo_color==pigment,id+" renders its real shape with that player's paint beneath the wrap")
 		check(root.get_texture().get_image().save_png(evidence.path_join("car-"+id+".png")) == OK,id+" native podium evidence saved")
 		page.free()
 		await process_frame

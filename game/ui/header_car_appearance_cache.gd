@@ -5,7 +5,6 @@ signal capture_started(vehicle: String)
 signal capture_finished
 const Icons = preload("res://ui/header_car_icons.gd")
 const Work = preload("res://editor/work_job.gd")
-const Graphics = preload("res://rendering/graphics_preparation.gd")
 const SIZE := Vector2i(176,112)
 const FILE_LIMIT: int = 14
 var records: LocalRecords
@@ -30,8 +29,6 @@ var _draws: int = 0
 var _stage: String = ""
 var _cover_ready: bool = false
 var _capture_announced: bool = false
-var _graphics_ticket: Dictionary = {}
-var _preparation: Node
 var _capture_generation: int = 0
 var _debounce: Timer
 var _retry: Timer
@@ -183,11 +180,10 @@ func _process(_delta: float) -> void:
 		canvas.transparent_bg = true
 		canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		add_child(canvas)
-		studio = load("res://ui/profile_car.gd").make_preview(_current.vehicle,_current.paint,_current.parts)
+		studio = load("res://ui/header_icon_renderer.gd").make_preview(_current.vehicle,_current.paint,_current.parts)
 		studio.size = Vector2(SIZE)
 		studio.cooperative_build = true
 		studio.cache_rest_pose = false
-		studio.header_template = true
 		studio.deferred_render = true
 		_stage = "build"
 		canvas.add_child(studio)
@@ -198,16 +194,11 @@ func _process(_delta: float) -> void:
 		# Finish this owner-thread build interval before submitting a first draw.
 		return
 	if _stage == "build" and studio.presentation_ready:
-		load("res://ui/profile_car.gd").apply_presentation(studio)
-		# Use the same bounded material queue as the live Garage. A small target
-		# still needs the original native programs; its pixel size cannot bound
-		# the cost of submitting every cold material in a single frame.
-		_preparation = load("res://race/world_render_preparation.gd").new()
-		studio.add_child(_preparation)
-		studio.preparing_render = true
-		_preparation.hold(studio.car.get_parent())
-		_stage = "prepare"
-		_prepare_header(_capture_generation,weakref(studio))
+		# One fixed unshaded finish needs no reflective studio/material queue.
+		# The second draw lets the 2D canvas resolve the first 3D target.
+		_stage = "draw"
+		_draws = 2
+		RenderingServer.frame_post_draw.connect(_after_draw)
 	if _stage == "draw":
 		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
 		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -244,28 +235,6 @@ func _process(_delta: float) -> void:
 	if idle(): set_process(false)
 	elif _current.is_empty() and _io == null: _wait_for_opportunity()
 
-func _preparation_current(generation: int, owner: WeakRef) -> bool:
-	return generation == _capture_generation and is_instance_valid(studio) and owner.get_ref() == studio and _valid(_current) and allowed.is_valid() and bool(allowed.call()) and _can_capture(_current)
-
-func _preparation_frame(generation: int, owner: WeakRef) -> bool:
-	if not _preparation_current(generation,owner): return false
-	canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
-	studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-	await RenderingServer.frame_post_draw
-	if not _preparation_current(generation,owner): return false
-	await get_tree().process_frame
-	return _preparation_current(generation,owner)
-
-func _prepare_header(generation: int, owner: WeakRef) -> void:
-	var complete: bool = await _preparation.prepare(_preparation_frame.bind(generation,owner),_preparation_current.bind(generation,owner))
-	if not complete or not _preparation_current(generation,owner): return
-	_preparation.release()
-	studio.preparing_render = false
-	_graphics_ticket = Graphics.begin_capture(studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
-	_stage = "draw"
-	_draws = 5
-	RenderingServer.frame_post_draw.connect(_after_draw)
-
 func _after_draw() -> void:
 	if canvas == null or _stage != "draw": return
 	if not allowed.is_valid() or not bool(allowed.call()) or not _can_capture(_current):
@@ -275,7 +244,6 @@ func _after_draw() -> void:
 	_draws -= 1
 	if _draws > 0: return
 	if _valid(_current):
-		Graphics.finish_capture(_graphics_ticket,studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
 		var pixels: Image = canvas.get_texture().get_image()
 		captures += 1
 		_io_job = _current
@@ -285,8 +253,6 @@ func _after_draw() -> void:
 
 func _release() -> void:
 	_capture_generation += 1
-	if is_instance_valid(_preparation): _preparation.release()
-	_preparation = null
 	if RenderingServer.frame_post_draw.is_connected(_cover_drawn): RenderingServer.frame_post_draw.disconnect(_cover_drawn)
 	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
 	if is_instance_valid(canvas):
@@ -297,7 +263,6 @@ func _release() -> void:
 	_current = {}
 	_stage = ""
 	_cover_ready = false
-	_graphics_ticket = {}
 	if _capture_announced:
 		_capture_announced = false
 		capture_finished.emit()

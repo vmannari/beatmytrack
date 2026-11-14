@@ -3,14 +3,21 @@ extends MeshInstance3D
 ## One non-colliding mesh, with the rewind silhouette treatment in neutral grey.
 const MAX_BYTES: int = 16 * 1024 * 1024
 static var prepared_meshes: Array[Dictionary] = []
+static var _finish_shader: Shader
+
+static func finish_shader() -> Shader:
+	# Keep the native program alive between race owners. Materials stay private.
+	if _finish_shader == null:
+		_finish_shader = Shader.new()
+		_finish_shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }"
+	return _finish_shader
+
 func configure(car: CarVisual, prepare_mesh: bool = true) -> void:
 	if prepare_mesh: _prepare_mesh(car)
 	scale = car.scale
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var surface := ShaderMaterial.new()
-	var shader := Shader.new()
-	shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }"
-	surface.shader = shader
+	surface.shader = finish_shader()
 	material_override = surface
 	hide()
 

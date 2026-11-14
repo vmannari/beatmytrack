@@ -1,0 +1,65 @@
+{
+  "requirements": {
+    "GPO01": "Attribute ground worker costs",
+    "GPO02": "Accelerate cold checkpoint creation while retaining shortcut protection and full-circuit completion",
+    "GPO03": "Verify existing selected preparation and disk reuse"
+  },
+  "implementation": [
+    "Spatial segment index replaces exhaustive path scan for each gate, with conservative boundary margin and stable candidate ordering.",
+    "Ground worker reports query/support/checkpoint/Winter timings to actual race profiler.",
+    "Existing selected-track prewarming and RAM/disk caches remain; no duplicate preparation system added."
+  ],
+  "changed_files": [
+    "game/core/game.gd",
+    "game/race/race_ground_preparation.gd",
+    "game/race/spline_gate_corridor.gd",
+    "game/tests/test_checkpoint_spatial_index.gd"
+  ],
+  "source_sha256": {
+    "game/core/game.gd": "f51a463ad2d5069b0b9c87589068fca9abc204b4caead05b1d1ddf017d37e29d",
+    "game/race/race_ground_preparation.gd": "f9f49d14e86d8cd46fca24446b8151b7fedb35b5f4dfa69d0c43b1960159daaa",
+    "game/race/spline_gate_corridor.gd": "a0b34a0c5a8f0dc86ec6a178c658e0eb8711dcb03e9667dead154fe9b111c920",
+    "game/tests/test_checkpoint_spatial_index.gd": "2c9f342a786810d0516f0dade152f559e66f22b6981efb71adc2b49912a5f4f3"
+  },
+  "paired_checkpoint_ms": [
+    {
+      "before": 4233.835,
+      "after": 3658.683
+    },
+    {
+      "before": 4719.467,
+      "after": 3762.582
+    },
+    {
+      "before": 4867.871,
+      "after": 3340.254
+    }
+  ],
+  "tests": {
+    "layout_equivalence": 436,
+    "rules": 266,
+    "bridge_layers_five_laps": 259,
+    "spatial_exhaustive_oracle": 40,
+    "disk_cache": 91,
+    "selected_events": 58,
+    "actual_race": 16
+  },
+  "failures_final": 0,
+  "retained_findings": [
+    "Initial new oracle fixture used mixed indentation and failed parsing; corrected repeat passes 40 assertions.",
+    "An occupied-bounds coverage experiment did not establish a timing benefit and was removed.",
+    "Final actual fresh Star race was 17.264s with 3.813s checkpoint worker; reentry 0.354s. These uncontrolled whole-App observations do not establish end-to-end improvement over earlier snapshots."
+  ],
+  "limits": [
+    "Desktop measurements, no device test/export/deployment or backend request.",
+    "Checkpoint layout and gameplay rules unchanged in passing comparisons; permission to change layouts did not require changing them.",
+    "Standalone cold support was about 0.83s; actual race support reused existing cache and took 0.929ms.",
+    "No new cache identity format or generated build identity was published; normal build workflow regenerates source manifests."
+  ],
+  "commands": [
+    "python build/ground-optimisation-20261114/run.py LABEL res://tests/TEST.gd",
+    "python build/ground-optimisation-20261114/run.py paired res://../build/ground-optimisation-20261114/paired.gd",
+    "python build/ground-optimisation-20261114/run.py actual-race res://tests/profile_loading_fixes.gd native",
+    "git diff --check -- game/core/game.gd game/race/race_ground_preparation.gd game/race/spline_gate_corridor.gd game/tests/test_checkpoint_spatial_index.gd"
+  ]
+}

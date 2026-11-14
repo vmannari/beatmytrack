@@ -1,0 +1,494 @@
+{
+  "reviewed_at_utc": "2026-11-13T16:51:22.114344+00:00",
+  "reviewer": "/root/startup_review",
+  "result": "No remaining correctness blocker found within the reviewed scope.",
+  "scope": "Independent read-only review of four world persistence runtime files and their regression fixture: option and disk identity, mutable resource isolation, missing/malformed/corrupt repair, cancellation and memory ownership, publication/read/prune synchronization and crash recovery. Runtime mutations were owned by race_review. Final independent headless checks used the frozen qualification project, pinned Godot 4.7.2 and private offline profiles.",
+  "world_source_sha256": {
+    "game/track/prepared_world_cache.gd": "4724af43be2ab78221bc201e4fa90b82b8417fe70d6c69bef185684d3a235139",
+    "game/track/native_track_visual.gd": "65c525f140ff55bb0a8540d4406d85cf669ca14257c0ea18901333da0361bd3e",
+    "game/track/prepared_world_disk_cache.gd": "2322105863137102ea2d15c4c77ca5eed06b0fe3b4fde74f5e71713787ad00be",
+    "game/track/prepared_world_artifact.gd": "9c041ac81e55c7d27d312c5845e808807215ca3b0e8f3087e80d832725ce3cbd"
+  },
+  "identified_and_fixed": [
+    "Shared RAM world keys now include geometry options; actual option-switch coverage prevents a RAM hit from bypassing disk identity changes.",
+    "Asynchronous publication rechecks the original build-current predicate, queued ancestors, cache generation and retained scene identity; preparation_complete alone cannot authorize a cancelled race.",
+    "Workers receive pure receipt values and a validated build hash; scene serialization and rendering resource access remain on the main thread, with weak owner references for pending IO.",
+    "A shared nonblocking directory lock covers read/checksum/decode, publication and pruning, eliminating manifest replacement/prune and payload validation/load races.",
+    "Dead-owner recovery unlinks only the exact observed immutable token and requires success, preventing a stale contender from deleting a replacement owner.",
+    "Lock acquisition atomically publishes an already-populated candidate directory; interrupted empty fixed directories can recover without permanently disabling the optional cache.",
+    "Locked pruning removes unreferenced finalized payloads even for live PIDs, while preserving live pending writes and cleaning abandoned owned candidates.",
+    "A later native cross-process corruption/repair control found a Night structural mismatch. Both synchronous and cooperative disk identity entry points now reject Night before build/source fingerprinting; the evidence-only override defaults false. Ordinary construction and bounded RAM reuse remain available."
+  ],
+  "independent_validation": {
+    "memory_retention_assertions": 129,
+    "memory_retention_failures": 0,
+    "production_scripts_parsed": 558,
+    "production_parse_failures": 0,
+    "feature_parse_failures": 0,
+    "all_runs_exit_zero_no_engine_errors_or_changed_source_asset_stamps": true,
+    "runs": [
+      {
+        "label": "final-memory-loading",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-memory-loading",
+          "res://tests/test_memory_policy_loading.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-memory-loading",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_memory_policy_loading.gd",
+          "--headless"
+        ],
+        "result": "MEMORY_LOADING 72 checks, 0 failures",
+        "assertions": 72,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-memory-loading-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-memory-loading.log"
+      },
+      {
+        "label": "final-memory-contact",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-memory-contact",
+          "res://tests/test_memory_contact_retention.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-memory-contact",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_memory_contact_retention.gd",
+          "--headless"
+        ],
+        "result": "MEMORY_CONTACT 10 checks, 0 failures",
+        "assertions": 10,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-memory-contact-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-memory-contact.log"
+      },
+      {
+        "label": "final-memory-retention",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-memory-retention",
+          "res://tests/test_race_loading_optimisation.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-memory-retention",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_race_loading_optimisation.gd",
+          "--headless"
+        ],
+        "result": "RACE_LOADING_OPTIMISATION 20 checks, 0 failures",
+        "assertions": 20,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-memory-retention-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-memory-retention.log"
+      },
+      {
+        "label": "final-memory-effects",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-memory-effects",
+          "res://tests/test_race_effect_retention.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-memory-effects",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_race_effect_retention.gd",
+          "--headless"
+        ],
+        "result": "RACE_EFFECT_RETENTION 15 checks, 0 failures",
+        "assertions": 15,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-memory-effects-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-memory-effects.log"
+      },
+      {
+        "label": "final-memory-budget",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-memory-budget",
+          "res://tests/test_selective_scenery_budget.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-memory-budget",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_selective_scenery_budget.gd",
+          "--headless"
+        ],
+        "result": "SELECTIVE_BUDGET 12 checks, 0 failures",
+        "assertions": 12,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-memory-budget-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-memory-budget.log"
+      },
+      {
+        "label": "final-production-parse",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-production-parse",
+          "res://tests/check_model_refinement_parse.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-production-parse",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/check_model_refinement_parse.gd",
+          "--headless"
+        ],
+        "result": "PRODUCTION_PARSE 558 scripts, 0 failures",
+        "assertions": null,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-production-parse-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-production-parse.log"
+      },
+      {
+        "label": "final-feature-parse",
+        "runner_command": [
+          "python",
+          "scripts/run_loading_fixes.py",
+          "final-feature-parse",
+          "res://tests/test_startup_feature_parse.gd",
+          "--project",
+          "build/loading-fixes-20261113/qualification/game",
+          "--profile",
+          "final-feature-parse",
+          "--timeout",
+          "180"
+        ],
+        "actual_engine_command": [
+          "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+          "--path",
+          "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+          "--audio-driver",
+          "Dummy",
+          "--position",
+          "10000,10000",
+          "--script",
+          "res://tests/test_startup_feature_parse.gd",
+          "--headless"
+        ],
+        "result": "FEATURE_PARSE_FAILURES 0",
+        "assertions": null,
+        "exit_code": 0,
+        "engine_errors": [],
+        "changed_sources": [],
+        "changed_assets": [],
+        "receipt": "docs/evidence/loading-fixes-2026-11-13/final-feature-parse-receipt.json",
+        "log": "docs/evidence/loading-fixes-2026-11-13/final-feature-parse.log"
+      }
+    ],
+    "world_source_sha256": {
+      "game/track/prepared_world_cache.gd": "4724af43be2ab78221bc201e4fa90b82b8417fe70d6c69bef185684d3a235139",
+      "game/track/native_track_visual.gd": "65c525f140ff55bb0a8540d4406d85cf669ca14257c0ea18901333da0361bd3e",
+      "game/track/prepared_world_disk_cache.gd": "66df921eaad55ba59210d2a0093862835a76aa8f7c51fc3ff52950d80425c5e3",
+      "game/track/prepared_world_artifact.gd": "9c041ac81e55c7d27d312c5845e808807215ca3b0e8f3087e80d832725ce3cbd"
+    },
+    "revision_boundary": "The 129-check, production558 and feature-parser results were run before the later conservative Night persistence guard. Original tested hashes and logs are preserved. The latest guard is separately reviewed below; earlier runs are not relabeled as executions of the newer disk-helper hash."
+  },
+  "limits": [
+    "The five-file/128 MiB committed-cache budget is pruned; pending-write admission is best-effort across separate simultaneous processes, so transient pending bytes can exceed that budget. It is not a strict instantaneous global disk cap.",
+    "Persistence is enabled only for the qualified Compatibility renderer and Pine, Desert, Winter and Storm. Vulkan and Night retain original construction and RAM reuse. Independent headless checks do not qualify native pixels or device loading.",
+    "The independent reruns verify correctness, not loading speed. Concurrent headless execution makes their elapsed times unsuitable for performance comparisons.",
+    "Cross-process protocols were reviewed in source; this receipt does not claim an independently executed simultaneous-process stress test. Native disk-cache tests and timing evidence are recorded separately by race_review.",
+    "Asset guards compare sizes and nanosecond timestamps; they are not an independent byte-identity proof for every asset. Runtime source guards use SHA-256."
+  ],
+  "receipt_only_change": true,
+  "live_and_qualification_match_reviewed_hashes": true,
+  "latest_guard_review": {
+    "changed_runtime_file": "game/track/prepared_world_disk_cache.gd",
+    "conclusion": "No new correctness blocker found. Both identity entry points qualify the key before source hashing or worker creation.",
+    "theme_key_index": 4,
+    "evidence_override_default": false,
+    "fixture_scope": "Fallback checks an empty disk ID, unchanged disk hits/writes, no pending jobs, no source fingerprint and reuse of the same RAM snapshot. Results are owned and recorded separately by race_review.",
+    "production_persistence_scope": [
+      "gl_compatibility:pine",
+      "gl_compatibility:desert",
+      "gl_compatibility:winter",
+      "gl_compatibility:storm"
+    ]
+  },
+  "root_profiler_parse": {
+    "receipt": "docs/evidence/loading-fixes-2026-11-13/qual-profile-final-parse-receipt.json",
+    "actual_engine_command": [
+      "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+      "--path",
+      "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+      "--audio-driver",
+      "Dummy",
+      "--position",
+      "10000,10000",
+      "--script",
+      "res://tests/profile_loading_fixes.gd",
+      "--headless",
+      "--check-only"
+    ],
+    "exit_code": 0,
+    "engine_errors": [],
+    "world_source_sha256": {
+      "game/track/prepared_world_cache.gd": "4724af43be2ab78221bc201e4fa90b82b8417fe70d6c69bef185684d3a235139",
+      "game/track/native_track_visual.gd": "65c525f140ff55bb0a8540d4406d85cf669ca14257c0ea18901333da0361bd3e",
+      "game/track/prepared_world_disk_cache.gd": "66df921eaad55ba59210d2a0093862835a76aa8f7c51fc3ff52950d80425c5e3",
+      "game/track/prepared_world_artifact.gd": "9c041ac81e55c7d27d312c5845e808807215ca3b0e8f3087e80d832725ce3cbd"
+    },
+    "scope": "Expanded profiler parses with --check-only. This does not execute App flow or replace production558 coverage; its runtime snapshot precedes the Night guard."
+  },
+  "root_source_checkpoint": {
+    "receipt": "docs/evidence/loading-fixes-2026-11-13/ghost-loading-checkpoint.json",
+    "patch": "docs/evidence/loading-fixes-2026-11-13/ghost-loading-source.patch",
+    "patch_sha256": "244ee4a6ccbfe635139292f1bc4d578ad84e83e57382d3bdac3ab4f5dc8c2717",
+    "forward_exact": true,
+    "reverse_exact": true,
+    "whitespace_check": true,
+    "main_index_exact": true,
+    "file_count": 7
+  },
+  "first_lap_investigation": {
+    "updated_at_utc": "2026-11-13T17:02:58.759442+00:00",
+    "initial_native_failure": "qual-first-laps-gl retained a Pine first-lap failure at 90.002 seconds, zero laps and zero contacts. The long native run was interrupted by root. The initial log omitted final tick/speed/pause state, so its cause is not established.",
+    "direct_canonical": {
+      "driving_ticks": 2605,
+      "simulated_seconds": 21.708333333333332,
+      "completed_laps": 1,
+      "contacts": 0,
+      "checkpoints": 18
+    },
+    "actual_headless_app": {
+      "driving_ticks": 2640,
+      "simulated_driving_seconds": 22.0,
+      "countdown_ticks": 360,
+      "completed_laps": 1,
+      "contacts": 0
+    },
+    "headless_evidence": [
+      "first-lap-diagnostic.json",
+      "first-lap-diagnostic.log",
+      "first-lap-diagnostic-receipt.json"
+    ],
+    "passive_native_pine": {
+      "checks": 12,
+      "failures": 0,
+      "elapsed_ms_including_countdown": 24993.352,
+      "max_driving_frame_ms": 19.354,
+      "completed_laps": 1,
+      "contacts": 0,
+      "evidence": [
+        "native-first-lap-diagnostic.json",
+        "native-first-lap-diagnostic.log",
+        "native-first-lap-diagnostic-receipt.json"
+      ]
+    },
+    "conclusion": "Current RouteDriver, verified_oval and actual App-loaded simulation complete within90 seconds. Passive native Pine and the full strict Compatibility suite passed. The full suite recorded one real background pause resumed at Night tick1573. This demonstrates the pause mechanism but does not establish the cause of the original uninstrumented90-second failure.",
+    "optional_native_test_wrapper": {
+      "path": "game/tests/test_loading_fixes_first_laps.gd",
+      "default_resume_enabled": false,
+      "enable_argument": "--resume-backgrounded-ai",
+      "behavior": "Keeps inherited strict assertions; only active background-paused AI driving, with no finish or rewind, may call Game.toggle_pause(false). Each such resume records tick/countdown/reason. Production pause behavior is unchanged.",
+      "parse_receipt": "first-lap-wrapper-parse-receipt.json"
+    },
+    "shutdown_investigation": {
+      "initial": "qual-app-effects-gl passed111 assertions but reported2 leakedObjectDB instances and1 resource at shutdown; it is not a clean engine-error pass.",
+      "headless_control": "shutdown-diagnostic-headless performed two App race entries and explicit teardown with optional disk IO enabled, pending0 throughout shutdown, no errors or leaked-object warnings.",
+      "native_interruption_control": "qual-interruptions-verbose passed31 assertions and shut down cleanly.",
+      "remaining": "The full strict Compatibility132/0 verbose rerun also shut down cleanly. The original111-assertion two-object/one-resource shutdown warning remains retained and unreproduced; no production leak fix is claimed."
+    },
+    "retained_diagnostic_sources": "docs/evidence/loading-fixes-2026-11-13/diagnostic-sources",
+    "scope": "Diagnostic scripts and one opt-in test wrapper only; no production simulation, pause, route, settings or loading source edits.",
+    "final_strict_compatibility": {
+      "checks": 132,
+      "failures": 0,
+      "all_five_biome_laps_complete": true,
+      "first_laps": [
+        {
+          "completed_laps": 1,
+          "contacts": 0,
+          "driving_frames": 2641,
+          "elapsed_ms": 24992.762,
+          "max_driving_frame_ms": 15.41,
+          "new_draw_pipelines": 0.0,
+          "theme": "pine"
+        },
+        {
+          "completed_laps": 1,
+          "contacts": 0,
+          "driving_frames": 2656,
+          "elapsed_ms": 25125.563,
+          "max_driving_frame_ms": 17.343,
+          "new_draw_pipelines": 0.0,
+          "theme": "desert"
+        },
+        {
+          "completed_laps": 1,
+          "contacts": 0,
+          "driving_frames": 2640,
+          "elapsed_ms": 25026.161,
+          "max_driving_frame_ms": 51.42,
+          "new_draw_pipelines": 0.0,
+          "theme": "night_city"
+        },
+        {
+          "completed_laps": 1,
+          "contacts": 0,
+          "driving_frames": 2641,
+          "elapsed_ms": 24992.767,
+          "max_driving_frame_ms": 9.825,
+          "new_draw_pipelines": 0.0,
+          "theme": "winter"
+        },
+        {
+          "completed_laps": 1,
+          "contacts": 0,
+          "driving_frames": 2640,
+          "elapsed_ms": 24984.35,
+          "max_driving_frame_ms": 17.194,
+          "new_draw_pipelines": 0.0,
+          "theme": "storm"
+        }
+      ],
+      "focus_resumes": [
+        {
+          "countdown": 0,
+          "reason": "backgrounded AI test resumed through Game.toggle_pause",
+          "tick": 1573,
+          "wall_ms": 85903
+        }
+      ],
+      "scope": "Inherited all-car, emission, five real first-lap and six interruption assertions; explicit --resume-backgrounded-ai models user Resume only for logged background-paused AI with no finish/rewind.",
+      "actual_engine_command": [
+        "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\build\\loading-fixes-20261113\\qualification\\game",
+        "--audio-driver",
+        "Dummy",
+        "--position",
+        "10000,10000",
+        "--script",
+        "res://tests/test_loading_fixes_first_laps.gd",
+        "--rendering-method",
+        "gl_compatibility",
+        "--verbose",
+        "--",
+        "--first-emission",
+        "--resume-backgrounded-ai"
+      ],
+      "receipt": "qual-first-laps-final-gl-receipt.json",
+      "result": "qual-first-laps-final-gl.json",
+      "log": "qual-first-laps-final-gl.log",
+      "clean_verbose_shutdown": true,
+      "changed_sources": [],
+      "changed_assets": [],
+      "world_source_sha256": {
+        "game/track/prepared_world_cache.gd": "4724af43be2ab78221bc201e4fa90b82b8417fe70d6c69bef185684d3a235139",
+        "game/track/native_track_visual.gd": "65c525f140ff55bb0a8540d4406d85cf669ca14257c0ea18901333da0361bd3e",
+        "game/track/prepared_world_disk_cache.gd": "2322105863137102ea2d15c4c77ca5eed06b0fe3b4fde74f5e71713787ad00be",
+        "game/track/prepared_world_artifact.gd": "9c041ac81e55c7d27d312c5845e808807215ca3b0e8f3087e80d832725ce3cbd"
+      }
+    }
+  },
+  "report_review": {
+    "path": "docs/LOADING_FIXES_2026_11_13.md",
+    "reviewed_at_utc": "2026-11-13T17:06:28.436354+00:00",
+    "conclusion": "Draft implementation descriptions and component-versus-end-to-end/device boundaries are sound. No unsupported whole-race time saving claim found.",
+    "closeout_items_sent_to_root": [
+      "Distinguish pre-Night94-check/129-retention/production558 snapshots from the later reviewed guard and final native guarded runs.",
+      "Retain original90-second lap failure and111-assertion shutdown warning; report final132/0 Compatibility, logged Night resume, and unreproduced status without claiming proven original focus cause or a leak fix.",
+      "Include cold first-write serialization/source-identity cost and explicit whole-App versus component scope alongside persistent-cache warm timings.",
+      "Link final peer review and world source checkpoint; replace remaining in-progress/cleanup language only after final Vulkan and retention outcomes."
+    ]
+  }
+}

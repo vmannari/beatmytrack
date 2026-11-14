@@ -1,0 +1,25 @@
+extends SceneTree
+func _initialize() -> void: run.call_deferred()
+func run() -> void:
+ var corridor := GDScript.new()
+ corridor.source_code = FileAccess.get_file_as_string("res://../build/ground-optimisation-20261114/corridor-before.txt").replace("class_name SplineGateCorridor","")
+ assert(corridor.reload() == OK)
+ var reference := GDScript.new()
+ reference.source_code = FileAccess.get_file_as_string("res://race/track_session.gd").replace("class_name TrackSession","").replace("SplineGateCorridor.select(self,track)","before_corridor.select(self,track)")+"\nvar before_corridor: GDScript\n"
+ assert(reference.reload() == OK)
+ var track = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json")))
+ for cycle: int in range(3):
+  var rows: Dictionary = {}
+  var layouts: Dictionary = {}
+  for old: bool in ([true,false] if cycle%2 == 0 else [false,true]):
+   track._race_gates = {}
+   load("res://race/checkpoint_layout_cache.gd").trim_to()
+   var session: RefCounted = reference.new() if old else TrackSession.new()
+   if old: session.before_corridor = corridor
+   var began: int = Time.get_ticks_usec()
+   session._configure(track)
+   rows["before" if old else "after"] = (Time.get_ticks_usec()-began)/1000.0
+   layouts[old] = var_to_bytes(track._race_gates)
+  assert(layouts[true] == layouts[false])
+  print("PAIRED_CHECKPOINT ",JSON.stringify(rows))
+ quit()

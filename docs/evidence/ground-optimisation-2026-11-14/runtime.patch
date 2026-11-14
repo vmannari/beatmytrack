@@ -1,0 +1,90 @@
+diff --git a/game/core/game.gd b/game/core/game.gd
+index df28377d7..e883ff1fd 100644
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -1096,6 +1096,7 @@ func _build_ground(world: Node3D) -> void:
+ 				if not _preparation_is_current(): _ground_preparation_job.cancel(); return
+ 			if not _preparation_is_current(): return
+ 			var prepared_ground: Dictionary = _ground_preparation_job.result if _ground_preparation_job.result is Dictionary else {}
++			if profile_enabled: preparation_costs.ground_worker = prepared_ground.get("costs",{}).duplicate()
+ 			bridge_presentation = prepared_ground.get("bridge")
+ 			if not prepared_ground.get("winter_cover",{}).is_empty(): native_track.editor_winter_cover = prepared_ground.winter_cover
+ 			_ground_preparation_job = null
+diff --git a/game/race/race_ground_preparation.gd b/game/race/race_ground_preparation.gd
+index e840afa1c..81f82c423 100644
+--- a/game/race/race_ground_preparation.gd
++++ b/game/race/race_ground_preparation.gd
+@@ -2,17 +2,26 @@ extends RefCounted
+ ## Pure CPU ground sampling. Nodes, materials and uploads stay on the main thread.
+ static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
+ 	if cancelled.call(): return {}
++	var costs: Dictionary = {}
++	var mark: int = Time.get_ticks_usec()
+ 	# The preparation gate owns the track until this pure-CPU job completes.
+ 	track._creator_query()
++	costs.queries_us = Time.get_ticks_usec()-mark
++	mark = Time.get_ticks_usec()
+ 	if cancelled.call(): return {}
+ 	var prepared := BridgePresentation.new(track)
++	costs.support_us = Time.get_ticks_usec()-mark
++	mark = Time.get_ticks_usec()
+ 	# Canonical gate construction is a pure layout bake and is cached on this
+ 	# immutable track. Dense spline corridors can take seconds on a cold start;
+ 	# build the exact existing layout here, before Game.restart reads that cache.
+ 	if cancelled.call(): return {}
+ 	var session := TrackSession.new()
+ 	session.prepare_cached(track,cancelled)
++	costs.checkpoints_us = Time.get_ticks_usec()-mark
++	mark = Time.get_ticks_usec()
+ 	if cancelled.call(): return {}
+ 	var cover: Dictionary = {}
+ 	if track.metadata.get("theme","pine") == "winter" and track.editor_winter_cover.is_empty(): cover = WinterScenery.cover_data(track,cancelled)
+-	return {} if cancelled.call() else {"bridge":prepared,"winter_cover":cover}
++	costs.winter_us = Time.get_ticks_usec()-mark
++	return {} if cancelled.call() else {"bridge":prepared,"winter_cover":cover,"costs":costs}
+diff --git a/game/race/spline_gate_corridor.gd b/game/race/spline_gate_corridor.gd
+index 358b84497..7f02c7432 100644
+--- a/game/race/spline_gate_corridor.gd
++++ b/game/race/spline_gate_corridor.gd
+@@ -228,6 +228,17 @@ static func _cached_crossings(session: RefCounted, path: PackedVector2Array, cac
+ 
+ static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
+ 	var events := PackedFloat64Array()
++	# Index segment bounds once per lane. Only segments overlapping a gate's
++	# finite span can cross it; preserve ascending order for equal-distance ties.
++	var bins: Dictionary = {}
++	for i: int in range(path.size()-1):
++		var low := Vector2i((path[i].min(path[i+1])/8.0).floor())
++		var high := Vector2i((path[i].max(path[i+1])/8.0).floor())
++		for y: int in range(low.y,high.y+1):
++			for x: int in range(low.x,high.x+1):
++				var cell := Vector2i(x,y)
++				if not bins.has(cell): bins[cell] = []
++				bins[cell].append(i)
+ 	for gate: int in range(session._centers.size()):
+ 		var event: float = -1.0
+ 		var nearest: float = INF
+@@ -235,11 +246,20 @@ static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedF
+ 		var direction: Vector2 = session._directions[gate]
+ 		var normal: Vector2 = direction.orthogonal()
+ 		var widths: Vector2 = session._widths[gate]
+-		var before: float = (path[0]-center).dot(direction)
+-		for i: int in range(path.size()-1):
++		var left: Vector2 = center-normal*widths.x
++		var right: Vector2 = center+normal*widths.y
++		var low := Vector2i(((left.min(right)-Vector2.ONE*0.001)/8.0).floor())
++		var high := Vector2i(((left.max(right)+Vector2.ONE*0.001)/8.0).floor())
++		var candidates: Dictionary = {}
++		for y: int in range(low.y,high.y+1):
++			for x: int in range(low.x,high.x+1):
++				for index: int in bins.get(Vector2i(x,y),[]): candidates[index] = true
++		var ordered: Array = candidates.keys()
++		ordered.sort()
++		for i: int in ordered:
++			var before: float = (path[i]-center).dot(direction)
+ 			var after: float = (path[i+1]-center).dot(direction)
+ 			var f: float = -before/(after-before) if before <= 0.0 and after > 0.0 else -1.0
+-			before = after
+ 			if f < 0.0: continue
+ 			var p: Vector2 = path[i].lerp(path[i+1],f)
+ 			var lateral: float = (p-center).dot(normal)

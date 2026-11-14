@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-219-packed-assets"
+const VERSION: String = "track-kit-220-finite-join-caps"
 const VERTEX_PACKING = preload("res://rendering/mesh_vertex_packing.gd")
 var scenery_lods: bool = true # False is an offline full-detail comparison control.
 var piece_road_materials: bool = false
@@ -106,6 +106,8 @@ const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
 var cache_road_meshes: bool = true
 var persist_road_meshes: bool = true
 var cache_race_world: bool = false
+var persist_race_world: bool = true
+var _world_disk_id: String = ""
 var world_built: bool = false
 const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
 const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
@@ -120,6 +122,7 @@ static func race_roads_need_preparation(track: NativeTrack) -> bool:
 	for entry: Dictionary in _road_mesh_cache:
 		if entry.key == key: return false
 	var world_key: Array = [track.content_hash,VERSION,ContactShading.VERSION,CreatorPropVisual.VERSION,theme,TrackTheme.palette(theme),true]
+	world_key.append([true,false,true,false,VisualGeometry.optimize_model_geometry])
 	for entry: Dictionary in PREPARED_WORLDS.entries:
 		if entry.key == world_key: return false
 	# Production disk hits use verified numeric arrays on the CPU worker.
@@ -163,8 +166,17 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	set_meta("spatial_mask_budget_bytes",track.cells.size()*(20 if desert_relief != null else 16))
 	var visual_version: String = VERSION if partition_static_meshes and uniform_terrain_regions else VERSION+"/"+str(partition_static_meshes)+"/"+str(uniform_terrain_regions)
 	var world_key: Array = [track.content_hash,visual_version,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
+	var world_options: Array = [scenery_lods,piece_road_materials,preserve_relief_surfaces,_suppress_night_fx,VisualGeometry.optimize_model_geometry]
+	world_key.append(world_options)
 	var reuse_world: bool = cache_race_world and not editor_preview
 	if reuse_world:
+		var identity_started: int = Time.get_ticks_usec() if profile_build else 0
+		_world_disk_id = ""
+		if persist_race_world and persist_road_meshes:
+			var disk = load("res://track/prepared_world_disk_cache.gd")
+			_world_disk_id = await disk.identity_cooperative(world_key,world_options,self) if _menu_slices else disk.identity(world_key,world_options)
+		if _menu_slices and not _build_is_current(): return
+		if profile_build: build_costs.world_disk_identity_us = Time.get_ticks_usec()-identity_started
 		var restored: bool = await PREPARED_WORLDS.restore_cooperative(world_key,self) if _menu_slices else PREPARED_WORLDS.restore(world_key,self)
 		if _menu_slices and not _build_is_current(): return
 		if restored:
@@ -863,7 +875,10 @@ func _build_creator_roads(track: NativeTrack) -> void:
 
 func _road_border_samples(border_contours: Array[PackedVector2Array], cuts: Array[Dictionary], swept: bool, pieces: Array, index: int, outlines: Array[Dictionary], topology: Dictionary) -> PackedVector2Array:
 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
-	if native != null and not _menu_slices:
+	# Native road kernel v1 matches infinite cap planes. Returning hairpins
+	# can put both mouths on one plane; keep their finite-cap correction here
+	# until every installed native library includes it. Other edges stay native.
+	if native != null and not _menu_slices and (swept or not _coincident_join_planes(cuts)):
 		var joined: Array = []
 		for endpoint: int in range(2):
 			var matches: Array = RoadPieces._matches(topology,index,endpoint)
@@ -1295,11 +1310,20 @@ func _roadside_miter(polygon: PackedVector2Array, index: int, cuts: Array[Dictio
 	if not _on_join_cut(before,point,cuts) and not _on_join_cut(point,after,cuts):
 		return RoadEdges._edge_miter(polygon,index)
 	for cut: Dictionary in cuts:
-		if absf((point-Vector2(cut.point)).dot(cut.normal)) < 0.001:
+		var delta: Vector2 = point-Vector2(cut.point)
+		if absf(delta.dot(cut.normal)) < 0.001 and absf(delta.dot(Vector2(cut.normal).orthogonal())) <= float(cut.span)*0.5+0.001:
 			var normal: Vector2 = Vector2(cut.normal).orthogonal()
-			if normal.dot(point-Vector2(cut.point)) < 0: normal = -normal
+			if normal.dot(delta) < 0: normal = -normal
 			return normal
 	return RoadEdges._roadside_miter(polygon,index,cuts)
+
+
+static func _coincident_join_planes(cuts: Array[Dictionary]) -> bool:
+	for i: int in range(cuts.size()):
+		for j: int in range(i+1,cuts.size()):
+			if absf(Vector2(cuts[i].normal).dot(cuts[j].normal)) > 0.99999 and absf((Vector2(cuts[i].point)-Vector2(cuts[j].point)).dot(cuts[i].normal)) < 0.001:
+				return true
+	return false
 
 
 func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:

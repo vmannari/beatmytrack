@@ -1,0 +1,421 @@
+diff --git a/game/tests/fixtures/loading_ghost_shaders_before.json b/game/tests/fixtures/loading_ghost_shaders_before.json
+new file mode 100644
+index 0000000..f9de124
+--- /dev/null
++++ b/game/tests/fixtures/loading_ghost_shaders_before.json
+@@ -0,0 +1,4 @@
++{
++  "personal": "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }",
++  "rewind": "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.12,0.32,0.45),vec3(0.35,0.78,1.0),edge); ALPHA=0.13+edge*0.43; }"
++}
+diff --git a/game/tests/profile_loading_fixes.gd b/game/tests/profile_loading_fixes.gd
+new file mode 100644
+index 0000000..614c1b9
+--- /dev/null
++++ b/game/tests/profile_loading_fixes.gd
+@@ -0,0 +1,115 @@
++extends SceneTree
++## Actual offline App entry/re-entry/retry. No game-class preloads before timers.
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("LOADING_FIXES_FAIL ",label)
++
++func counter(path: String, name: String) -> int:
++	if not ResourceLoader.has_cached(path): return 0
++	var script: Script = load(path)
++	return int(script.get(name))
++
++func run() -> void:
++	var vehicle: String = "compact"
++	var theme: String = "pine"
++	var star: bool = false
++	var persist_world: bool = true
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--car="): vehicle = argument.trim_prefix("--car=")
++		if argument.begins_with("--theme="): theme = argument.trim_prefix("--theme=")
++		if argument == "--star": star = true
++		if argument == "--disable-world-cache": persist_world = false
++	root.size = Vector2i(1280,720)
++	var began: int = Time.get_ticks_usec()
++	var session_began: int = began
++	var scene: PackedScene = load("res://core/app.tscn")
++	var scene_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	var app: Node = scene.instantiate()
++	var folder: String = "user://loading-fixes"
++	DirAccess.make_dir_recursive_absolute(folder)
++	app.records = load("res://persistence/local_records.gd").new(folder+"/records.json")
++	app.records.settings.selected_car = vehicle
++	app.records.settings.music_enabled = false
++	app.library = load("res://persistence/track_library.gd").new(folder+"/tracks")
++	app.cloud_root_override = folder+"/cloud"
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var startup_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(not app.online.configured,"private offline App")
++	app._garage_preloader.idle_ms = 100000000
++	app._garage_preloader.foreground = false
++	app._garage_preloader.set_process(false)
++	var disk: Script = load("res://track/prepared_world_disk_cache.gd")
++	if not persist_world: disk.directory = ""
++	var catalog: Script = load("res://vehicle/vehicle_catalog.gd")
++	catalog.selected = vehicle
++	var path: String = "res://tests/fixtures/star_spline_lap.json" if star else "res://resources/tracks/ellipse.json"
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
++	var track: Variant
++	if star:
++		document.theme = theme
++		track = load("res://editor/track_compiler.gd").compile(document)
++	else:
++		track = load("res://track/native_track.gd").read(path)
++		track.metadata.theme = theme
++	check(track != null,"selected track exists")
++	track.metadata.cloud_version = "owned-loading-fixes"
++	for cycle: int in range(2):
++		app._show_screen("tracks")
++		app.selected_track = track
++		var base_before: int = counter("res://vehicle/modular_car_base.gd","hits")
++		began = Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		check(is_instance_valid(app.game),"actual race installed")
++		if not is_instance_valid(app.game): break
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.hitch_diagnostics.persist_enabled = false
++		check(game.preparation_complete,"race preparation completes")
++		check(game.car.vehicle_id == vehicle,"selected vehicle preserved")
++		check(game.sim.state.tick == 0 and game.countdown_ticks == 360,"tick zero and complete countdown on reveal")
++		check(game.track_session.target_laps == 5,"five-lap contract retained")
++		var row: Dictionary = {"cycle":cycle,"ready_ms":elapsed,
++			"scene_to_ready_ms":(Time.get_ticks_usec()-session_began)/1000.0,
++			"base_hits":counter("res://vehicle/modular_car_base.gd","hits")-base_before,
++			"feature_load_ms":app.feature_load_ms.duplicate(true),
++			"game_costs":game.preparation_costs.duplicate(true),
++			"world_costs":game.track_ground.build_costs.duplicate(true),
++			"graphics_groups":game.world_render_preparation.frame_groups if is_instance_valid(game.world_render_preparation) else 0,
++			"finish_ms":game.bridge_preparation_ms}
++		check(row.base_hits > 0,"current prepared vehicle base is accepted")
++		# A real race remains alive through the countdown. Keep this frozen
++		# observation alive until its optional IO settles, outside ready_ms.
++		var publish_deadline: int = Time.get_ticks_msec()+5000
++		while not disk.pending_writes.is_empty() and Time.get_ticks_msec() < publish_deadline:
++			await process_frame
++		row["world_costs"] = game.track_ground.build_costs.duplicate(true)
++		row["world_disk_hits"] = disk.hits
++		began = Time.get_ticks_usec()
++		await app._retry_race(true)
++		row["retry_ms"] = (Time.get_ticks_usec()-began)/1000.0
++		check(app.game == game and game.sim.state.tick == 0 and game.countdown_ticks == 360,"retry reuses Game and resets full countdown")
++		rows.append(row)
++		print("LOADING_FIXES_ROW ",JSON.stringify(row))
++		app._leave_race()
++		for frame: int in range(8): await process_frame
++	var result: Dictionary = {"checks":checks,"failures":failures,"car":vehicle,"theme":theme,"star":star,
++		"persist_world":persist_world,
++		"scene_ms":scene_ms,"startup_ms":startup_ms,"races":rows,
++		"renderer":RenderingServer.get_current_rendering_method(),"engine":Engine.get_version_info()}
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	app.queue_free(); app = null
++	scene = null; catalog = null; track = null
++	load("res://soundtrack/audio_world.gd").instance().queue_free()
++	for frame: int in range(20): await process_frame
++	print("LOADING_FIXES_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_loading_fixes_first_laps.gd b/game/tests/test_loading_fixes_first_laps.gd
+new file mode 100644
+index 0000000..c5e0e97
+--- /dev/null
++++ b/game/tests/test_loading_fixes_first_laps.gd
+@@ -0,0 +1,18 @@
++extends "res://tests/test_shared_graphics_first_laps.gd"
++## Strict inherited native lap/emission/cancellation checks. The optional resume
++## models a user pressing Resume after another test window takes desktop focus.
++
++func observe() -> void:
++	super.observe()
++	if not "--resume-backgrounded-ai" in OS.get_cmdline_user_args(): return
++	if mode != "complete" or not is_instance_valid(app) or not is_instance_valid(app.game): return
++	var game: Node = app.game
++	if not game.ai_enabled or not game.paused or not game._preparation_backgrounded: return
++	if not game.preparation_complete or not game.can_process() or not game.is_physics_processing(): return
++	if game.finish_sim != null or game.track_session.finished or is_instance_valid(game.rewind_panel) or game.rewind_return.remaining > 0: return
++	var event: Dictionary = {"tick":game.sim.state.tick,"countdown":game.countdown_ticks,"wall_ms":Time.get_ticks_msec(),"reason":"backgrounded AI test resumed through Game.toggle_pause"}
++	print("LOADING_TEST_FOCUS_RESUME ",JSON.stringify(event))
++	if not cases.is_empty():
++		if not cases[-1].has("focus_resumes"): cases[-1].focus_resumes = []
++		cases[-1].focus_resumes.append(event)
++	game.toggle_pause(false)
+diff --git a/game/tests/test_loading_ghost_shader_reuse.gd b/game/tests/test_loading_ghost_shader_reuse.gd
+new file mode 100644
+index 0000000..0603399
+--- /dev/null
++++ b/game/tests/test_loading_ghost_shader_reuse.gd
+@@ -0,0 +1,98 @@
++extends SceneTree
++## Exact original shader/pixels, private materials and stable native identities.
++const Rewind = preload("res://vehicle/rewind_ghosts.gd")
++const Graphics = preload("res://rendering/graphics_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++
++class FixtureCar extends CarVisual:
++	func _ready() -> void: pass
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("GHOST_REUSE_FAIL ",label)
++
++func draw() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func run() -> void:
++	var original: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/loading_ghost_shaders_before.json"))
++	var car := FixtureCar.new()
++	root.add_child(car)
++	var source := MeshInstance3D.new()
++	source.mesh = BoxMesh.new()
++	car.add_child(source)
++	var first := PersonalGhost.new()
++	first.configure(car,false)
++	var shader: Shader = first.material_override.shader
++	check(shader.code == original.personal,"personal shader source remains byte-exact")
++	var first_key: String
++	first.mesh = source.mesh
++	first_key = Graphics.geometry_key(first)
++	var second := PersonalGhost.new()
++	second.configure(car,false)
++	second.mesh = source.mesh
++	check(first.material_override != second.material_override,"personal materials stay independent")
++	check(shader == second.material_override.shader,"personal owners share one native shader")
++	first.material_override.render_priority = 3
++	check(second.material_override.render_priority == 0,"material mutation cannot leak to another owner")
++	first.free()
++	second.free()
++	var third := PersonalGhost.new()
++	third.configure(car,false)
++	third.mesh = source.mesh
++	check(third.material_override.shader == shader,"personal shader survives releasing every previous owner")
++	check(Graphics.geometry_key(third) == first_key,"same render geometry keeps its completed-draw key")
++	third.free()
++	var previous: Shader
++	for cycle: int in range(3):
++		var marker: Node3D = Rewind.new()
++		root.add_child(marker)
++		var track := NativeTrack.new()
++		var history: Array[Dictionary] = []
++		marker.configure(car,track,BridgePresentation.new(track),history,0)
++		check(marker.ghosts.size() == 4,"four original rewind markers")
++		var actual: Shader = marker.ghosts[0].material_override.shader
++		check(actual.code == original.rewind,"rewind shader source remains byte-exact")
++		if previous != null: check(actual == previous,"rewind native program survives prior owner destruction")
++		previous = actual
++		marker.free()
++	car.free()
++	if DisplayServer.get_name() != "headless":
++		var view := SubViewport.new()
++		view.size = Vector2i(320,240)
++		view.own_world_3d = true
++		view.transparent_bg = false
++		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++		root.add_child(view)
++		var camera := Camera3D.new()
++		camera.position = Vector3(2,1.5,3)
++		view.add_child(camera)
++		camera.look_at(Vector3.ZERO)
++		camera.current = true
++		var model := MeshInstance3D.new()
++		model.mesh = BoxMesh.new()
++		view.add_child(model)
++		for kind: String in ["personal","rewind"]:
++			var before_shader := Shader.new()
++			before_shader.code = original[kind]
++			var material := ShaderMaterial.new()
++			material.shader = before_shader
++			model.material_override = material
++			await draw(); await draw(); await draw()
++			var before: Image = view.get_texture().get_image()
++			material.shader = PersonalGhost.finish_shader() if kind == "personal" else Rewind.finish_shader()
++			await draw(); await draw(); await draw()
++			var after: Image = view.get_texture().get_image()
++			check(before.get_data() == after.get_data(),kind+" native original/candidate pixels exact")
++			var output: String = OS.get_environment("BMT_GRAPHICS_OUTPUT")
++			check(before.save_png(output.path_join(kind+"-before.png")) == OK,"save original")
++			check(after.save_png(output.path_join(kind+"-after.png")) == OK,"save candidate")
++		view.free()
++	for frame: int in range(5): await process_frame
++	print("GHOST_REUSE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/vehicle/personal_ghost.gd b/game/vehicle/personal_ghost.gd
+index bc503b7..c643eec 100644
+--- a/game/vehicle/personal_ghost.gd
++++ b/game/vehicle/personal_ghost.gd
+@@ -3,14 +3,21 @@ extends MeshInstance3D
+ ## One non-colliding mesh, with the rewind silhouette treatment in neutral grey.
+ const MAX_BYTES: int = 16 * 1024 * 1024
+ static var prepared_meshes: Array[Dictionary] = []
++static var _finish_shader: Shader
++
++static func finish_shader() -> Shader:
++	# Keep the native program alive between race owners. Materials stay private.
++	if _finish_shader == null:
++		_finish_shader = Shader.new()
++		_finish_shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }"
++	return _finish_shader
++
+ func configure(car: CarVisual, prepare_mesh: bool = true) -> void:
+ 	if prepare_mesh: _prepare_mesh(car)
+ 	scale = car.scale
+ 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	var surface := ShaderMaterial.new()
+-	var shader := Shader.new()
+-	shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.30,0.32,0.34),vec3(0.78,0.80,0.82),edge); ALPHA=0.18+edge*0.43; }"
+-	surface.shader = shader
++	surface.shader = finish_shader()
+ 	material_override = surface
+ 	hide()
+ 
+diff --git a/game/vehicle/rewind_ghosts.gd b/game/vehicle/rewind_ghosts.gd
+index ab14cc8..e8e750a 100644
+--- a/game/vehicle/rewind_ghosts.gd
++++ b/game/vehicle/rewind_ghosts.gd
+@@ -8,6 +8,13 @@ var bridge: BridgePresentation
+ var entries: Array[Dictionary] = []
+ var origin_tick: int = 0
+ var wheelbase: float = 2.26
++static var _finish_shader: Shader
++
++static func finish_shader() -> Shader:
++	if _finish_shader == null:
++		_finish_shader = Shader.new()
++		_finish_shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.12,0.32,0.45),vec3(0.35,0.78,1.0),edge); ALPHA=0.13+edge*0.43; }"
++	return _finish_shader
+ 
+ func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int) -> void:
+ 	track = road
+@@ -22,9 +29,7 @@ func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, h
+ 	tool.generate_normals()
+ 	var mesh: ArrayMesh = tool.commit()
+ 	var surface := ShaderMaterial.new()
+-	var shader := Shader.new()
+-	shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.12,0.32,0.45),vec3(0.35,0.78,1.0),edge); ALPHA=0.13+edge*0.43; }"
+-	surface.shader = shader
++	surface.shader = finish_shader()
+ 	for i: int in range(4):
+ 		var ghost := MeshInstance3D.new()
+ 		ghost.name = "HistoryCar%d" % i
+diff --git a/scripts/run_loading_fixes.py b/scripts/run_loading_fixes.py
+new file mode 100644
+index 0000000..894459c
+--- /dev/null
++++ b/scripts/run_loading_fixes.py
+@@ -0,0 +1,98 @@
++"""Pinned-engine loading checks with private offline storage and source receipts."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++BUILD = ROOT / "build/loading-fixes-20261113"
++OUT = ROOT / "docs/evidence/loading-fixes-2026-11-13"
++ENGINE = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64.exe")
++
++
++def source_hashes(project):
++    return {p.relative_to(project.parent).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in project.rglob("*")
++            if p.is_file() and p.suffix in {".gd", ".gdshader", ".gdshaderinc"}
++            and not any(x in p.parts for x in (".godot", "tests", "android"))}
++
++
++def asset_stamps(project):
++    # Detect concurrent publication without including hash IO in native timers.
++    return {p.relative_to(project.parent).as_posix(): [p.stat().st_size, p.stat().st_mtime_ns]
++            for p in (project / "assets").rglob("*")
++            if p.is_file() and p.suffix in {".res", ".scn", ".json"}}
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("label")
++    parser.add_argument("script")
++    parser.add_argument("--renderer", default="headless",
++                        choices=["headless", "gl_compatibility", "mobile"])
++    parser.add_argument("--profile", default="checks")
++    parser.add_argument("--timeout", type=int, default=600)
++    parser.add_argument("--project", type=Path, default=ROOT / "game")
++    args, extra = parser.parse_known_args()
++    OUT.mkdir(parents=True, exist_ok=True)
++    BUILD.mkdir(parents=True, exist_ok=True)
++    (BUILD / ".keep").touch()
++    profile = BUILD / args.profile
++    for folder in ("roaming", "local"):
++        (profile / folder).mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"),
++               LOCALAPPDATA=str(profile / "local"), BMT_API_URL="", BMT_DEV_AUTH_KEY="",
++               BMT_LOADING_FIXES_OUTPUT=str(OUT), BMT_LOADING_FIXES_LABEL=args.label,
++               BMT_GRAPHICS_OUTPUT=str(OUT / args.label),
++               BMT_GRAPHICS_EVIDENCE=str(OUT / args.label),
++               BMT_LOADING_OUTPUT=str(OUT / (args.label + ".json")),
++               BMT_LOADING_FIX_OUTPUT=str(OUT / args.label))
++    (OUT / args.label).mkdir(exist_ok=True)
++    command = [str(ENGINE), "--path", str(args.project.resolve()), "--audio-driver", "Dummy",
++               "--position", "10000,10000", "--script", args.script]
++    command += ["--headless"] if args.renderer == "headless" else ["--rendering-method", args.renderer]
++    command += extra
++    before = source_hashes(args.project)
++    assets_before = asset_stamps(args.project)
++    started = time.monotonic()
++    log_path = OUT / (args.label + ".log")
++    reason = None
++    with log_path.open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
++                                   stderr=subprocess.STDOUT)
++        while process.poll() is None:
++            time.sleep(0.25)
++            content = log_path.read_text(encoding="utf-8", errors="replace")
++            if "SCRIPT ERROR:" in content or time.monotonic() - started > args.timeout:
++                reason = "script error" if "SCRIPT ERROR:" in content else "timeout"
++                process.kill()
++                break
++        code = process.wait()
++    content = log_path.read_text(encoding="utf-8", errors="replace")
++    errors = [line for line in content.splitlines()
++              if line.startswith(("ERROR:", "SCRIPT ERROR:"))
++              and line != "ERROR: Failed to read the root certificate store."]
++    after = source_hashes(args.project)
++    assets_after = asset_stamps(args.project)
++    changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
++    receipt = {"command": command, "exit_code": code, "stop_reason": reason,
++               "seconds": time.monotonic() - started, "errors": errors,
++               "changed_sources": changed, "sources_before": before,
++               "sources_after": after, "profile": args.profile,
++               "changed_assets": sorted(p for p in assets_before.keys() | assets_after.keys()
++                                        if assets_before.get(p) != assets_after.get(p)),
++               "asset_guard": "size and nanosecond timestamp; not a byte-identity proof"}
++    (OUT / (args.label + "-receipt.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++    summary = {k: v for k, v in receipt.items() if not k.startswith("sources_")}
++    summary["changed_assets_count"] = len(receipt["changed_assets"])
++    summary["changed_assets"] = receipt["changed_assets"][:8]
++    print(json.dumps(summary, indent=2))
++    print("\n".join(content.splitlines()[-12:]))
++    return int(code != 0 or bool(errors) or reason is not None)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

@@ -8,6 +8,13 @@ var bridge: BridgePresentation
 var entries: Array[Dictionary] = []
 var origin_tick: int = 0
 var wheelbase: float = 2.26
+static var _finish_shader: Shader
+
+static func finish_shader() -> Shader:
+	if _finish_shader == null:
+		_finish_shader = Shader.new()
+		_finish_shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.12,0.32,0.45),vec3(0.35,0.78,1.0),edge); ALPHA=0.13+edge*0.43; }"
+	return _finish_shader
 
 func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int) -> void:
 	track = road
@@ -22,9 +29,7 @@ func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, h
 	tool.generate_normals()
 	var mesh: ArrayMesh = tool.commit()
 	var surface := ShaderMaterial.new()
-	var shader := Shader.new()
-	shader.code = "shader_type spatial; render_mode unshaded, blend_mix, cull_back; void fragment(){ float edge=pow(1.0-abs(dot(NORMAL,VIEW)),2.0); ALBEDO=mix(vec3(0.12,0.32,0.45),vec3(0.35,0.78,1.0),edge); ALPHA=0.13+edge*0.43; }"
-	surface.shader = shader
+	surface.shader = finish_shader()
 	for i: int in range(4):
 		var ghost := MeshInstance3D.new()
 		ghost.name = "HistoryCar%d" % i

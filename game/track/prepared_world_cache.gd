@@ -51,6 +51,12 @@ static func restore(key: Array, visual: Node3D) -> bool:
 		visual.scenic_count = entry.scenic_count
 		visual.set_meta("prepared_world_key",key.duplicate(true))
 		return true
+	var entry: Dictionary = _read_disk(visual)
+	if not entry.is_empty():
+		var holder: Node3D = entry.scene.instantiate()
+		if not _admit_disk(key,visual,entry,holder): holder.free(); return false
+		holder.free()
+		return restore(key,visual)
 	return false
 
 static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
@@ -85,6 +91,7 @@ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 		total -= int(entries.pop_front().bytes)
 	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
 	visual.set_meta("prepared_world_key",key.duplicate(true))
+	_save_disk(visual,entries[-1],generation)
 
 static func _own(node: Node, holder: Node) -> void:
 	node.owner = holder
@@ -98,14 +105,19 @@ static func _own(node: Node, holder: Node) -> void:
 # Car resource accounting also loads this cache. Keep the same generic Node3D
 # boundary as restore() so that accounting does not import world builders.
 static func restore_cooperative(key: Array, visual: Node3D) -> bool:
+	var started_generation: int = generation
 	var entry: Dictionary = {}
 	for index: int in range(entries.size()):
 		if entries[index].key != key: continue
 		entry = entries.pop_at(index); entries.append(entry); break
+	var from_disk: bool = entry.is_empty()
+	if from_disk: entry = _read_disk(visual)
 	if entry.is_empty(): return false
 	if not await visual._yield_build(): return false
+	if generation != started_generation: return false
 	var instantiate_started: int = Time.get_ticks_usec() if visual.profile_build else 0
 	var holder: Node3D = entry.scene.instantiate()
+	if from_disk and not _admit_disk(key,visual,entry,holder): holder.free(); return false
 	if visual.profile_build: visual.build_costs.cache_instantiate_us = Time.get_ticks_usec()-instantiate_started
 	var lease: Node = preload("res://race/install_staging.gd").new()
 	lease.name = "RaceInstallStaging"; lease.staged = holder; visual.add_child(lease)
@@ -177,6 +189,44 @@ static func remember_cooperative(key: Array, visual: Node3D, track: NativeTrack)
 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
 	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
 	visual.set_meta("prepared_world_key",key.duplicate(true))
+	_save_disk(visual,entries[-1],started_generation)
+
+static func _read_disk(visual: Node3D) -> Dictionary:
+	if not "_world_disk_id" in visual or str(visual._world_disk_id).is_empty(): return {}
+	var began: int = Time.get_ticks_usec()
+	var entry: Dictionary = load("res://track/prepared_world_disk_cache.gd").read_entry(visual._world_disk_id)
+	if visual.profile_build:
+		visual.build_costs.world_disk_read_us = Time.get_ticks_usec()-began
+		visual.build_costs.world_disk_hit = not entry.is_empty()
+	return entry
+
+static func _admit_disk(key: Array, visual: Node3D, entry: Dictionary, holder: Node3D) -> bool:
+	if holder == null or not visual._build_is_current(): return false
+	var resources: Dictionary = {}
+	var bytes: int = int(visual.get_meta("spatial_mask_budget_bytes",0))
+	for child: Node in holder.get_children(): bytes += _resource_bytes(child,resources)
+	bytes += resources.size()*32
+	if bytes <= 0 or bytes > MAX_BYTES: return false
+	entry.bytes = bytes; entry.resources = resources; entry.key = key.duplicate(true)
+	var total: int = bytes_used()+bytes
+	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
+	entries.append(entry)
+	return true
+
+static func _save_disk(visual: Node3D, entry: Dictionary, epoch: int) -> void:
+	if not "_world_disk_id" in visual or str(visual._world_disk_id).is_empty(): return
+	var began: int = Time.get_ticks_usec()
+	var current: Callable = func() -> bool: return is_instance_valid(visual) and visual._build_is_current() and epoch == generation
+	var disk = load("res://track/prepared_world_disk_cache.gd")
+	var queued: bool = false
+	var written: bool = false
+	if visual._menu_slices: queued = disk.queue_entry(visual._world_disk_id,entry,visual,epoch)
+	else: written = disk.write_entry(visual._world_disk_id,entry,current)
+	if visual.profile_build:
+		visual.build_costs.world_disk_write_us = Time.get_ticks_usec()-began
+		visual.build_costs.world_disk_written = written
+		visual.build_costs.world_disk_queued = queued
+		visual.build_costs.world_disk_write_parts = disk.write_costs.duplicate()
 
 static func _surface_entry(visual: Node3D) -> Dictionary:
 	var key: Array = visual.get_meta("prepared_world_key",[])

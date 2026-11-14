@@ -228,6 +228,17 @@ static func _cached_crossings(session: RefCounted, path: PackedVector2Array, cac
 
 static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
 	var events := PackedFloat64Array()
+	# Index segment bounds once per lane. Only segments overlapping a gate's
+	# finite span can cross it; preserve ascending order for equal-distance ties.
+	var bins: Dictionary = {}
+	for i: int in range(path.size()-1):
+		var low := Vector2i((path[i].min(path[i+1])/8.0).floor())
+		var high := Vector2i((path[i].max(path[i+1])/8.0).floor())
+		for y: int in range(low.y,high.y+1):
+			for x: int in range(low.x,high.x+1):
+				var cell := Vector2i(x,y)
+				if not bins.has(cell): bins[cell] = []
+				bins[cell].append(i)
 	for gate: int in range(session._centers.size()):
 		var event: float = -1.0
 		var nearest: float = INF
@@ -235,11 +246,20 @@ static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedF
 		var direction: Vector2 = session._directions[gate]
 		var normal: Vector2 = direction.orthogonal()
 		var widths: Vector2 = session._widths[gate]
-		var before: float = (path[0]-center).dot(direction)
-		for i: int in range(path.size()-1):
+		var left: Vector2 = center-normal*widths.x
+		var right: Vector2 = center+normal*widths.y
+		var low := Vector2i(((left.min(right)-Vector2.ONE*0.001)/8.0).floor())
+		var high := Vector2i(((left.max(right)+Vector2.ONE*0.001)/8.0).floor())
+		var candidates: Dictionary = {}
+		for y: int in range(low.y,high.y+1):
+			for x: int in range(low.x,high.x+1):
+				for index: int in bins.get(Vector2i(x,y),[]): candidates[index] = true
+		var ordered: Array = candidates.keys()
+		ordered.sort()
+		for i: int in ordered:
+			var before: float = (path[i]-center).dot(direction)
 			var after: float = (path[i+1]-center).dot(direction)
 			var f: float = -before/(after-before) if before <= 0.0 and after > 0.0 else -1.0
-			before = after
 			if f < 0.0: continue
 			var p: Vector2 = path[i].lerp(path[i+1],f)
 			var lateral: float = (p-center).dot(normal)

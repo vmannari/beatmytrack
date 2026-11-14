@@ -8,7 +8,70 @@ var cue_requested: bool = false
 var normal := Vector2.ZERO
 const MAX_PROBES: int = 128
 const CACHE_BYTES: int = 1024 * 1024
+const RETAINED_BYTES: int = 16 * 1024 * 1024
+const MAX_ENTRIES: int = 8
 static var prepared_outlines: Array[Dictionary] = []
+static var cache_hits: int = 0
+static var cache_misses: int = 0
+static var surface_reads: int = 0
+
+static func bytes_used() -> int:
+	var total: int = 0
+	for entry: Dictionary in prepared_outlines: total += int(entry.bytes)
+	return total
+
+static func _outline_bytes() -> int:
+	var total: int = 0
+	for entry: Dictionary in prepared_outlines: total += int(entry.get("outline_bytes",entry.bytes))
+	return total
+
+static func trim_cache(allowance: int = 0) -> void:
+	while not prepared_outlines.is_empty() and bytes_used() > allowance: _remove_entry(0)
+
+static func _remove_entry(index: int) -> void:
+	var entry: Dictionary = prepared_outlines.pop_at(index)
+	for mesh: Mesh in entry.get("meshes",[]):
+		var retained: bool = prepared_outlines.any(func(other: Dictionary) -> bool: return mesh in other.get("meshes",[]))
+		var changed: Callable = _mesh_changed.bind(mesh.get_instance_id())
+		if not retained and mesh.changed.is_connected(changed): mesh.changed.disconnect(changed)
+
+static func _mesh_changed(id: int) -> void:
+	# Keep exact resource identity, never a vehicle-name approximation. An edit
+	# to a retained resource invalidates every hull that consumed its vertices.
+	for index: int in range(prepared_outlines.size()-1,-1,-1):
+		for mesh: Mesh in prepared_outlines[index].get("meshes",[]):
+			if mesh.get_instance_id() == id:
+				_remove_entry(index)
+				break
+
+static func _mesh_bytes(mesh: Mesh, seen: Dictionary, decoded: Dictionary) -> int:
+	if mesh == null or seen.has(mesh.get_instance_id()): return 0
+	seen[mesh.get_instance_id()] = true
+	# Conservative CPU/GPU stream estimate, including morphs, index/LOD
+	# headroom and object/material overhead. Counts do not read Vulkan buffers.
+	var bytes: int = 4096+mesh.get_surface_count()*4096
+	if decoded.has(mesh.get_instance_id()):
+		bytes += int(decoded[mesh.get_instance_id()])
+	elif mesh is ArrayMesh:
+		for surface: int in range(mesh.get_surface_count()):
+			bytes += mesh.surface_get_array_len(surface)*192
+			bytes += mesh.surface_get_array_index_len(surface)*16
+	else:
+		return RETAINED_BYTES+1
+	if mesh is ArrayMesh:
+		for surface: int in range(mesh.get_surface_count()):
+			bytes += mesh.surface_get_array_len(surface)*80*mesh.get_blend_shape_count()
+		bytes += _mesh_bytes(mesh.shadow_mesh,seen,decoded)
+	return bytes
+
+static func _array_bytes(value: Variant) -> int:
+	match typeof(value):
+		TYPE_PACKED_BYTE_ARRAY: return value.size()
+		TYPE_PACKED_INT32_ARRAY, TYPE_PACKED_FLOAT32_ARRAY: return value.size()*4
+		TYPE_PACKED_INT64_ARRAY, TYPE_PACKED_FLOAT64_ARRAY, TYPE_PACKED_VECTOR2_ARRAY: return value.size()*8
+		TYPE_PACKED_VECTOR3_ARRAY: return value.size()*12
+		TYPE_PACKED_VECTOR4_ARRAY, TYPE_PACKED_COLOR_ARRAY: return value.size()*16
+	return 0
 
 func configure(car: Node3D, prepared: bool = false) -> void:
 	var points := PackedVector2Array()
@@ -17,20 +80,30 @@ func configure(car: Node3D, prepared: bool = false) -> void:
 	var key: Array = [car.scale]
 	if prepared:
 		for node: MeshInstance3D in parts:
-			if node.mesh != null: key.append([node.mesh.get_instance_id(),inverse*node.global_transform])
+			if node.mesh != null: key.append([node.mesh.get_instance_id(),inverse*node.global_transform,node.mesh.get_surface_count(),node.mesh.get_aabb()])
 		for index: int in range(prepared_outlines.size()):
 			if prepared_outlines[index].key != key: continue
 			var entry: Dictionary = prepared_outlines.pop_at(index); prepared_outlines.append(entry)
 			outline = entry.outline
+			cache_hits += 1
 			reset()
 			return
+		cache_misses += 1
+	var decoded: Dictionary = {}
 	for node: Node in parts:
 		var part: MeshInstance3D = node as MeshInstance3D
 		if part.mesh==null: continue
 		var transform: Transform3D = inverse*part.global_transform
+		var counted: bool = decoded.has(part.mesh.get_instance_id())
 		for surface: int in range(part.mesh.get_surface_count()):
 			var arrays: Array = part.mesh.surface_get_arrays(surface)
+			surface_reads += 1
 			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			if not counted:
+				var indices: int = arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null else 0
+				var retained: int = indices*8 # Additional LOD/index headroom.
+				for attribute: Variant in arrays: retained += _array_bytes(attribute)*2
+				decoded[part.mesh.get_instance_id()] = int(decoded.get(part.mesh.get_instance_id(),0))+retained
 			for vertex: Vector3 in vertices:
 				var local: Vector3 = transform*vertex
 				points.append(Vector2(local.x*car.scale.x,-local.z*car.scale.z))
@@ -38,10 +111,22 @@ func configure(car: Node3D, prepared: bool = false) -> void:
 	if prepared:
 		var bytes: int = var_to_bytes(key).size()+outline.size()*8+512
 		if bytes <= CACHE_BYTES:
-			var total: int = bytes
-			for entry: Dictionary in prepared_outlines: total += int(entry.bytes)
-			while not prepared_outlines.is_empty() and (prepared_outlines.size() >= 8 or total > CACHE_BYTES): total -= int(prepared_outlines.pop_front().bytes)
-			prepared_outlines.append({"key":key,"outline":outline,"bytes":bytes})
+			var outline_bytes: int = bytes
+			var meshes: Array[Mesh] = []
+			var seen: Dictionary = {}
+			for part: MeshInstance3D in parts:
+				if part.mesh == null or part.mesh in meshes: continue
+				meshes.append(part.mesh)
+				bytes += _mesh_bytes(part.mesh,seen,decoded)
+			if bytes <= RETAINED_BYTES:
+				while not prepared_outlines.is_empty() and (prepared_outlines.size() >= MAX_ENTRIES or bytes_used()+bytes > RETAINED_BYTES or _outline_bytes()+outline_bytes > CACHE_BYTES): _remove_entry(0)
+				# Mesh references keep the prepared scene's subresources alive after
+				# race teardown, so the next load reuses the exact same mesh IDs.
+				# No car nodes, poses, materials overrides or scene owners survive.
+				prepared_outlines.append({"key":key,"outline":outline,"bytes":bytes,"outline_bytes":outline_bytes,"meshes":meshes})
+				for mesh: Mesh in meshes:
+					var changed: Callable = _mesh_changed.bind(mesh.get_instance_id())
+					if not mesh.changed.is_connected(changed): mesh.changed.connect(changed)
 	reset()
 
 func reset() -> void:

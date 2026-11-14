@@ -1,0 +1,372 @@
+diff --git a/game/editor/editor_memory.gd b/game/editor/editor_memory.gd
+index 4c074c5..dac54f3 100644
+--- a/game/editor/editor_memory.gd
++++ b/game/editor/editor_memory.gd
+@@ -4,17 +4,45 @@ extends RefCounted
+ const RETAINED_BUDGET: int = 64 * 1024 * 1024
+ const GARAGE_BUDGET: int = 96 * 1024 * 1024
+ const PRESSURE_HISTORY: int = 2 * 1024 * 1024
+-const ROADS = preload("res://editor/road_preparation.gd")
+ const HISTORY = preload("res://editor/editor_history.gd")
+-const READS = preload("res://persistence/document_read_cache.gd")
+-const ENCODING = preload("res://persistence/document_encoding.gd")
+-const WORLDS = preload("res://track/prepared_world_cache.gd")
+-const GATE_LAYOUTS = preload("res://race/checkpoint_layout_cache.gd")
++const PROVIDERS: Dictionary = {
++	"roads":"res://editor/road_preparation.gd",
++	"reads":"res://persistence/document_read_cache.gd",
++	"encoding":"res://persistence/document_encoding.gd",
++	"worlds":"res://track/prepared_world_cache.gd",
++	"gates":"res://race/checkpoint_layout_cache.gd",
++	"visual":"res://track/native_track_visual.gd",
++	"theme":"res://track/track_theme.gd",
++	"effects":"res://vehicle/effect_render_preparation.gd",
++	"contacts":"res://vehicle/visible_contact_audio.gd",
++	"front":"res://vehicle/compact_detail.gd",
++	"icons":"res://ui/garage_paint_icons.gd",
++	"thumbnails":"res://editor/object_thumbnail.gd",
++	"props":"res://track/creator_prop_visual.gd",
++	"snow":"res://track/winter_road_snow_sources.gd",
++	"support":"res://track/road_support_cache.gd",
++	"boundary":"res://editor/roadside_boundary.gd",
++	"work":"res://editor/work_job.gd"
++}
+ var next_sample: int = 0
+ var pressure_requested: bool = false
+ var trims: int = 0
+ var telemetry: Dictionary = {}
+ 
++static func _providers() -> Dictionary:
++	# An absent script cannot own a live static cache. Inspect existing owners
++	# without parsing their procedural/render graphs merely to count or trim.
++	# Resolve afresh so a provider loaded later participates on the next sample;
++	# retain these references only for this synchronous main-thread operation.
++	var result: Dictionary = {}
++	for key: String in PROVIDERS:
++		var path: String = PROVIDERS[key]
++		result[key] = load(path) if ResourceLoader.has_cached(path) else null
++	return result
++
++static func _workers_idle(providers: Dictionary) -> bool:
++	return providers.work == null or providers.work.pending.is_empty()
++
+ func tick(app: Node) -> void:
+ 	if Time.get_ticks_msec() < next_sample: return
+ 	if is_instance_valid(app.canvas) and app.canvas.active_pointer != -99 and not pressure_requested: return
+@@ -24,23 +52,25 @@ func tick(app: Node) -> void:
+ 	if not pressure_requested and telemetry.retained_bytes <= RETAINED_BUDGET and telemetry.optional_garage_bytes <= GARAGE_BUDGET: return
+ 	var force: bool = pressure_requested
+ 	var retry: bool = false
++	var caches: Dictionary = _providers()
+ 	# Numeric layouts are optional across track owners. Active tracks retain
+ 	# their own copies; trimming never changes an installed race or joins a job.
+-	GATE_LAYOUTS.trim_to(0 if force else maxi(0,GATE_LAYOUTS.bytes_used()-(telemetry.retained_bytes-RETAINED_BUDGET)))
++	if caches.gates != null: caches.gates.trim_to(0 if force else maxi(0,caches.gates.bytes_used()-(telemetry.retained_bytes-RETAINED_BUDGET)))
+ 	if app.has_method("_trim_hidden_garage") and (force or telemetry.optional_garage_bytes > GARAGE_BUDGET): app._trim_hidden_garage()
+ 	# The completed Winter world and its small static radiance resource form
+ 	# one useful presentation. Recreating that sky on re-entry repeats native
+ 	# preparation; ordinary trims prefer independent road work below instead.
+-	var winter_world: bool = WORLDS.entries.any(func(entry: Dictionary) -> bool: return entry.key.size()>4 and entry.key[4]=="winter")
+-	if force or not winter_world: TrackTheme.trim_winter_sky()
++	var winter_world: bool = caches.worlds != null and caches.worlds.entries.any(func(entry: Dictionary) -> bool: return entry.key.size()>4 and entry.key[4]=="winter")
++	if caches.theme != null and (force or not winter_world): caches.theme.trim_winter_sky()
+ 	if force:
+-		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
+-		CompactDetail.trim_front_cache()
+-		preload("res://ui/garage_paint_icons.gd").images.clear()
++		if caches.effects != null: caches.effects.trim_cache(app)
++		if caches.contacts != null: caches.contacts.trim_cache()
++		if caches.front != null: caches.front.trim_front_cache()
++		if caches.icons != null: caches.icons.images.clear()
+ 	if is_instance_valid(app.editor_world): app.editor_world.trim_cache()
+-	ObjectThumbnail.trim_cache()
+-	retry = not READS.trim_cache() or retry
+-	retry = not ENCODING.trim_cache() or retry
++	if caches.thumbnails != null: caches.thumbnails.trim_cache()
++	if caches.reads != null: retry = not caches.reads.trim_cache() or retry
++	if caches.encoding != null: retry = not caches.encoding.trim_cache() or retry
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+ 	# These dictionaries belong to the preview worker while it runs. Never join
+ 	# a geometry thread in an input/memory-notification callback to trim them.
+@@ -49,41 +79,47 @@ func tick(app: Node) -> void:
+ 		app.editor_raster_cache.clear(); app.editor_raster_cache["enabled"] = true
+ 	else: retry = true
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+-	if not force and not WORLDS.entries.is_empty():
++	if not force and caches.worlds != null and not caches.worlds.entries.is_empty():
+ 		# Keep completed scenery and its initialized effect proxies before cheap
+ 		# CPU work and independent road GPU entries. Those road resources have
+ 		# verified artifact fallbacks; lost proxies require fresh covered draws.
+ 		# Do not compete with any running preparation worker.
+-		if preload("res://editor/work_job.gd").pending.is_empty():
+-			var roads: Dictionary = ROADS.residency()
++		if _workers_idle(caches) and caches.roads != null:
++			var roads: Dictionary = caches.roads.residency()
+ 			var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
+-			ROADS.trim_cpu_to(maxi(0,int(roads.packets)+int(roads.sections)-excess))
++			caches.roads.trim_cpu_to(maxi(0,int(roads.packets)+int(roads.sections)-excess))
+ 			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+-			NativeTrackVisual.trim_private_road_cache(retained(app).retained_bytes-RETAINED_BUDGET)
++			if caches.visual != null: caches.visual.trim_private_road_cache(retained(app).retained_bytes-RETAINED_BUDGET)
+ 			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	# Retained contact geometry is reproducible from the live car. Prefer it
++	# to completed native effect preparation and an entire scenery snapshot.
++	if not force and caches.contacts != null:
++		caches.contacts.trim_cache(maxi(0,caches.contacts.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
++		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	if not force and caches.worlds != null and not caches.worlds.entries.is_empty():
+ 		# If private road retention cannot meet the unchanged allowance, evict
+ 		# only the remaining excess from idle proxies before dropping the world.
+ 		# Active effects and in-flight preparation nodes retain their owners.
+ 		var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
+-		var effects = preload("res://vehicle/effect_render_preparation.gd")
+-		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
++		if caches.effects != null: caches.effects.trim_to(app,maxi(0,caches.effects.cache_bytes(app)-excess))
+ 		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+-	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
+-	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
++	if caches.worlds != null: caches.worlds.trim_cache(0 if force else maxi(0,caches.worlds.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
++	if force and caches.snow != null: caches.snow.trim_cache()
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+-	retry = not CreatorPropVisual.trim_cache() or retry
++	if caches.props != null: retry = not caches.props.trim_cache() or retry
+ 	if is_instance_valid(app.editor_world): app.editor_world.trim_prop_cache()
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+-	preload("res://track/road_support_cache.gd").trim()
+-	NativeTrackVisual.trim_editor_cache()
++	if caches.support != null: caches.support.trim()
++	if caches.visual != null: caches.visual.trim_editor_cache()
+ 	if force:
+ 		app.editor_session.primed = {}
+ 		HISTORY.trim(app.history,app.redo_history,PRESSURE_HISTORY)
+ 		if is_instance_valid(app.canvas): app.canvas.trim_cache()
+ 	# Roadside runs can also be prepared by a population worker. Defer this
+ 	# main-thread-owned cache trim until all optional jobs have retired.
+-	if preload("res://editor/work_job.gd").pending.is_empty():
+-		RoadsideBoundary._cache.clear(); RoadsideBoundary.cache_bytes = 0
++	if _workers_idle(caches):
++		if caches.boundary != null:
++			caches.boundary._cache.clear(); caches.boundary.cache_bytes = 0
+ 	elif force: retry = true
+ 	_finished(app,retry,force)
+ 
+@@ -93,8 +129,9 @@ func _finished(app: Node, retry: bool, force: bool) -> void:
+ 	telemetry = retained(app)
+ 
+ static func retained(app: Node) -> Dictionary:
+-	var roads: Dictionary = ROADS.residency()
+-	var shared_roads: int = mini(int(roads.gpu),WORLDS.shared_road_bytes(NativeTrackVisual._road_mesh_cache))
++	var caches: Dictionary = _providers()
++	var roads: Dictionary = caches.roads.residency() if caches.roads != null else {"packets":0,"sections":0,"gpu":0}
++	var shared_roads: int = mini(int(roads.gpu),caches.worlds.shared_road_bytes(caches.visual._road_mesh_cache)) if caches.worlds != null and caches.visual != null else 0
+ 	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
+ 	var compiled: int = 0
+ 	if app.editor_preview_thread == null:
+@@ -102,15 +139,17 @@ static func retained(app: Node) -> Dictionary:
+ 	else: compiled = app.EDITOR_COMPILED_BUDGET
+ 	var raster: int = int(app.editor_raster_cache.get("prepared_bytes",0))+int(app.editor_raster_cache.get("auxiliary_bytes",0)) if app.editor_preview_thread == null else 24*1024*1024
+ 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
+-	var props: int = CreatorPropVisual.cache_bytes
+-	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":maxi(0,WORLDS.bytes_used()-shared_roads),
+-		"checkpoint_layout_bytes":GATE_LAYOUTS.bytes_used(),
+-		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
+-		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
+-		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
+-		"winter_source_bytes":preload("res://track/winter_road_snow_sources.gd").cache_bytes,
+-		"garage_option_gpu_bytes":_option_texture_bytes(),
+-		"thumbnail_bytes":ObjectThumbnail.cache_bytes,"boundary_bytes":RoadsideBoundary.cache_bytes,
++	var props: int = caches.props.cache_bytes if caches.props != null else 0
++	var other: Dictionary = {"read_bytes":caches.reads.bytes if caches.reads != null else 0,"encoding_bytes":caches.encoding.bytes if caches.encoding != null else 0,
++		"race_world_bytes":maxi(0,caches.worlds.bytes_used()-shared_roads) if caches.worlds != null else 0,
++		"checkpoint_layout_bytes":caches.gates.bytes_used() if caches.gates != null else 0,
++		"road_support_bytes":caches.support.bytes_used() if caches.support != null else 0,
++		"effect_preparation_bytes":caches.effects.cache_bytes(app) if caches.effects != null else 0,"front_fitting_bytes":caches.front.front_cache_bytes if caches.front != null else 0,
++		"visible_contact_bytes":caches.contacts.bytes_used() if caches.contacts != null else 0,
++		"winter_sky_bytes":caches.theme.WINTER_SKY_ESTIMATED_BYTES if caches.theme != null and caches.theme.winter_reflection_sky != null else 0,
++		"winter_source_bytes":caches.snow.cache_bytes if caches.snow != null else 0,
++		"garage_option_gpu_bytes":_option_texture_bytes(caches.icons),
++		"thumbnail_bytes":caches.thumbnails.cache_bytes if caches.thumbnails != null else 0,"boundary_bytes":caches.boundary.cache_bytes if caches.boundary != null else 0,
+ 		"canvas_bytes":app.canvas.cache_bytes() if is_instance_valid(app.canvas) else 0,
+ 		"batch_model_bytes":app.editor_world.prop_cache_bytes() if is_instance_valid(app.editor_world) else 0}
+ 	# Texture residency is an estimate of decoded GPU surfaces, independent of
+@@ -124,10 +163,11 @@ static func retained(app: Node) -> Dictionary:
+ 		"compiled_bytes":compiled,"raster_bytes":raster,"detached_scene_bytes":scenes,"prop_bytes":props,
+ 		"other":other,"garage":garage,"optional_garage_bytes":garage_bytes,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
+ 
+-static func _option_texture_bytes() -> int:
++static func _option_texture_bytes(icons: Script) -> int:
+ 	var total: int = 0
+ 	var seen: Dictionary = {}
+-	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images]:
++	if icons == null: return 0
++	for cache: Dictionary in [icons.images]:
+ 		for texture: Texture2D in cache.values():
+ 			if texture == null or seen.has(texture.get_instance_id()): continue
+ 			seen[texture.get_instance_id()] = true
+diff --git a/game/tests/test_memory_contact_retention.gd b/game/tests/test_memory_contact_retention.gd
+new file mode 100644
+index 0000000..044cbba
+--- /dev/null
++++ b/game/tests/test_memory_contact_retention.gd
+@@ -0,0 +1,63 @@
++extends SceneTree
++## The reusable contact meshes share the original App retention allowance.
++const Memory = preload("res://editor/editor_memory.gd")
++const Contacts = preload("res://vehicle/visible_contact_audio.gd")
++const Fixture = preload("res://tests/test_memory_policy_loading.gd")
++var checks: int = 0
++var failures: int = 0
++
++class ReservedWorld extends Node:
++	var visual_cache_bytes: int = 0
++	func trim_cache() -> void: pass
++	func trim_prop_cache() -> void: pass
++	func prop_cache_bytes() -> int: return 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("MEMORY_CONTACT_FAIL ",label)
++
++func run() -> void:
++	Contacts.trim_cache()
++	var owner := Fixture.Owner.new()
++	root.add_child(owner)
++	var world := ReservedWorld.new()
++	owner.add_child(world)
++	owner.editor_world = world
++	var car := Node3D.new()
++	root.add_child(car)
++	var part := MeshInstance3D.new()
++	var mesh := BoxMesh.new()
++	part.mesh = mesh
++	car.add_child(part)
++	var contact := Contacts.new()
++	contact.configure(car,true)
++	var expected: PackedByteArray = var_to_bytes(contact.outline)
++	var bytes: int = Contacts.bytes_used()
++	check(bytes > 0 and not contact.outline.is_empty(),"fixture retains actual contact mesh and outline")
++	check(Memory.retained(owner).other.visible_contact_bytes == bytes,"App counts the complete contact allocation")
++	# As in the scenery budget tests, inflate only a reservation to force real
++	# policy arbitration without allocating tens of megabytes of throwaway data.
++	world.visual_cache_bytes = Memory.RETAINED_BUDGET-int(Memory.retained(owner).retained_bytes)+maxi(1,bytes/2)
++	check(Memory.retained(owner).retained_bytes > Memory.RETAINED_BUDGET,"fixture exceeds unchanged shared allowance")
++	var policy := Memory.new()
++	policy.tick(owner)
++	check(Contacts.bytes_used() == 0,"ordinary pressure releases reproducible contact retention")
++	check(Memory.retained(owner).retained_bytes <= Memory.RETAINED_BUDGET,"shared allowance is respected")
++	check(part.mesh == mesh and var_to_bytes(contact.outline) == expected,"active geometry and contact hull survive cache eviction")
++	world.visual_cache_bytes = 0
++	contact.configure(car,true)
++	check(Contacts.bytes_used() > 0,"normal use can repopulate the bounded cache")
++	policy.pressure_requested = true
++	policy.next_sample = 0
++	policy.tick(owner)
++	check(Contacts.bytes_used() == 0 and Memory.retained(owner).other.visible_contact_bytes == 0,"explicit pressure releases contact retention and accounting")
++	check(part.mesh == mesh and var_to_bytes(contact.outline) == expected,"explicit pressure preserves active geometry and contact hull")
++	check(Memory.RETAINED_BUDGET == 64*1024*1024 and Memory.GARAGE_BUDGET == 96*1024*1024,"no allowance increase")
++	car.free()
++	owner.free()
++	print("MEMORY_CONTACT ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_memory_policy_loading.gd b/game/tests/test_memory_policy_loading.gd
+new file mode 100644
+index 0000000..20ce44d
+--- /dev/null
++++ b/game/tests/test_memory_policy_loading.gd
+@@ -0,0 +1,92 @@
++extends SceneTree
++## Fresh-process accounting must observe caches without loading their builders.
++const COLD: Array[String] = ["res://track/native_track_visual.gd", "res://editor/road_preparation.gd", "res://track/creator_prop_visual.gd", "res://vehicle/car_visual.gd", "res://vehicle/compact_detail.gd", "res://editor/object_thumbnail.gd", "res://vehicle/effect_render_preparation.gd", "res://vehicle/visible_contact_audio.gd", "res://ui/garage_paint_icons.gd", "res://editor/editor_canvas.gd"]
++var checks: int = 0
++var failures: int = 0
++
++class Session extends RefCounted:
++	var primed: Dictionary = {}
++
++class Owner extends Node:
++	var canvas: Node
++	var editor_preview_thread: Thread
++	var editor_world: Node
++	var editor_compiled_cache: Array = []
++	var editor_raster_cache: Dictionary = {}
++	var history: Array = []
++	var redo_history: Array = []
++	var editor_gesture_history: Array = []
++	var editor_gesture_redo: Array = []
++	var editor_session := Session.new()
++	const EDITOR_COMPILED_BUDGET: int = 48*1024*1024
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("MEMORY_LOADING_FAIL ",label)
++
++func cold(stage: String) -> void:
++	for path: String in COLD:
++		check(not ResourceLoader.has_cached(path),stage+" leaves "+path+" unloaded")
++
++func run() -> void:
++	cold("fixture")
++	var path: String = "res://editor/editor_memory.gd"
++	for option: String in OS.get_cmdline_user_args():
++		if option.begins_with("--policy="): path = option.trim_prefix("--policy=")
++	var began: int = Time.get_ticks_usec()
++	var policy: Script = load(path)
++	var load_us: int = Time.get_ticks_usec()-began
++	check(policy != null and policy.can_instantiate(),"policy loads")
++	cold("policy load")
++	var owner := Owner.new()
++	root.add_child(owner)
++	began = Time.get_ticks_usec()
++	var empty: Dictionary = policy.retained(owner)
++	var retained_us: int = Time.get_ticks_usec()-began
++	check(empty.retained_bytes == 0 and empty.optional_garage_bytes == 0,"uncreated caches have zero owned bytes")
++	cold("accounting")
++	var manager: RefCounted = policy.new()
++	manager.pressure_requested = true
++	manager.tick(owner)
++	check(manager.trims == 1 and not manager.pressure_requested,"pressure completes on empty optional caches")
++	cold("empty pressure")
++	# Cache providers admitted later must become visible without a permanent
++	# negative cache. This numeric cache has no presentation dependencies.
++	var support: Script = load("res://track/road_support_cache.gd")
++	support.write("policy-loading",{"value":PackedFloat32Array([1,2,3])},support.generation)
++	check(support.bytes_used() > 0,"late fixture owns bytes")
++	check(policy.retained(owner).other.road_support_bytes == support.bytes_used(),"late cache contributes its exact current allocation")
++	manager.pressure_requested = true
++	manager.next_sample = 0
++	manager.tick(owner)
++	check(support.bytes_used() == 0,"real pressure trims a late cache")
++	cold("late cache pressure")
++	# Simulate data owned by a worker: pressure must not clear it or pretend
++	# the pending reclamation completed. No actual thread/join is necessary.
++	var work: Script = load("res://editor/work_job.gd")
++	work.pending.append(RefCounted.new())
++	owner.editor_preview_thread = Thread.new()
++	owner.editor_compiled_cache = [{"bytes":123,"value":"owned"}]
++	owner.editor_raster_cache = {"prepared_bytes":456,"value":"owned"}
++	manager.pressure_requested = true
++	manager.next_sample = 0
++	manager.tick(owner)
++	check(owner.editor_compiled_cache == [{"bytes":123,"value":"owned"}] and owner.editor_raster_cache == {"prepared_bytes":456,"value":"owned"},"worker-owned caches remain exact under pressure")
++	check(manager.pressure_requested,"unfinished reclamation remains pending")
++	check(manager.telemetry.compiled_bytes == owner.EDITOR_COMPILED_BUDGET and manager.telemetry.raster_bytes == 24*1024*1024,"busy worker keeps conservative reservations")
++	owner.editor_preview_thread = null
++	work.pending.clear()
++	manager.next_sample = 0
++	manager.tick(owner)
++	check(owner.editor_compiled_cache.is_empty() and owner.editor_raster_cache == {"enabled":true},"retired worker data can be reclaimed")
++	check(not manager.pressure_requested,"completed reclamation clears pressure")
++	cold("worker pressure")
++	check(policy.RETAINED_BUDGET == 64*1024*1024 and policy.GARAGE_BUDGET == 96*1024*1024 and policy.PRESSURE_HISTORY == 2*1024*1024,"unchanged budgets")
++	owner.free()
++	print("MEMORY_LOADING_TIMING ",JSON.stringify({"policy":path,"load_us":load_us,"retained_us":retained_us}))
++	print("MEMORY_LOADING ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)

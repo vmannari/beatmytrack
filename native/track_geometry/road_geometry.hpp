@@ -345,8 +345,9 @@ inline Vector2 miter(const Polygon &polygon,int index,const std::vector<Cut> &cu
             return area<0?-normal:normal;
         }
     } else if (on_cut(before,point,cuts) || on_cut(point,after,cuts)) {
-        // Preserve NativeTrackVisual's original non-swept join-plane miter.
-        for (const auto &cut:cuts) if (std::abs((point-cut.point).dot(cut.normal))<0.001) {
+        // Match a finite mouth, not another hairpin cap on the same plane.
+        for (const auto &cut:cuts) if (std::abs((point-cut.point).dot(cut.normal))<0.001 &&
+                std::abs((point-cut.point).dot(cut.normal.orthogonal()))<=cut.span*0.5+0.001) {
             Vector2 normal=cut.normal.orthogonal();
             if (normal.dot(point-cut.point)<0) normal=-normal;
             return normal;

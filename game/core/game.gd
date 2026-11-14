@@ -1096,6 +1096,7 @@ func _build_ground(world: Node3D) -> void:
 				if not _preparation_is_current(): _ground_preparation_job.cancel(); return
 			if not _preparation_is_current(): return
 			var prepared_ground: Dictionary = _ground_preparation_job.result if _ground_preparation_job.result is Dictionary else {}
+			if profile_enabled: preparation_costs.ground_worker = prepared_ground.get("costs",{}).duplicate()
 			bridge_presentation = prepared_ground.get("bridge")
 			if not prepared_ground.get("winter_cover",{}).is_empty(): native_track.editor_winter_cover = prepared_ground.winter_cover
 			_ground_preparation_job = null

@@ -36,6 +36,7 @@ var snow_impact_position: Vector2
 var snow_last_burst: int = -1000
 var snow_burst_count: int = 0
 var desert_profile: bool = false
+var storm_profile: bool = false
 
 var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
 var track_width: float = 1.52 * HandlingConfig.BODY_SCALE
@@ -108,32 +109,44 @@ func prepare_track(track: NativeTrack) -> void:
 	if track == null: return
 	_bind_bridges(track)
 	var theme: String = str(track.metadata.get("theme","pine"))
-	_set_desert_profile(theme == "desert")
+	_set_sand_profile(theme)
 	if theme == "storm": _ensure_water()
 	if theme == "winter": _ensure_snow()
 	if not track.creator_bridges.is_empty() or track.bridge_height > 0.0: _ensure_deck_clouds()
 
 
-func _set_desert_profile(enabled: bool) -> void:
-	if desert_profile == enabled: return
+func _set_sand_profile(theme: String) -> void:
+	var enabled: bool = theme == "desert"
+	var wet: bool = theme == "storm"
+	if desert_profile == enabled and storm_profile == wet: return
 	desert_profile = enabled
+	storm_profile = wet
 	for emitter: GPUParticles3D in spray_emitters:
 		# Small flattened grains form a low ballistic fan beneath the soft plume.
 		# Reuse the rear spray budget rather than adding flying grass substitutes.
 		var grain: SphereMesh = emitter.draw_pass_1
-		grain.radius = 0.045 if enabled else 0.075
-		grain.height = 0.065 if enabled else 0.25
+		grain.radius = 0.045 if enabled else (0.025 if wet else 0.075)
+		grain.height = 0.065 if enabled else (0.07 if wet else 0.25)
 		var grit: ParticleProcessMaterial = emitter.process_material
-		grit.color = Color("b69a70") if enabled else Color(0.52,0.37,0.19)
-		grit.direction = Vector3(0,0.24 if enabled else 0.42,-1).normalized()
+		grit.color = Color("b69a70") if enabled else (Color("62513a") if wet else Color(0.52,0.37,0.19))
+		grit.direction = Vector3(0,0.24 if enabled or wet else 0.42,-1).normalized()
 		grit.spread = 58.0 if enabled else 42.0
-		grit.scale_min = 0.40 if enabled else 0.72
-		grit.scale_max = 1.15 if enabled else 1.28
+		grit.scale_min = 0.40 if enabled or wet else 0.72
+		grit.scale_max = 1.15 if enabled else (1.0 if wet else 1.28)
+		grit.initial_velocity_min = 1.2 if wet else 3.0
+		grit.initial_velocity_max = 2.8 if wet else 7.0
+		emitter.lifetime = 0.32 if wet else 0.65
 	for emitter: GPUParticles3D in dust_emitters+deck_dust_emitters:
 		_apply_desert_cloud(emitter,enabled)
 	for emitter: GPUParticles3D in tyre_emitters+deck_tyre_emitters:
 		(emitter.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("rally_dust",enabled)
 	for emitter: GPUParticles3D in deck_tyre_emitters: _sync_deck_cloud_process(emitter)
+	if wet:
+		# Also discard lingering dry-biome particles if an effect is reused.
+		for emitter: GPUParticles3D in dust_emitters+tyre_emitters+deck_dust_emitters+deck_tyre_emitters:
+			emitter.restart()
+			emitter.emitting = false
+			emitter.amount_ratio = 0.0
 
 
 func _apply_desert_cloud(emitter: GPUParticles3D, enabled: bool) -> void:
@@ -219,7 +232,7 @@ func clear() -> void:
 func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
 	if track != null:
 		_bind_bridges(track,bridge)
-		_set_desert_profile(str(track.metadata.get("theme","pine")) == "desert")
+		_set_sand_profile(str(track.metadata.get("theme","pine")))
 	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
 	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < (0.06 if winter else 0.8):
 		_stop()
@@ -248,6 +261,10 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 		var on_sand: bool = kind == SAND_SURFACE
 		if on_sand and state.track_elevated: _ensure_deck_clouds()
 		var strengths: Vector2 = emission_strengths(state,frame,side,axle_values[wheel]) if on_sand else Vector2(-1.0,-1.0)
+		if on_sand and storm:
+			# Wet sand throws a few low, fast-settling grains, never a dust cloud.
+			strengths.x = 0.0
+			strengths.y = minf(0.32,maxf(strengths.y*0.32,0.12*smoothstep(0.8,12.0,state.velocity.length())))
 		if on_sand and desert_profile:
 			strengths.x = maxf(strengths.x,lerpf(0.28,1.0,smoothstep(0.8,12.0,state.velocity.length())))
 			if track.cell_at(contacts[wheel],state.track_elevated) in [1,2]:

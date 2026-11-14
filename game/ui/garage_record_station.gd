@@ -194,9 +194,11 @@ static func update(station: Node3D, settings: Dictionary) -> void:
 		cover.albedo_texture = Library.cover(collection[index].id)
 		cover.roughness = 0.8
 		var face := PlaneMesh.new()
+		# Keep image top aligned with sleeve top, facing the listener like the title.
+		face.orientation = PlaneMesh.FACE_Z
 		face.size = Vector2(0.324,0.324)
 		var art: MeshInstance3D = GarageFurnishings.mesh(sleeve,Vector3(0,0.165,-0.002),face,cover)
-		art.rotation.x = -PI*0.5
+		art.rotation.y = PI
 		var title := Label3D.new()
 		title.text = collection[index].title.left(24)
 		title.font = MenuStyle.DISPLAY

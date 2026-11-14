@@ -1,0 +1,656 @@
+--- a/scripts/bake_garage_previews.gd
++++ b/scripts/bake_garage_previews.gd
+@@ -1,11 +1,12 @@
+ extends SceneTree
+ ## Run with the pinned engine and a graphical renderer. Native game assets only.
++const Transaction = preload("res://tests/support/asset_bake_transaction.gd")
+ const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+ 
+ func _sources() -> Dictionary:
+ 	var sources: Dictionary = {}
+-	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd"]:
+-		sources[path] = FileAccess.get_sha256("res://"+path.trim_prefix("game/"))
++	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","scripts/bake_garage_previews.gd"]:
++		sources[path] = FileAccess.get_sha256("res://../"+path)
+ 	for directory: String in ["res://vehicle","res://ui"]:
+ 		for name: String in DirAccess.get_files_at(directory):
+ 			if not name.ends_with(".gd") and not name.ends_with(".gdshader") and not name.ends_with(".gdshaderinc"): continue
+@@ -19,33 +20,62 @@
+ 	return sources
+ 
+ func _initialize() -> void: run.call_deferred()
++func _geometry_revisions() -> Dictionary:
++	# Read the revision map from disk again at the fence; loaded GDScript constants
++	# cannot observe an identity file rewritten while a bake is rendering.
++	var pattern := RegEx.new()
++	pattern.compile("MODULAR_CAR_SHA256: Dictionary = (\\{[^\\n]+\\})")
++	var found: RegExMatch = pattern.search(FileAccess.get_file_as_string("res://core/build_identity.gd"))
++	if found == null: return {}
++	var value: Variant = JSON.parse_string(found.get_string(1))
++	return value if value is Dictionary else {}
++
+ func run() -> void:
+ 	if DisplayServer.get_name()=="headless":
+ 		push_error("Garage previews require a graphical renderer")
+ 		quit(1)
+ 		return
+-	var folder: String = ProjectSettings.globalize_path("res://assets/garage/previews_v1")
++	var folder: String = "res://assets/garage/previews_v1"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): folder = arg.trim_prefix("--output=")
++	folder = ProjectSettings.globalize_path(folder)
++	var files: Array[String] = []
++	for id: String in VehicleCatalog.IDS: files.append(id+".png")
++	files.append("provenance.json")
++	var transaction := Transaction.new()
++	if transaction.begin(folder, files) != OK:
++		push_error("Preview bake is locked or cannot create candidates: " + folder)
++		quit(1)
++		return
+ 	var provenance_path: String = folder.path_join("provenance.json")
+-	var previous_text: String = FileAccess.get_file_as_string(provenance_path)
+-	var previous: Dictionary = JSON.parse_string(previous_text)
+-	var protected_hashes: Dictionary = {}
+-	DirAccess.make_dir_recursive_absolute(folder)
++	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(provenance_path)) if FileAccess.file_exists(provenance_path) else null
++	var previous: Dictionary = parsed if parsed is Dictionary else {}
+ 	var sources: Dictionary = _sources()
++	var revision_fence: Dictionary = _geometry_revisions()
+ 	var hashes: Dictionary = {}
+ 	var geometry_revisions: Dictionary = {}
+ 	var prepared_scenes: Dictionary = {}
++	var scene_fence: Dictionary = {}
++	var publish: Array[String] = []
+ 	for id: String in VehicleCatalog.IDS:
+ 		geometry_revisions[id]=preload("res://vehicle/modular_car_base.gd").build_revision(id)
+ 		var reference:=CarVisual.new()
+ 		reference.vehicle_id=id;reference.simple_model=true
+ 		reference.editable_kits=VehicleCustomisation.supported(id)
+-		prepared_scenes[id]=FileAccess.get_sha256(preload("res://vehicle/modular_car_base.gd").path_for(reference))
++		var scene_path: String = preload("res://vehicle/modular_car_base.gd").path_for(reference)
++		prepared_scenes[id]=FileAccess.get_sha256(scene_path)
++		scene_fence[scene_path] = prepared_scenes[id]
+ 		reference.free()
++		if revision_fence.get(id) != geometry_revisions[id]:
++			push_error("Loaded preview geometry does not match current build identity")
++			transaction.close(); quit(1); return
+ 		if ("--exclude-vehicle="+id) in OS.get_cmdline_user_args():
+ 			# Retain an explicitly protected photograph while updating the shared
+ 			# provenance receipt. Its unchanged model is checked independently.
+-			hashes[id] = FileAccess.get_sha256(folder.path_join(id+".png"))
+-			protected_hashes[id] = hashes[id]
++			if not previous.get("geometry_revisions",{}).has(id) or not previous.get("prepared_scenes",{}).has(id) or transaction.previous[id+".png"] != previous.get("hashes",{}).get(id):
++				push_error("Excluded preview needs a matching accepted picture and provenance")
++				transaction.close(); quit(1); return
++			hashes[id] = transaction.previous[id+".png"]
+ 			geometry_revisions[id] = previous.geometry_revisions[id]
+ 			prepared_scenes[id] = previous.prepared_scenes[id]
+ 			continue
+@@ -65,26 +95,33 @@
+ 			await process_frame
+ 			await RenderingServer.frame_post_draw
+ 		var pixels: Image = view.showroom_viewport.get_texture().get_image()
+-		var path: String = folder.path_join(id+".png")
+-		if pixels.save_png(path)!=OK: quit(1); return
++		var path: String = transaction.candidate(id+".png")
++		if pixels.save_png(path)!=OK:
++			transaction.close(); quit(1); return
++		publish.append(id+".png")
+ 		hashes[id] = FileAccess.get_sha256(path)
+ 		print("NATIVE_THUMBNAIL ",id," ",pixels.get_size()," ",hashes[id])
+ 		view.queue_free()
+ 		await process_frame
+ 		await process_frame
+-	if sources != _sources():
++	if sources != _sources() or revision_fence != _geometry_revisions():
+ 		push_error("Native preview sources changed during the bake; repeat after those edits finish")
++		transaction.close()
+ 		quit(1)
+ 		return
+-	if FileAccess.get_file_as_string(provenance_path)!=previous_text:
+-		push_error("Concurrent preview provenance changed; preserve it and repeat this bake")
+-		quit(1)
+-		return
+-	for id: String in protected_hashes:
+-		if protected_hashes[id]!=FileAccess.get_sha256(folder.path_join(id+".png")):
+-			push_error("Concurrent protected picture changed; preserve its provenance and repeat")
+-			quit(1)
+-			return
+-	var output := FileAccess.open(provenance_path,FileAccess.WRITE)
++	for path: String in scene_fence:
++		if scene_fence[path] != FileAccess.get_sha256(path):
++			push_error("Prepared scene changed during preview bake")
++			transaction.close(); quit(1); return
++	var output := FileAccess.open(transaction.candidate("provenance.json"),FileAccess.WRITE)
++	if output == null:
++		transaction.close(); quit(1); return
+ 	output.store_string(JSON.stringify({"simple":true,"source":"Dedicated thumbnail studio, reduced car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"geometry_revisions":geometry_revisions,"prepared_scenes":prepared_scenes,"sources":sources},"\t")+"\n")
+-	quit()
++	output.flush()
++	var write_error: Error = output.get_error()
++	output.close()
++	publish.append("provenance.json")
++	var error: Error = transaction.publish(publish) if write_error == OK else write_error
++	transaction.close()
++	if error != OK: push_error("Preview publication rejected; accepted files preserved: " + error_string(error))
++	quit(0 if error == OK else 1)
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -374,6 +374,8 @@
+ function Export-Android {
+     & python (Join-Path $PSScriptRoot 'check_android_delivery.py') --preset $AndroidPreset
+     if ($LASTEXITCODE) { throw 'Android delivery preset is inconsistent. No export started.' }
++	& python (Join-Path $PSScriptRoot 'check_garage_workshop.py')
++	if ($LASTEXITCODE) { throw 'Garage workshop is stale or missing. Bake and validate its architecture before exporting.' }
+ 	& python (Join-Path $PSScriptRoot 'prepare_car_assets.py') --verify --godot $script:godot --output (Join-Path $commandLogRoot 'prepared-assets')
+ 	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
+ 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')
+--- a/game/tests/bake_garage_architecture.gd
++++ b/game/tests/bake_garage_architecture.gd
+@@ -1,6 +1,9 @@
+ extends SceneTree
+ ## Offline native geometry preparation; no changes to the authored workshop.
++const Transaction = preload("res://tests/support/asset_bake_transaction.gd")
+ const SOURCES: Array[String]=[
++	"tests/bake_garage_architecture.gd","tests/support/asset_bake_transaction.gd",
++	"tests/support/garage_architecture_car.gd",
+ 	"ui/garage_environment.gd","ui/garage_details.gd","ui/garage_drain.gd",
+ 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
+ 	"ui/garage_workshop.gd","ui/garage_plant.gd",
+@@ -13,27 +16,46 @@
+ 	"tests/support/garage_mesh_lods.gd",
+ 	"tests/support/car_refinement_lods.gd","vehicle/car_mesh_lods.gd",
+ ]
++func _sources() -> Dictionary:
++	var hashes: Dictionary = {}
++	for source: String in SOURCES: hashes[source] = FileAccess.get_sha256("res://"+source)
++	return hashes
++
+ func _initialize() -> void: run.call_deferred()
+ func run() -> void:
++	var transaction := Transaction.new()
++	var folder: String = "res://assets/garage"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): folder = arg.trim_prefix("--output=")
++	var error: Error = transaction.begin(folder, ["workshop_v1.scn", "workshop_v1.provenance.json"])
++	if error != OK:
++		push_error("Workshop bake is locked or cannot create candidates")
++		quit(1); return
++	var hashes: Dictionary = _sources()
+ 	var world := Node3D.new()
+ 	root.add_child(world)
+-	var car := CarVisual.new()
++	var car := preload("res://tests/support/garage_architecture_car.gd").new()
+ 	world.add_child(car)
+ 	GarageEnvironment.architecture_scene=null
+ 	GarageEnvironment.build(world,car,false,false)
+-	var path: String="res://assets/garage/workshop_v1.scn"
+-	var error: Error=ResourceSaver.save(GarageEnvironment.architecture_scene,path,ResourceSaver.FLAG_COMPRESS)
++	var path: String=transaction.candidate("workshop_v1.scn")
++	error=ResourceSaver.save(GarageEnvironment.architecture_scene,path,ResourceSaver.FLAG_COMPRESS)
+ 	if error == OK: error = preload("res://tests/support/garage_mesh_lods.gd").new().bake(path)
+ 	if error==OK:
+-		var hashes: Dictionary={}
+-		for source: String in SOURCES: hashes[source]=FileAccess.get_sha256("res://"+source)
+ 		var provenance: Dictionary={"origin":"Original authored GarageEnvironment architecture; no generated art or external models.",
+ 			"generator":"res://tests/bake_garage_architecture.gd","engine":Engine.get_version_info().string,
+ 			"sources":hashes,"scene_sha256":FileAccess.get_sha256(path),
+ 			"validation":"test_menu_responsiveness.gd compares every node transform, mesh array and finish with a fresh procedural build."}
+-		var file:=FileAccess.open("res://assets/garage/workshop_v1.provenance.json",FileAccess.WRITE)
++		var file:=FileAccess.open(transaction.candidate("workshop_v1.provenance.json"),FileAccess.WRITE)
+ 		if file==null: error=FileAccess.get_open_error()
+-		else: file.store_string(JSON.stringify(provenance,"  ")+"\n")
++		else:
++			file.store_string(JSON.stringify(provenance,"  ")+"\n")
++			file.flush()
++			error = file.get_error()
++			file.close()
++	if error == OK and hashes != _sources(): error = ERR_BUSY
++	if error == OK: error = transaction.publish(["workshop_v1.scn", "workshop_v1.provenance.json"])
++	transaction.close()
+ 	print("GARAGE_ARCHITECTURE_BAKE ",error)
+ 	world.free()
+ 	quit(0 if error==OK else 1)
+--- a/game/tests/test_menu_responsiveness.gd
++++ b/game/tests/test_menu_responsiveness.gd
+@@ -12,27 +12,13 @@
+ func frames(count: int=4) -> void:
+ 	for _i: int in range(count): await process_frame
+ func geometry(node: Node, result: Array) -> void:
+-	if node is Node3D: result.append([str(node.name),node.transform])
+-	if node is MeshInstance3D:
+-		var mesh: Mesh=node.mesh
+-		result.append([node.layers,node.cast_shadow,mesh.get_surface_count()])
+-		for index: int in range(mesh.get_surface_count()):
+-			result.append(mesh.surface_get_arrays(index))
+-		var material: Material=node.material_override
+-		if material is ShaderMaterial:
+-			var params: Array=[]
+-			for property: Dictionary in material.get_property_list():
+-				if str(property.name).begins_with("shader_parameter/"): params.append([property.name,material.get(property.name)])
+-			result.append([material.shader.code,params])
+-		elif material is StandardMaterial3D:
+-			result.append([material.albedo_color,material.metallic,material.roughness,material.emission_enabled,material.emission,material.emission_energy_multiplier])
+-	for child: Node in node.get_children(): geometry(child,result)
++	preload("res://tests/support/garage_geometry_comparison.gd").geometry(node, result)
+ func architecture() -> void:
+ 	var prepared: PackedScene=load(GarageEnvironment.PREPARED_ARCHITECTURE)
+ 	GarageEnvironment.architecture_scene=null
+ 	var world:=Node3D.new()
+ 	root.add_child(world)
+-	var car:=CarVisual.new()
++	var car:=preload("res://tests/support/garage_architecture_car.gd").new()
+ 	world.add_child(car)
+ 	GarageEnvironment.build(world,car,true,false)
+ 	var before: Node=GarageEnvironment.architecture_scene.instantiate()
+--- /dev/null
++++ b/game/tests/support/asset_bake_transaction.gd
+@@ -0,0 +1,95 @@
++extends RefCounted
++## Offline bakers only. Validate candidates before replacing accepted artifacts.
++## A directory lock serialises cooperating writers; an interrupted run leaves it
++## for inspection rather than guessing that another writer is dead.
++var folder: String
++var staging: String
++var names: Array[String] = []
++var previous: Dictionary = {}
++var locked: bool = false
++var recovery_required: bool = false
++
++func digest(path: String) -> String:
++	return FileAccess.get_sha256(path) if FileAccess.file_exists(path) else "missing"
++
++func begin(target: String, files: Array[String]) -> Error:
++	for name: String in files:
++		if name != name.get_file() or name in ["", ".", ".."] or names.has(name): return ERR_INVALID_PARAMETER
++		names.append(name)
++	folder = ProjectSettings.globalize_path(target)
++	var error: Error = DirAccess.make_dir_recursive_absolute(folder)
++	if error != OK: return error
++	staging = folder.path_join(".asset-bake-lock")
++	error = DirAccess.make_dir_absolute(staging)
++	if error != OK: return error
++	locked = true
++	var ignore := FileAccess.open(staging.path_join(".gdignore"), FileAccess.WRITE)
++	if ignore == null:
++		close()
++		return ERR_CANT_CREATE
++	ignore.close()
++	for name: String in names: previous[name] = digest(folder.path_join(name))
++	# Leave a small recovery receipt if the process stops between file moves.
++	var receipt := FileAccess.open(staging.path_join("previous.json"), FileAccess.WRITE)
++	if receipt == null:
++		close()
++		return ERR_CANT_CREATE
++	receipt.store_string(JSON.stringify({"folder": folder, "previous": previous}, "\t") + "\n")
++	receipt.flush()
++	error = receipt.get_error()
++	receipt.close()
++	if error != OK: close()
++	return error
++
++func candidate(name: String) -> String:
++	assert(locked and names.has(name))
++	return staging.path_join("candidate_" + name)
++
++func unchanged() -> bool:
++	for name: String in names:
++		if previous[name] != digest(folder.path_join(name)): return false
++	return true
++
++func _move(source: String, target: String) -> Error:
++	return DirAccess.rename_absolute(source, target)
++
++func publish(files: Array[String]) -> Error:
++	if not locked or not unchanged(): return ERR_BUSY
++	# The caller lists the manifest last. Protected/excluded files are fenced by
++	# unchanged(), but are never replaced.
++	var seen: Array[String] = []
++	for name: String in files:
++		if not names.has(name) or name in seen or not FileAccess.file_exists(candidate(name)): return ERR_INVALID_DATA
++		seen.append(name)
++	var touched: Array[String] = []
++	var installed: Array[String] = []
++	var error: Error = OK
++	for name: String in files:
++		var path: String = folder.path_join(name)
++		if previous[name] != "missing":
++			error = _move(path, staging.path_join("backup_" + name))
++			if error != OK: break
++		touched.append(name)
++		error = _move(candidate(name), path)
++		if error != OK: break
++		installed.append(name)
++	if error != OK:
++		touched.reverse()
++		for name: String in touched:
++			var path: String = folder.path_join(name)
++			if name in installed and DirAccess.remove_absolute(path) != OK: recovery_required = true
++			if previous[name] != "missing" and _move(staging.path_join("backup_" + name), path) != OK: recovery_required = true
++		if recovery_required:
++			push_error("Asset publication rollback needs inspection: " + staging)
++	return error
++
++func close() -> void:
++	if not locked or recovery_required: return
++	for name: String in names:
++		for prefix: String in ["candidate_", "backup_"]:
++			var path: String = staging.path_join(prefix + name)
++			if FileAccess.file_exists(path): DirAccess.remove_absolute(path)
++	DirAccess.remove_absolute(staging.path_join(".gdignore"))
++	DirAccess.remove_absolute(staging.path_join("previous.json"))
++	DirAccess.remove_absolute(staging)
++	locked = false
+--- /dev/null
++++ b/game/tests/support/garage_geometry_comparison.gd
+@@ -0,0 +1,26 @@
++extends RefCounted
++## Compare authored workshop geometry, ignoring only engine allocation numbers.
++static func comparison_name(node: Node) -> String:
++	var value: String = str(node.name)
++	var prefix: String = "@" + node.get_class() + "@"
++	# Godot reserves @ for its own generated names. Retain the class and every
++	# authored name; only the process-global allocation number is irrelevant.
++	if value.begins_with(prefix) and value.trim_prefix(prefix).is_valid_int(): return prefix
++	return value
++
++static func geometry(node: Node, result: Array) -> void:
++	if node is Node3D: result.append([comparison_name(node),node.transform])
++	if node is MeshInstance3D:
++		var mesh: Mesh=node.mesh
++		result.append([node.layers,node.cast_shadow,mesh.get_surface_count()])
++		for index: int in range(mesh.get_surface_count()):
++			result.append(mesh.surface_get_arrays(index))
++		var material: Material=node.material_override
++		if material is ShaderMaterial:
++			var params: Array=[]
++			for property: Dictionary in material.get_property_list():
++				if str(property.name).begins_with("shader_parameter/"): params.append([property.name,material.get(property.name)])
++			result.append([material.shader.code,params])
++		elif material is StandardMaterial3D:
++			result.append([material.albedo_color,material.metallic,material.roughness,material.emission_enabled,material.emission,material.emission_energy_multiplier])
++	for child: Node in node.get_children(): geometry(child,result)
+--- /dev/null
++++ b/game/tests/support/garage_architecture_car.gd
+@@ -0,0 +1,5 @@
++extends CarVisual
++## The workshop builder needs a pedestal occupant, not a constructed vehicle.
++## Keep unrelated model generation out of architecture baking/comparison.
++func _ready() -> void:
++	pass
+--- /dev/null
++++ b/game/tests/test_garage_bake_safety.gd
+@@ -0,0 +1,125 @@
++extends SceneTree
++const Transaction = preload("res://tests/support/asset_bake_transaction.gd")
++const Comparison = preload("res://tests/support/garage_geometry_comparison.gd")
++class FailingTransaction extends Transaction:
++	var moves: int = 0
++	func _move(source: String, target: String) -> Error:
++		moves += 1
++		# Fail installing the manifest, after an image has already been installed.
++		if moves == 4: return ERR_CANT_CREATE
++		return super._move(source, target)
++
++var checks: int = 0
++var failures: int = 0
++var folder: String = "res://../build/garage-bake-safety-" + str(Time.get_ticks_usec())
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++func write(path: String, value: String) -> void:
++	var file := FileAccess.open(path, FileAccess.WRITE)
++	file.store_string(value)
++	file.close()
++func original() -> bool:
++	return FileAccess.get_file_as_string(folder.path_join("image.png")) == "accepted image" and FileAccess.get_file_as_string(folder.path_join("provenance.json")) == "accepted receipt"
++func candidates(transaction: RefCounted) -> void:
++	write(transaction.candidate("image.png"), "new image")
++	write(transaction.candidate("provenance.json"), "new receipt")
++func geometry(node: Node) -> Array:
++	var rows: Array = []
++	Comparison.geometry(node, rows)
++	return rows
++func run() -> void:
++	folder = ProjectSettings.globalize_path(folder)
++	DirAccess.make_dir_recursive_absolute(folder)
++	write(folder.path_join("image.png"), "accepted image")
++	write(folder.path_join("provenance.json"), "accepted receipt")
++	var files: Array[String] = ["image.png", "provenance.json"]
++	var first := Transaction.new()
++	check(first.begin(folder, files) == OK, "writer acquires its own lock")
++	var second := Transaction.new()
++	check(second.begin(folder, files) != OK, "overlapping writer rejected")
++	candidates(first)
++	check(original(), "candidate generation leaves accepted files exact")
++	first.close()
++	check(original(), "aborted generation preserves accepted files")
++	check(not DirAccess.dir_exists_absolute(first.staging), "abort removes owned candidates and lock")
++	var stale := Transaction.new()
++	check(stale.begin(folder, files) == OK, "next writer can acquire released lock")
++	candidates(stale)
++	write(folder.path_join("image.png"), "concurrent image")
++	check(stale.publish(files) == ERR_BUSY, "concurrent image mutation rejects publication")
++	check(FileAccess.get_file_as_string(folder.path_join("image.png")) == "concurrent image", "rejection preserves concurrent output")
++	stale.close()
++	write(folder.path_join("image.png"), "accepted image")
++	var stale_manifest := Transaction.new()
++	stale_manifest.begin(folder, files)
++	candidates(stale_manifest)
++	write(folder.path_join("provenance.json"), "concurrent receipt")
++	check(stale_manifest.publish(files) == ERR_BUSY, "concurrent manifest mutation rejects publication")
++	stale_manifest.close()
++	write(folder.path_join("provenance.json"), "accepted receipt")
++	var failure := FailingTransaction.new()
++	failure.begin(folder, files)
++	candidates(failure)
++	check(failure.publish(files) == ERR_CANT_CREATE, "injected mid-publication IO failure returned")
++	check(original(), "failed manifest installation rolls back image and manifest exactly")
++	failure.close()
++	var accepted := Transaction.new()
++	accepted.begin(folder, files)
++	candidates(accepted)
++	check(accepted.publish(files) == OK, "valid complete generation publishes")
++	check(FileAccess.get_file_as_string(folder.path_join("image.png")) == "new image" and FileAccess.get_file_as_string(folder.path_join("provenance.json")) == "new receipt", "accepted image and receipt both installed")
++	accepted.close()
++	check(not DirAccess.dir_exists_absolute(accepted.staging), "success releases writer lock")
++	var missing := Transaction.new()
++	missing.begin(folder, files)
++	write(missing.candidate("image.png"), "partial")
++	check(missing.publish(files) == ERR_INVALID_DATA, "incomplete candidate set rejected before replacement")
++	missing.close()
++	var protected := Transaction.new()
++	protected.begin(folder, files)
++	write(protected.candidate("provenance.json"), "receipt with protected image")
++	check(protected.publish(["provenance.json"]) == OK, "excluded image can be fenced without replacement")
++	check(FileAccess.get_file_as_string(folder.path_join("image.png")) == "new image", "excluded image bytes stay exact")
++	protected.close()
++	var empty_folder: String = folder.path_join("empty")
++	var empty := FailingTransaction.new()
++	empty.begin(empty_folder, files)
++	candidates(empty)
++	# No backups are needed here: move 2 is the manifest installation.
++	empty.moves = 2
++	check(empty.publish(files) == ERR_CANT_CREATE, "first-generation manifest failure returned")
++	check(not FileAccess.file_exists(empty_folder.path_join("image.png")) and not FileAccess.file_exists(empty_folder.path_join("provenance.json")), "first-generation failure leaves no partial published files")
++	empty.close()
++	var root_a := Node3D.new()
++	var root_b := Node3D.new()
++	root_a.name = "Room"; root_b.name = "Room"
++	root.add_child(root_a); root.add_child(root_b)
++	# Adding unnamed sibling meshes produces different process-global numbers.
++	for parent: Node3D in [root_a, root_b]:
++		for index: int in range(2):
++			var mesh := MeshInstance3D.new()
++			mesh.mesh = BoxMesh.new()
++			mesh.material_override = StandardMaterial3D.new()
++			parent.add_child(mesh)
++	var a: Node = root_a.get_child(1)
++	var b: Node = root_b.get_child(1)
++	check(str(a.name).begins_with("@") and a.name != b.name, "fixture exercises differing engine-generated names")
++	check(geometry(a) == geometry(b), "equivalent generated nodes compare equal")
++	b.name = "AuthoredPart"
++	check(geometry(a) != geometry(b), "authored node names stay significant")
++	var baseline: Array = geometry(b)
++	b.position.x = 0.1
++	check(baseline != geometry(b), "transform changes still rejected")
++	b.position.x = 0.0
++	b.mesh.size.x = 2.0
++	check(baseline != geometry(b), "mesh-array changes still rejected")
++	b.mesh.size.x = 1.0
++	b.material_override.roughness = 0.2
++	check(baseline != geometry(b), "finish changes still rejected")
++	root_a.free(); root_b.free()
++	print("GARAGE_BAKE_SAFETY ", checks, " checks, ", failures, " failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/scripts/check_garage_workshop.py
+@@ -0,0 +1,50 @@
++"""Read-only export gate for the packaged workshop and all declared inputs."""
++
++import hashlib
++import json
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++GENERATOR = "tests/bake_garage_architecture.gd"
++SCENE = "assets/garage/workshop_v1.scn"
++
++
++def digest(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def check(root=ROOT):
++    game = root / "game"
++    receipt = json.loads(
++        (game / "assets/garage/workshop_v1.provenance.json").read_text(encoding="utf-8")
++    )
++    if receipt.get("generator") != "res://" + GENERATOR:
++        raise ValueError("Unknown workshop generator")
++    match = re.search(
++        r"const SOURCES: Array\[String\]\s*=\s*\[([^\]]+)\]",
++        (game / GENERATOR).read_text(encoding="utf-8"),
++    )
++    if not match:
++        raise ValueError("Cannot read workshop source dependencies")
++    expected = set(re.findall(r'"([^"]+)"', match.group(1)))
++    sources = receipt.get("sources", {})
++    if not expected or set(sources) != expected:
++        raise ValueError("Workshop provenance must cover every declared input")
++    for source, recorded in sources.items():
++        path = (game / source).resolve()
++        if not path.is_relative_to(game.resolve()) or digest(path) != recorded:
++            raise ValueError(f"Stale workshop source: {source}; rebake architecture")
++    if digest(game / SCENE) != receipt.get("scene_sha256"):
++        raise ValueError("Changed workshop scene; rebake architecture")
++    print(f"GARAGE_WORKSHOP: exact scene, {len(sources)} current source hashes")
++
++
++if __name__ == "__main__":
++    import sys
++
++    try:
++        check()
++    except (OSError, ValueError, TypeError, AttributeError) as error:
++        print(f"GARAGE_WORKSHOP: {error}", file=sys.stderr)
++        sys.exit(1)
+--- /dev/null
++++ b/scripts/test_garage_workshop.py
+@@ -0,0 +1,76 @@
++"""Exercise the export validator with isolated valid and invalid receipts."""
++
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++import check_garage_workshop as checker
++
++
++class WorkshopGateTests(unittest.TestCase):
++    def setUp(self):
++        build = checker.ROOT / "build"
++        build.mkdir(exist_ok=True)
++        self.temp = tempfile.TemporaryDirectory(prefix="workshop-gate-", dir=build)
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.game = self.root / "game"
++        self.write(checker.GENERATOR, 'const SOURCES: Array[String]=["tests/bake_garage_architecture.gd", "vehicle/car_mesh_lods.gd"]')
++        self.write("vehicle/car_mesh_lods.gd", "original LOD source")
++        self.write(checker.SCENE, "accepted scene")
++        self.receipt = {
++            "generator": "res://" + checker.GENERATOR,
++            "sources": {p: checker.digest(self.game / p) for p in [checker.GENERATOR, "vehicle/car_mesh_lods.gd"]},
++            "scene_sha256": checker.digest(self.game / checker.SCENE),
++        }
++        self.save_receipt()
++
++    def write(self, path, text):
++        target = self.game / path
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text(text, encoding="utf-8")
++
++    def save_receipt(self):
++        self.write("assets/garage/workshop_v1.provenance.json", json.dumps(self.receipt))
++
++    def test_accepted_is_read_only(self):
++        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
++        checker.check(self.root)
++        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
++
++    def test_changed_lod(self):
++        self.write("vehicle/car_mesh_lods.gd", "new policy")
++        with self.assertRaisesRegex(ValueError, "Stale workshop source"):
++            checker.check(self.root)
++
++    def test_changed_scene(self):
++        self.write(checker.SCENE, "unaccepted scene")
++        with self.assertRaisesRegex(ValueError, "Changed workshop scene"):
++            checker.check(self.root)
++
++    def test_omitted_dependency(self):
++        del self.receipt["sources"]["vehicle/car_mesh_lods.gd"]
++        self.save_receipt()
++        with self.assertRaisesRegex(ValueError, "every declared input"):
++            checker.check(self.root)
++
++    def test_added_dependency(self):
++        self.write(checker.GENERATOR, 'const SOURCES: Array[String]=["new.gd"]')
++        with self.assertRaisesRegex(ValueError, "every declared input"):
++            checker.check(self.root)
++
++    def test_missing_scene(self):
++        (self.game / checker.SCENE).unlink()
++        with self.assertRaises(OSError):
++            checker.check(self.root)
++
++    def test_unknown_generator(self):
++        self.receipt["generator"] = "other"
++        self.save_receipt()
++        with self.assertRaisesRegex(ValueError, "Unknown workshop generator"):
++            checker.check(self.root)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/game/tests/support/asset_bake_transaction.gd.uid
+@@ -0,0 +1 @@
++uid://t6jshu1axq1
+--- /dev/null
++++ b/game/tests/support/garage_geometry_comparison.gd.uid
+@@ -0,0 +1 @@
++uid://b6nno7o1xpyrm
+--- /dev/null
++++ b/game/tests/support/garage_architecture_car.gd.uid
+@@ -0,0 +1 @@
++uid://b6jmg2736j3w3
+--- /dev/null
++++ b/game/tests/test_garage_bake_safety.gd.uid
+@@ -0,0 +1 @@
++uid://b0pp08t3cs5jv

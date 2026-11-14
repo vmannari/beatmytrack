@@ -24,6 +24,7 @@ func run() -> void:
 		# Modular restoration also needs an owned rest snapshot for this bake.
 		preload("res://vehicle/prepared_car_cache.gd").enabled=true
 		preload("res://vehicle/prepared_car_cache.gd").remember(car)
+		lods.remember(cache.DIRECTORY+id+".scn")
 		var error: Error=cache.bake(car)
 		if error == OK: error = lods.bake(cache.DIRECTORY+id+".scn")
 		if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(cache.DIRECTORY+id+".scn",id)

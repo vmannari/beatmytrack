@@ -26,7 +26,27 @@ static func mesh(parent: Node3D, at: Vector3, shape: Mesh, material: Material) -
 	parent.add_child(node)
 	return node
 
-static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material: Material, sides: int = 20) -> MeshInstance3D:
+static func tube_sides(radius: float) -> int:
+	if radius <= 0.012: return 12
+	if radius <= 0.035: return 16
+	return 20
+
+static func lathe_sides(radius: float) -> int:
+	# Preserve all profile rows and their analytic normals. Small turned fittings
+	# need fewer azimuth samples; the large compressor/tyre silhouettes keep 48.
+	if radius < 0.035: return 16
+	if radius < 0.09: return 24
+	if radius < 0.24: return 32
+	return 48
+
+static func ring_sides(outer: float) -> int:
+	if outer <= 0.05: return 16
+	if outer <= 0.128: return 24
+	return 32
+
+static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material: Material, sides: int = 0) -> MeshInstance3D:
+	# Explicit polygon counts (hex fasteners, authored controls) remain exact.
+	if sides == 0: sides = tube_sides(radius)
 	var length: float = a.distance_to(b)
 	var key := Vector3(radius,length,sides)
 	if not meshes.has(key):
@@ -43,12 +63,13 @@ static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material
 	return node
 
 static func ring(parent: Node3D, at: Vector3, inner: float, outer: float, material: Material) -> MeshInstance3D:
-	var key := Vector2(inner,outer)
+	var sides: int = ring_sides(outer)
+	var key := Vector3(inner,outer,sides)
 	if not meshes.has(key):
 		var shape := TorusMesh.new()
 		shape.inner_radius = inner
 		shape.outer_radius = outer
-		shape.rings = 32
+		shape.rings = sides
 		shape.ring_segments = 8
 		meshes[key] = shape
 	var node: MeshInstance3D = mesh(parent,at,meshes[key],material)
@@ -56,7 +77,10 @@ static func ring(parent: Node3D, at: Vector3, inner: float, outer: float, materi
 	return node
 
 static func lathe(parent: Node3D, at: Vector3, profile: Array[Vector2], material: Material) -> MeshInstance3D:
-	var key: PackedByteArray = var_to_bytes(profile)
+	var radius: float = 0.0
+	for point: Vector2 in profile: radius = maxf(radius, absf(point.x))
+	var sides: int = lathe_sides(radius)
+	var key: PackedByteArray = var_to_bytes([profile,sides])
 	if not meshes.has(key):
 		var tool := SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -65,9 +89,9 @@ static func lathe(parent: Node3D, at: Vector3, profile: Array[Vector2], material
 			var tb: Vector2 = profile[mini(row+2,profile.size()-1)]-profile[row]
 			var na: Vector2 = Vector2(ta.y,-ta.x).normalized()
 			var nb: Vector2 = Vector2(tb.y,-tb.x).normalized()
-			for segment: int in range(48):
-				var a: float = segment*TAU/48.0
-				var b: float = (segment+1)*TAU/48.0
+			for segment: int in range(sides):
+				var a: float = segment*TAU/sides
+				var b: float = (segment+1)*TAU/sides
 				var points: Array[Vector3] = [Vector3(sin(a)*profile[row].x,profile[row].y,cos(a)*profile[row].x),Vector3(sin(b)*profile[row].x,profile[row].y,cos(b)*profile[row].x),Vector3(sin(b)*profile[row+1].x,profile[row+1].y,cos(b)*profile[row+1].x),Vector3(sin(a)*profile[row+1].x,profile[row+1].y,cos(a)*profile[row+1].x)]
 				var normals: Array[Vector3] = [Vector3(sin(a)*na.x,na.y,cos(a)*na.x),Vector3(sin(b)*na.x,na.y,cos(b)*na.x),Vector3(sin(b)*nb.x,nb.y,cos(b)*nb.x),Vector3(sin(a)*nb.x,nb.y,cos(a)*nb.x)]
 				var direction: Vector3 = (points[1]-points[0]).cross(points[2]-points[0])

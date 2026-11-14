@@ -4,6 +4,7 @@ extends RefCounted
 const DECK_HEIGHT: float = 0.22
 const DECK_RADIUS: float = 3.65
 const ROOF_CUTAWAY_HEIGHT: float = 4.95
+const MeshCleanup = preload("res://ui/garage_mesh_cleanup.gd")
 static var surfaces: Dictionary = {}
 static var architecture_scene: PackedScene
 static var cabinet_meshes: Dictionary = {}
@@ -44,7 +45,8 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, 
 	mesh.top_radius = radius
 	mesh.bottom_radius = radius
 	mesh.height = height
-	mesh.radial_segments = 96
+	# Keep the large platform's outline; small fixtures need fewer radial samples.
+	mesh.radial_segments = cylinder_segments(radius)
 	# The side is straight: intermediate height rings add no shape or shading.
 	mesh.rings = 0
 	node.mesh = mesh
@@ -53,6 +55,12 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, 
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(node)
 	return node
+
+static func cylinder_segments(radius: float) -> int:
+	if radius >= 0.5: return 96
+	if radius >= 0.12: return 48
+	if radius >= 0.035: return 32
+	return 16
 
 static func ring(parent: Node3D, radius: float, y: float, thickness: float, material: Material) -> void:
 	var node := MeshInstance3D.new()
@@ -250,7 +258,9 @@ static func _tyre_rack(root: Node3D, position: Vector3) -> void:
 
 static func _batch(root: Node3D) -> void:
 	var groups: Dictionary = {}
-	_collect(root, Transform3D.IDENTITY, groups)
+	var cleanup := MeshCleanup.new()
+	cleanup.gather(root, cabinet_meshes)
+	_collect(root, Transform3D.IDENTITY, groups, cleanup)
 	for source: Material in groups:
 		var merged := MeshInstance3D.new()
 		merged.name = "PreparedGarageMesh"
@@ -259,21 +269,26 @@ static func _batch(root: Node3D) -> void:
 		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(merged)
 
-static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary) -> void:
+static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary, cleanup: MeshCleanup) -> void:
 	for child: Node in node.get_children():
 		if not child is Node3D: continue
 		if child.name in ["GarageRoof","GarageVinyl","GarageRecordSleeves"]: continue
 		var local: Transform3D = transform * child.transform
 		if child is MeshInstance3D:
+			var mesh: Mesh = cleanup.clean(child, local)
+			if mesh == null:
+				node.remove_child(child)
+				child.queue_free()
+				continue
 			var material: Material = child.material_override
 			if not groups.has(material):
 				var tool := SurfaceTool.new()
 				tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 				groups[material] = tool
-			(groups[material] as SurfaceTool).append_from(child.mesh, 0, local)
+			(groups[material] as SurfaceTool).append_from(mesh, 0, local)
 			node.remove_child(child)
 			child.queue_free()
-		else: _collect(child, local, groups)
+		else: _collect(child, local, groups, cleanup)
 
 static func _set_owner(node: Node, owner: Node) -> void:
 	for child: Node in node.get_children():

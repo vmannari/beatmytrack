@@ -1,0 +1,516 @@
+diff --git a/game/tests/bake_garage_architecture.gd b/game/tests/bake_garage_architecture.gd
+index 23bab1695..623e18e7d 100644
+--- a/game/tests/bake_garage_architecture.gd
++++ b/game/tests/bake_garage_architecture.gd
+@@ -4,6 +4,7 @@ const SOURCES: Array[String]=[
+ 	"ui/garage_environment.gd","ui/garage_details.gd","ui/garage_drain.gd",
+ 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
+ 	"ui/garage_workshop.gd","ui/garage_plant.gd",
++	"ui/garage_mesh_cleanup.gd","rendering/mesh_vertex_packing.gd",
+ 	"ui/garage_plant_leaf.gdshader","ui/garage_plant_ceramic.gdshader",
+ 	"ui/garage_timber.gdshader","ui/garage_audio_wood.gdshader","ui/garage_vinyl.gdshader",
+ 	"ui/garage_audio_lid.gdshader","ui/garage_display_backing.gdshader",
+diff --git a/game/ui/garage_environment.gd b/game/ui/garage_environment.gd
+index 463585b46..bfe1d70cf 100644
+--- a/game/ui/garage_environment.gd
++++ b/game/ui/garage_environment.gd
+@@ -4,6 +4,7 @@ extends RefCounted
+ const DECK_HEIGHT: float = 0.22
+ const DECK_RADIUS: float = 3.65
+ const ROOF_CUTAWAY_HEIGHT: float = 4.95
++const MeshCleanup = preload("res://ui/garage_mesh_cleanup.gd")
+ static var surfaces: Dictionary = {}
+ static var architecture_scene: PackedScene
+ static var cabinet_meshes: Dictionary = {}
+@@ -44,7 +45,8 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float,
+ 	mesh.top_radius = radius
+ 	mesh.bottom_radius = radius
+ 	mesh.height = height
+-	mesh.radial_segments = 96
++	# Keep the large platform's outline; small fixtures need fewer radial samples.
++	mesh.radial_segments = cylinder_segments(radius)
+ 	# The side is straight: intermediate height rings add no shape or shading.
+ 	mesh.rings = 0
+ 	node.mesh = mesh
+@@ -54,6 +56,12 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float,
+ 	parent.add_child(node)
+ 	return node
+ 
++static func cylinder_segments(radius: float) -> int:
++	if radius >= 0.5: return 96
++	if radius >= 0.12: return 48
++	if radius >= 0.035: return 32
++	return 16
++
+ static func ring(parent: Node3D, radius: float, y: float, thickness: float, material: Material) -> void:
+ 	var node := MeshInstance3D.new()
+ 	var mesh := TorusMesh.new()
+@@ -250,7 +258,9 @@ static func _tyre_rack(root: Node3D, position: Vector3) -> void:
+ 
+ static func _batch(root: Node3D) -> void:
+ 	var groups: Dictionary = {}
+-	_collect(root, Transform3D.IDENTITY, groups)
++	var cleanup := MeshCleanup.new()
++	cleanup.gather(root, cabinet_meshes)
++	_collect(root, Transform3D.IDENTITY, groups, cleanup)
+ 	for source: Material in groups:
+ 		var merged := MeshInstance3D.new()
+ 		merged.name = "PreparedGarageMesh"
+@@ -259,21 +269,26 @@ static func _batch(root: Node3D) -> void:
+ 		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		root.add_child(merged)
+ 
+-static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary) -> void:
++static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary, cleanup: MeshCleanup) -> void:
+ 	for child: Node in node.get_children():
+ 		if not child is Node3D: continue
+ 		if child.name in ["GarageRoof","GarageVinyl","GarageRecordSleeves"]: continue
+ 		var local: Transform3D = transform * child.transform
+ 		if child is MeshInstance3D:
++			var mesh: Mesh = cleanup.clean(child, local)
++			if mesh == null:
++				node.remove_child(child)
++				child.queue_free()
++				continue
+ 			var material: Material = child.material_override
+ 			if not groups.has(material):
+ 				var tool := SurfaceTool.new()
+ 				tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 				groups[material] = tool
+-			(groups[material] as SurfaceTool).append_from(child.mesh, 0, local)
++			(groups[material] as SurfaceTool).append_from(mesh, 0, local)
+ 			node.remove_child(child)
+ 			child.queue_free()
+-		else: _collect(child, local, groups)
++		else: _collect(child, local, groups, cleanup)
+ 
+ static func _set_owner(node: Node, owner: Node) -> void:
+ 	for child: Node in node.get_children():
+diff --git a/scripts/bake_garage_previews.gd b/scripts/bake_garage_previews.gd
+index cbedabc59..0ba2147a4 100644
+--- a/scripts/bake_garage_previews.gd
++++ b/scripts/bake_garage_previews.gd
+@@ -4,6 +4,8 @@ const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio
+ 
+ func _sources() -> Dictionary:
+ 	var sources: Dictionary = {}
++	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd"]:
++		sources[path] = FileAccess.get_sha256("res://"+path.trim_prefix("game/"))
+ 	for directory: String in ["res://vehicle","res://ui"]:
+ 		for name: String in DirAccess.get_files_at(directory):
+ 			if not name.ends_with(".gd") and not name.ends_with(".gdshader") and not name.ends_with(".gdshaderinc"): continue
+diff --git a/scripts/build_identity.ps1 b/scripts/build_identity.ps1
+index 4b8f689de..547c3d9a8 100644
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -12,6 +12,7 @@ function Test-GaragePreviewSource([string]$Relative) {
+         'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_thumbnail_studio.gd', 'game/ui/garage_car_cache.gd',
+         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
+         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
++        'game/ui/garage_mesh_cleanup.gd', 'game/rendering/mesh_vertex_packing.gd',
+         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
+         'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd',
+         'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
+diff --git a/game/ui/garage_mesh_cleanup.gd b/game/ui/garage_mesh_cleanup.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_mesh_cleanup.gd
+@@ -0,0 +1,151 @@
++extends RefCounted
++## Remove only zero-area or fully enclosed triangles from static workshop parts.
++## Visible surfaces and their encoded vertex attributes are never resampled.
++static var enabled: bool = true
++const MARGIN: float = 0.00001
++const OPAQUE_SHADERS: Array[String] = [
++	"res://ui/garage_surface_finish.gdshader", "res://ui/garage_timber.gdshader",
++	"res://ui/garage_audio_wood.gdshader", "res://ui/garage_display_backing.gdshader",
++	"res://ui/garage_display_stone.gdshader",
++]
++var solids: Array[Dictionary] = []
++var hidden_triangles: int = 0
++var degenerate_triangles: int = 0
++
++static func opaque(material: Material) -> bool:
++	if material == null or material.next_pass != null: return false
++	if material is BaseMaterial3D:
++		return (material.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED
++			and not material.grow and not material.no_depth_test
++			and not material.proximity_fade_enabled
++			and material.distance_fade_mode == BaseMaterial3D.DISTANCE_FADE_DISABLED
++			and material.billboard_mode == BaseMaterial3D.BILLBOARD_DISABLED
++			and material.cull_mode != BaseMaterial3D.CULL_FRONT)
++	if material is ShaderMaterial and material.shader != null and material.shader.resource_path in OPAQUE_SHADERS:
++		# Unknown or newly transparent/deforming finishes cannot act as solids.
++		var code: String = material.shader.code
++		var assignment := RegEx.new()
++		assignment.compile("\\b(VERTEX|POSITION|DEPTH)(\\.[xyzwrgba]+)?\\s*([+*/-]?=)")
++		return not code.contains("ALPHA") and not code.contains("discard") and not code.contains("cull_front") and not code.contains("depth_draw_never") and not code.contains("skip_vertex_transform") and assignment.search(code) == null
++	return false
++
++func gather(root: Node3D, box_meshes: Dictionary) -> void:
++	if not enabled: return
++	var sizes: Dictionary = {}
++	for size: Vector3 in box_meshes: sizes[box_meshes[size]] = size
++	_gather(root, Transform3D.IDENTITY, sizes)
++
++func _gather(node: Node3D, transform: Transform3D, sizes: Dictionary) -> void:
++	for child: Node in node.get_children():
++		if not child is Node3D: continue
++		if not child.visible: continue
++		# These independently animated/cutaway groups are never occluders.
++		if child.name in ["GarageRoof", "GarageVinyl", "GarageRecordSleeves"]: continue
++		var local: Transform3D = transform * child.transform
++		if child is MeshInstance3D:
++			if not sizes.has(child.mesh) or not child.visible or not opaque(child.material_override): continue
++			var half: Vector3 = sizes[child.mesh] * 0.5
++			var bevel: float = minf(0.025, minf(half.x, minf(half.y, half.z)) * 0.18)
++			# The shrunken core lies strictly inside every bevel plane. No face
++			# touching an exposed edge or coplanar with a neighbour is removed.
++			var core: Vector3 = half - Vector3.ONE * (bevel + MARGIN)
++			if core.x <= 0 or core.y <= 0 or core.z <= 0: continue
++			solids.append({"node":child,"inverse":local.affine_inverse(),"core":core,"bounds":local * AABB(-core,core*2.0)})
++		else: _gather(child, local, sizes)
++
++static func inside(point: Vector3, core: Vector3) -> bool:
++	var absolute: Vector3 = point.abs()
++	return absolute.x < core.x and absolute.y < core.y and absolute.z < core.z
++
++func clean(part: MeshInstance3D, transform: Transform3D) -> Mesh:
++	var source: Mesh = part.mesh
++	if not enabled or not source is ArrayMesh or source.get_surface_count() != 1 or source.get_blend_shape_count() != 0 or not opaque(part.material_override): return source
++	if source.surface_get_format(0) & (Mesh.ARRAY_FORMAT_BONES | Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES): return source
++	# The workshop generates fresh LODs after batching. Existing levels require
++	# their own visibility proof and must never be silently retained or dropped.
++	if not (source.get("_surfaces")[0] as Dictionary).get("lods",[]).is_empty(): return source
++	var candidates: Array[Dictionary] = []
++	var bounds: AABB = transform * source.get_aabb()
++	for solid: Dictionary in solids:
++		if solid.node != part and bounds.intersects(solid.bounds):
++			candidates.append({"transform":solid.inverse * transform,"core":solid.core})
++	var packets: Array = source.get("_surfaces").duplicate()
++	var changed: bool = false
++	for surface: int in range(source.get_surface_count()):
++		if source.surface_get_primitive_type(surface) != Mesh.PRIMITIVE_TRIANGLES: continue
++		var arrays: Array = source.surface_get_arrays(surface)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++		if indices.is_empty():
++			indices.resize(vertices.size())
++			for i: int in range(vertices.size()): indices[i] = i
++		var kept := PackedInt32Array()
++		for offset: int in range(0, indices.size(), 3):
++			var a: Vector3 = vertices[indices[offset]]
++			var b: Vector3 = vertices[indices[offset+1]]
++			var c: Vector3 = vertices[indices[offset+2]]
++			if a == b or b == c or c == a:
++				degenerate_triangles += 1
++				continue
++			var covered: bool = false
++			for solid: Dictionary in candidates:
++				var local: Transform3D = solid.transform
++				if inside(local*a,solid.core) and inside(local*b,solid.core) and inside(local*c,solid.core):
++					covered = true
++					break
++			if covered: hidden_triangles += 1
++			else: kept.append_array(indices.slice(offset,offset+3))
++		if kept.size() == indices.size(): continue
++		# A fully enclosed part can disappear, but SurfaceTool still needs a
++		# valid nonempty surface when material batching visits that source.
++		if kept.is_empty(): return null
++		var packet: Dictionary = packets[surface].duplicate()
++		packets[surface] = compact(packet, kept)
++		changed = true
++	if not changed: return source
++	var result := ArrayMesh.new()
++	result.set("_surfaces",packets)
++	result.custom_aabb = source.custom_aabb
++	result.shadow_mesh = source.shadow_mesh
++	for key: StringName in source.get_meta_list(): result.set_meta(key,source.get_meta(key))
++	return preload("res://rendering/mesh_vertex_packing.gd").pack(result)
++
++static func compact(packet: Dictionary, indices: PackedInt32Array) -> Dictionary:
++	# Copy complete encoded records; never round normals/UVs through a decoder.
++	var count: int = packet.vertex_count
++	var format: int = packet.format
++	var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++	var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++	var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++	var used := PackedByteArray()
++	used.resize(count)
++	for index: int in indices: used[index] = 1
++	var remap := PackedInt32Array()
++	remap.resize(count)
++	var positions := PackedByteArray()
++	var normals := PackedByteArray()
++	var attributes := PackedByteArray()
++	var raw: PackedByteArray = packet.vertex_data
++	var attrs: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++	var retained: int = 0
++	for index: int in range(count):
++		if not used[index]: continue
++		remap[index] = retained
++		retained += 1
++		positions.append_array(raw.slice(index*ps,(index+1)*ps))
++		normals.append_array(raw.slice(count*ps+index*ns,count*ps+(index+1)*ns))
++		if ats: attributes.append_array(attrs.slice(index*ats,(index+1)*ats))
++	positions.append_array(normals)
++	packet.vertex_count = retained
++	packet.vertex_data = positions
++	if ats: packet.attribute_data = attributes
++	var stride: int = 2 if retained <= 65536 else 4
++	var encoded := PackedByteArray()
++	encoded.resize(indices.size()*stride)
++	for i: int in range(indices.size()):
++		if stride == 2: encoded.encode_u16(i*stride,remap[indices[i]])
++		else: encoded.encode_u32(i*stride,remap[indices[i]])
++	packet.index_count = indices.size()
++	packet.index_data = encoded
++	packet.format = format | Mesh.ARRAY_FORMAT_INDEX
++	return packet
+diff --git a/game/tests/test_garage_mesh_cleanup.gd b/game/tests/test_garage_mesh_cleanup.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_mesh_cleanup.gd
+@@ -0,0 +1,134 @@
++extends SceneTree
++const Cleanup = preload("res://ui/garage_mesh_cleanup.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func corners(mesh: ArrayMesh) -> Array[PackedByteArray]:
++	var packet: Dictionary = mesh.get("_surfaces")[0]
++	var count: int = packet.vertex_count
++	var format: int = packet.format
++	var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++	var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++	var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++	var raw: PackedByteArray = packet.vertex_data
++	var attrs: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++	var indices: PackedByteArray = packet.get("index_data",PackedByteArray())
++	var n: int = packet.get("index_count",count)
++	var stride: int = indices.size()/n if not indices.is_empty() else 0
++	var result: Array[PackedByteArray] = []
++	for i: int in range(n):
++		var index: int = i if stride == 0 else indices.decode_u16(i*stride) if stride == 2 else indices.decode_u32(i*stride)
++		var vertex: PackedByteArray = raw.slice(index*ps,(index+1)*ps)
++		vertex.append_array(raw.slice(count*ps+index*ns,count*ps+(index+1)*ns))
++		vertex.append_array(attrs.slice(index*ats,(index+1)*ats))
++		result.append(vertex)
++	return result
++
++func soup(points: Array[Vector3]) -> ArrayMesh:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for i: int in range(points.size()):
++		tool.set_normal(Vector3(0.3,0.8,0.4).normalized())
++		tool.set_uv(Vector2(i*0.17,i*0.23))
++		tool.set_uv2(Vector2(i*0.1,i*0.2))
++		tool.set_color(Color(0.27,0.39,0.52,1))
++		tool.add_vertex(points[i])
++	return tool.commit()
++
++func run() -> void:
++	var root_node := Node3D.new()
++	root.add_child(root_node)
++	var finish := StandardMaterial3D.new()
++	var box: MeshInstance3D = GarageEnvironment.box(root_node,Vector3.ZERO,Vector3.ONE*2.0,finish)
++	var target := MeshInstance3D.new()
++	target.material_override = finish
++	var points: Array[Vector3] = [Vector3(-0.2,0,0),Vector3(0.2,0,0),Vector3(0,0.2,0),Vector3(2,0,0),Vector3(3,0,0),Vector3(2,1,0),Vector3(0,0,0),Vector3(2,0,0),Vector3(0,2,0),Vector3(4,0,0),Vector3(4,0,0),Vector3(4,1,0)]
++	var original: ArrayMesh = soup(points)
++	original.set_meta("authored",true)
++	target.mesh = original
++	root_node.add_child(target)
++	var packet: Array = original.get("_surfaces").duplicate(true)
++	var before: Array[PackedByteArray] = corners(original)
++	var cleanup = Cleanup.new()
++	cleanup.gather(root_node,GarageEnvironment.cabinet_meshes)
++	var result: ArrayMesh = cleanup.clean(target,Transform3D.IDENTITY)
++	check(cleanup.hidden_triangles == 1 and cleanup.degenerate_triangles == 1,"remove enclosed and duplicate-position triangles only")
++	check(corners(result) == before.slice(3,9),"retained ordered GPU positions/normals/UVs/UV2/colors remain byte exact")
++	check(result.surface_get_array_len(0) == 6,"unused hidden/degenerate vertices are removed")
++	check(result.get_meta("authored") and original.get("_surfaces") == packet,"metadata retained and source untouched")
++	# All three corners must fit the same strictly interior volume.
++	var core: float = 0.975-Cleanup.MARGIN
++	var touching: ArrayMesh = soup([Vector3(core,0,0),Vector3(core,0.2,0),Vector3(core,0,0.2)])
++	target.mesh = touching
++	check(cleanup.clean(target,Transform3D.IDENTITY) == touching,"coplanar and margin-border triangles retained")
++	for excluded: String in ["GarageRoof","GarageVinyl","GarageRecordSleeves"]:
++		var group := Node3D.new()
++		group.name = excluded
++		root_node.add_child(group)
++		box.reparent(group)
++		var isolated = Cleanup.new()
++		isolated.gather(root_node,GarageEnvironment.cabinet_meshes)
++		check(isolated.solids.is_empty(),"moving/cutaway group cannot erase another batch: "+excluded)
++		box.reparent(root_node)
++		group.free()
++	box.hide()
++	var invisible = Cleanup.new()
++	invisible.gather(root_node,GarageEnvironment.cabinet_meshes)
++	check(invisible.solids.is_empty(),"invisible boxes cannot occlude")
++	box.show()
++	finish.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
++	var translucent = Cleanup.new()
++	translucent.gather(root_node,GarageEnvironment.cabinet_meshes)
++	check(translucent.solids.is_empty(),"transparent boxes cannot occlude")
++	finish.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
++	var glass := ShaderMaterial.new()
++	glass.shader = preload("res://ui/garage_audio_lid.gdshader")
++	check(not Cleanup.opaque(glass),"smoked record-player lid is not an opaque solid")
++	finish.grow = true
++	check(not Cleanup.opaque(finish),"normal-displaced material cannot occlude")
++	finish.grow = false
++	finish.proximity_fade_enabled = true
++	check(not Cleanup.opaque(finish),"proximity-fading material cannot occlude")
++	finish.proximity_fade_enabled = false
++	finish.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
++	check(not Cleanup.opaque(finish),"camera-facing material cannot occlude")
++	finish.billboard_mode = BaseMaterial3D.BILLBOARD_DISABLED
++	# Rotation and nonuniform scale are evaluated in each solid's local frame.
++	var rotated := Transform3D(Basis(Vector3.UP,0.7).scaled(Vector3(0.8,1.3,0.9)),Vector3(2,1,-3))
++	box.transform = rotated
++	target.mesh = soup(points.slice(0,3))
++	target.transform = rotated
++	var transformed = Cleanup.new()
++	transformed.gather(root_node,GarageEnvironment.cabinet_meshes)
++	check(transformed.clean(target,rotated) == null,"fully enclosed transformed part removed")
++	# A sparse 32-bit source must retain the exact surviving encoded records.
++	var large_points: Array[Vector3] = []
++	for i: int in range(24000): large_points.append_array([Vector3.ZERO,Vector3.RIGHT,Vector3.UP])
++	large_points.append_array([Vector3(3,0,0),Vector3(4,0,0),Vector3(3,1,0)])
++	var large: ArrayMesh = soup(large_points)
++	var large_packet: Dictionary = large.get("_surfaces")[0].duplicate()
++	var reduced := ArrayMesh.new()
++	reduced.set("_surfaces",[Cleanup.compact(large_packet,PackedInt32Array([72000,72001,72002]))])
++	check(reduced.surface_get_array_len(0) == 3 and reduced.get("_surfaces")[0].index_data.size() == 6,"32-bit to 16-bit compaction")
++	check(corners(large).slice(72000) == corners(reduced),"large-source encoded attributes remain exact")
++	var multi: ArrayMesh = soup(points)
++	var extra: Array = soup(points.slice(0,3)).surface_get_arrays(0)
++	multi.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,extra)
++	target.mesh = multi
++	check(cleanup.clean(target,Transform3D.IDENTITY) == multi,"multi-surface meshes retain all surfaces")
++	var lod_source: ArrayMesh = SceneryMeshLods.attach(original,{0.1:PackedInt32Array([3,4,5])})
++	target.mesh = lod_source
++	check(cleanup.clean(target,Transform3D.IDENTITY) == lod_source,"existing LOD streams require a separate proof")
++	Cleanup.enabled = false
++	target.mesh = original
++	check(cleanup.clean(target,Transform3D.IDENTITY) == original,"disabled cleanup is an exact control")
++	Cleanup.enabled = true
++	root_node.free()
++	print("GARAGE_MESH_CLEANUP ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_model_pass2.gd b/game/tests/test_garage_model_pass2.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_model_pass2.gd
+@@ -0,0 +1,42 @@
++extends "res://tests/test_garage_model_simplification.gd"
++## Compare normal and full-detail rendering; the control is an immutable room.
++func _initialize() -> void:
++	output = "res://../build/garage-model-pass2-2026-11-13/final"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--baseline-room="):
++			GarageEnvironment.architecture_scene = load(argument.trim_prefix("--baseline-room="))
++			phase = "before"
++	if phase != "before": radial_geometry()
++	run.call_deferred()
++
++func radial_geometry() -> void:
++	var holder := Node3D.new()
++	var finish := StandardMaterial3D.new()
++	for spec: Array in [[0.012,16],[0.034,16],[0.035,32],[0.075,32],[0.119,32],[0.12,48],[0.24,48],[0.499,48],[0.5,96],[3.65,96]]:
++		var radius: float = spec[0]
++		var expected: int = spec[1]
++		var part: MeshInstance3D = GarageEnvironment.cylinder(holder,Vector3.ZERO,radius,0.08,finish)
++		var mesh: CylinderMesh = part.mesh
++		check(mesh.radial_segments == expected and mesh.rings == 0,"radius-aware cylinder detail "+str(radius))
++		check(mesh.surface_get_arrays(0)[Mesh.ARRAY_INDEX].size() == expected*12,"closed caps and straight sides "+str(radius))
++		var original := CylinderMesh.new()
++		original.radial_segments = 96
++		original.rings = 0
++		original.top_radius = radius
++		original.bottom_radius = radius
++		original.height = 0.08
++		check(mesh.get_aabb().is_equal_approx(original.get_aabb()),"fixture dimensions and axis extrema retained "+str(radius))
++		if radius < 0.5:
++			check(radius*(1.0-cos(PI/expected)) < 0.0011,"small-fixture radial chord error below 1.1 mm "+str(radius))
++	holder.free()
++
++func capture(view: CarShowroom, label: String) -> void:
++	await super.capture(view,label)
++	var threshold: float = view.showroom_viewport.mesh_lod_threshold
++	view.showroom_viewport.mesh_lod_threshold = 0.0
++	for reflected: SubViewport in view.reflections.views: reflected.mesh_lod_threshold = 0.0
++	view.reflections.request_draw()
++	await super.capture(view,"master-"+label)
++	view.showroom_viewport.mesh_lod_threshold = threshold
++	for reflected: SubViewport in view.reflections.views: reflected.mesh_lod_threshold = threshold
++	view.reflections.request_draw()
+diff --git a/game/tests/test_garage_mesh_paired_render.gd b/game/tests/test_garage_mesh_paired_render.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_mesh_paired_render.gd
+@@ -0,0 +1,56 @@
++extends "res://tests/test_garage_model_pass2.gd"
++## Swap only room meshes around the same live car, camera, finishes and lights.
++var control_scene: String = ""
++var control_holder: Node
++var control_meshes: Array[Node] = []
++var live_meshes: Array[Node] = []
++var optimized: Array[Mesh] = []
++var paired_root: String = ""
++
++func _initialize() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--control-room="): control_scene = argument.trim_prefix("--control-room=")
++	if control_scene.is_empty():
++		printerr("FAIL: --control-room must name the preserved task-start room")
++		quit(1)
++		return
++	super._initialize()
++
++func prepare_pair(view: CarShowroom) -> void:
++	control_holder = (load(control_scene) as PackedScene).instantiate()
++	root.add_child(control_holder)
++	control_holder.hide()
++	control_meshes = control_holder.find_children("*","MeshInstance3D",true,false)
++	var room: Node = view.camera.get_parent().find_child("GarageArchitecture",true,false)
++	live_meshes = room.find_children("*","MeshInstance3D",true,false)
++	check(control_meshes.size() == live_meshes.size(),"same workshop mesh roles in paired render")
++	for index: int in range(mini(control_meshes.size(),live_meshes.size())):
++		var a: MeshInstance3D = control_meshes[index]
++		var b: MeshInstance3D = live_meshes[index]
++		check(a.transform == b.transform,"paired geometry keeps local transform "+str(index))
++		check(a.get_parent().transform == b.get_parent().transform,"paired geometry keeps parent transform "+str(index))
++		var left: Material = a.get_active_material(0)
++		var right: Material = b.get_active_material(0)
++		check(left.get_class() == right.get_class(),"paired finish type "+str(index))
++		if left is ShaderMaterial:
++			check(left.shader.code == right.shader.code,"paired shader "+str(index))
++		elif left is BaseMaterial3D:
++			check(left.albedo_color == right.albedo_color and left.metallic == right.metallic and left.roughness == right.roughness,"paired finish values "+str(index))
++		optimized.append(b.mesh)
++	paired_root = output
++	DirAccess.make_dir_recursive_absolute(paired_root.path_join("before"))
++	DirAccess.make_dir_recursive_absolute(paired_root.path_join("after"))
++
++func capture(view: CarShowroom, label: String) -> void:
++	if control_holder == null: prepare_pair(view)
++	var car_identity: int = view.car.get_instance_id()
++	for index: int in range(live_meshes.size()): live_meshes[index].mesh = control_meshes[index].mesh
++	output = paired_root.path_join("before")
++	view.reflections.request_draw()
++	await super.capture(view,label)
++	for index: int in range(live_meshes.size()): live_meshes[index].mesh = optimized[index]
++	output = paired_root.path_join("after")
++	view.reflections.request_draw()
++	await super.capture(view,label)
++	check(view.car.get_instance_id() == car_identity,"paired render retains the exact live car "+label)
++	output = paired_root

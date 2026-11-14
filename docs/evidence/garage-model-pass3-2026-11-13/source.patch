@@ -1,0 +1,250 @@
+--- a/game/ui/garage_furnishings.gd
++++ b/game/ui/garage_furnishings.gd
+@@ -26,7 +26,27 @@
+ 	parent.add_child(node)
+ 	return node
+ 
+-static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material: Material, sides: int = 20) -> MeshInstance3D:
++static func tube_sides(radius: float) -> int:
++	if radius <= 0.012: return 12
++	if radius <= 0.035: return 16
++	return 20
++
++static func lathe_sides(radius: float) -> int:
++	# Preserve all profile rows and their analytic normals. Small turned fittings
++	# need fewer azimuth samples; the large compressor/tyre silhouettes keep 48.
++	if radius < 0.035: return 16
++	if radius < 0.09: return 24
++	if radius < 0.24: return 32
++	return 48
++
++static func ring_sides(outer: float) -> int:
++	if outer <= 0.05: return 16
++	if outer <= 0.128: return 24
++	return 32
++
++static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material: Material, sides: int = 0) -> MeshInstance3D:
++	# Explicit polygon counts (hex fasteners, authored controls) remain exact.
++	if sides == 0: sides = tube_sides(radius)
+ 	var length: float = a.distance_to(b)
+ 	var key := Vector3(radius,length,sides)
+ 	if not meshes.has(key):
+@@ -43,12 +63,13 @@
+ 	return node
+ 
+ static func ring(parent: Node3D, at: Vector3, inner: float, outer: float, material: Material) -> MeshInstance3D:
+-	var key := Vector2(inner,outer)
++	var sides: int = ring_sides(outer)
++	var key := Vector3(inner,outer,sides)
+ 	if not meshes.has(key):
+ 		var shape := TorusMesh.new()
+ 		shape.inner_radius = inner
+ 		shape.outer_radius = outer
+-		shape.rings = 32
++		shape.rings = sides
+ 		shape.ring_segments = 8
+ 		meshes[key] = shape
+ 	var node: MeshInstance3D = mesh(parent,at,meshes[key],material)
+@@ -56,7 +77,10 @@
+ 	return node
+ 
+ static func lathe(parent: Node3D, at: Vector3, profile: Array[Vector2], material: Material) -> MeshInstance3D:
+-	var key: PackedByteArray = var_to_bytes(profile)
++	var radius: float = 0.0
++	for point: Vector2 in profile: radius = maxf(radius, absf(point.x))
++	var sides: int = lathe_sides(radius)
++	var key: PackedByteArray = var_to_bytes([profile,sides])
+ 	if not meshes.has(key):
+ 		var tool := SurfaceTool.new()
+ 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -65,9 +89,9 @@
+ 			var tb: Vector2 = profile[mini(row+2,profile.size()-1)]-profile[row]
+ 			var na: Vector2 = Vector2(ta.y,-ta.x).normalized()
+ 			var nb: Vector2 = Vector2(tb.y,-tb.x).normalized()
+-			for segment: int in range(48):
+-				var a: float = segment*TAU/48.0
+-				var b: float = (segment+1)*TAU/48.0
++			for segment: int in range(sides):
++				var a: float = segment*TAU/sides
++				var b: float = (segment+1)*TAU/sides
+ 				var points: Array[Vector3] = [Vector3(sin(a)*profile[row].x,profile[row].y,cos(a)*profile[row].x),Vector3(sin(b)*profile[row].x,profile[row].y,cos(b)*profile[row].x),Vector3(sin(b)*profile[row+1].x,profile[row+1].y,cos(b)*profile[row+1].x),Vector3(sin(a)*profile[row+1].x,profile[row+1].y,cos(a)*profile[row+1].x)]
+ 				var normals: Array[Vector3] = [Vector3(sin(a)*na.x,na.y,cos(a)*na.x),Vector3(sin(b)*na.x,na.y,cos(b)*na.x),Vector3(sin(b)*nb.x,nb.y,cos(b)*nb.x),Vector3(sin(a)*nb.x,nb.y,cos(a)*nb.x)]
+ 				var direction: Vector3 = (points[1]-points[0]).cross(points[2]-points[0])
+--- /dev/null
++++ b/game/tests/test_garage_prop_detail.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Physical error bounds and attribute preservation for the third Garage pass.
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++func run() -> void:
++	var root := Node3D.new()
++	var finish := StandardMaterial3D.new()
++	for radius: float in [0.003,0.012,0.01201,0.035,0.03501,0.08]:
++		var tube: MeshInstance3D = GarageFurnishings.tube(root,Vector3.ZERO,Vector3.UP*0.4,radius,finish)
++		check(tube.mesh.rings == 0 and tube.mesh.cap_top and tube.mesh.cap_bottom,"tube keeps straight shaft and both caps")
++		check(tube.mesh.get_aabb().size.is_equal_approx(Vector3(radius*2,0.4,radius*2)),"tube axis dimensions exact")
++		check(radius*(1.0-cos(PI/tube.mesh.radial_segments)) <= 0.0011,"default tube chord error below 1.1 mm")
++	for sides: int in [6,8,12,20,24,32,48,64]:
++		var tube: MeshInstance3D = GarageFurnishings.tube(root,Vector3.ZERO,Vector3.UP,0.01,finish,sides)
++		check(tube.mesh.radial_segments == sides,"explicit authored polygon count exact")
++	for radius: float in [0.016,0.03499,0.035,0.08999,0.09,0.23999,0.24,0.48]:
++		var profile: Array[Vector2] = [Vector2(0,0),Vector2(radius*0.8,0),Vector2(radius,0.02),Vector2(radius,0.11),Vector2(radius*0.8,0.14),Vector2(0,0.14)]
++		var part: MeshInstance3D = GarageFurnishings.lathe(root,Vector3.ZERO,profile,finish)
++		var arrays: Array = part.mesh.surface_get_arrays(0)
++		var sides: int = GarageFurnishings.lathe_sides(radius)
++		check(sides%4 == 0,"lathe keeps all four cardinal extrema")
++		if radius < 0.24: check(radius*(1.0-cos(PI/sides)) < 0.0012,"small lathe chord error below 1.2 mm")
++		else: check(sides == 48,"large lathe retains original silhouette samples")
++		check(part.mesh.get_aabb().size.is_equal_approx(Vector3(radius*2,0.14,radius*2)),"lathe dimensions retained")
++		var matching: bool = true
++		for index: int in range(arrays[Mesh.ARRAY_VERTEX].size()):
++			var vertex: Vector3 = arrays[Mesh.ARRAY_VERTEX][index]
++			var normal: Vector3 = arrays[Mesh.ARRAY_NORMAL][index]
++			var uv: Vector2 = arrays[Mesh.ARRAY_TEX_UV][index]
++			matching = matching and uv.is_equal_approx(Vector2(vertex.x,vertex.y)) and is_equal_approx(normal.length(),1.0)
++			var on_profile: bool = false
++			for point: Vector2 in profile:
++				if is_equal_approx(vertex.y,point.y) and is_equal_approx(Vector2(vertex.x,vertex.z).length(),point.x): on_profile = true
++			matching = matching and on_profile
++		check(matching,"lathe vertices remain on authored profile with unit normals and original UV mapping")
++		var repeated: MeshInstance3D = GarageFurnishings.lathe(root,Vector3.ONE,profile,finish)
++		check(repeated.mesh == part.mesh,"identical turned prop mesh reused")
++	for outer: float in [0.034,0.05,0.05001,0.128,0.12801,0.307]:
++		var ring: MeshInstance3D = GarageFurnishings.ring(root,Vector3.ZERO,outer-0.006,outer,finish)
++		check(ring.mesh.ring_segments == 8,"rolled ring cross-section detail retained")
++		if outer <= 0.128: check(outer*(1.0-cos(PI/ring.mesh.rings)) < 0.0011,"small ring chord error below 1.1 mm")
++		else: check(ring.mesh.rings == 32,"large ring silhouette samples unchanged")
++	root.free()
++	print("GARAGE_PROP_DETAIL ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_prop_detail.gd.uid
+@@ -0,0 +1 @@
++uid://cqxfe5b3f4ghk
+--- /dev/null
++++ b/game/tests/test_garage_prop_paired_render.gd
+@@ -0,0 +1,27 @@
++extends "res://tests/test_garage_mesh_paired_render.gd"
++## Compare only the revised room around the same car; include turned-prop close views.
++func _initialize() -> void:
++	var candidate: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--candidate-room="): candidate = argument.trim_prefix("--candidate-room=")
++	if candidate.is_empty():
++		printerr("FAIL: --candidate-room must name the room being reviewed")
++		quit(1); return
++	GarageEnvironment.architecture_scene = load(candidate)
++	super._initialize()
++
++func capture(view: CarShowroom, label: String) -> void:
++	await super.capture(view,label)
++	if label != "overhead": return
++	var original: Transform3D = view.camera.transform
++	for pose: Array in [
++		["compressor-detail",Vector3(5.05,1.12,5.8),Vector3(5.4,0.48,7.1)],
++		["shelf-stock",Vector3(-6.9,3.1,6.0),Vector3(-6.9,3.2,7.7)],
++		["hand-tools",Vector3(5.9,2.15,6.5),Vector3(5.9,1.9,8.1)],
++		["speaker-detail",Vector3(8.45,1.25,4.05),Vector3(9.8,1.08,4.7)],
++		["vice-detail",Vector3(5.2,1.65,6.3),Vector3(5.2,1.2,7.6)]
++	]:
++		view.camera.position = pose[1]
++		view.camera.look_at(pose[2])
++		await super.capture(view,pose[0])
++	view.camera.transform = original
+--- /dev/null
++++ b/game/tests/test_garage_prop_paired_render.gd.uid
+@@ -0,0 +1 @@
++uid://c45fdgyektaa7
+--- a/scripts/bake_garage_previews.gd
++++ b/scripts/bake_garage_previews.gd
+@@ -1,11 +1,12 @@
+ extends SceneTree
+ ## Run with the pinned engine and a graphical renderer. Native game assets only.
+ const Transaction = preload("res://tests/support/asset_bake_transaction.gd")
++var bake_errors := preload("res://tests/support/asset_bake_errors.gd").new()
+ const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+ 
+ func _sources() -> Dictionary:
+ 	var sources: Dictionary = {}
+-	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","scripts/bake_garage_previews.gd"]:
++	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","game/tests/support/asset_bake_errors.gd","scripts/bake_garage_previews.gd"]:
+ 		sources[path] = FileAccess.get_sha256("res://../"+path)
+ 	for directory: String in ["res://vehicle","res://ui"]:
+ 		for name: String in DirAccess.get_files_at(directory):
+@@ -31,6 +32,7 @@
+ 	return value if value is Dictionary else {}
+ 
+ func run() -> void:
++	OS.add_logger(bake_errors)
+ 	if DisplayServer.get_name()=="headless":
+ 		push_error("Garage previews require a graphical renderer")
+ 		quit(1)
+@@ -104,6 +106,9 @@
+ 		view.queue_free()
+ 		await process_frame
+ 		await process_frame
++	if bake_errors.failed():
++		push_error("Native preview generation logged errors; accepted files preserved")
++		transaction.close(); quit(1); return
+ 	if sources != _sources() or revision_fence != _geometry_revisions():
+ 		push_error("Native preview sources changed during the bake; repeat after those edits finish")
+ 		transaction.close()
+--- a/game/tests/bake_garage_architecture.gd
++++ b/game/tests/bake_garage_architecture.gd
+@@ -1,8 +1,10 @@
+ extends SceneTree
+ ## Offline native geometry preparation; no changes to the authored workshop.
+ const Transaction = preload("res://tests/support/asset_bake_transaction.gd")
++var bake_errors := preload("res://tests/support/asset_bake_errors.gd").new()
+ const SOURCES: Array[String]=[
+ 	"tests/bake_garage_architecture.gd","tests/support/asset_bake_transaction.gd",
++	"tests/support/asset_bake_errors.gd",
+ 	"tests/support/garage_architecture_car.gd",
+ 	"ui/garage_environment.gd","ui/garage_details.gd","ui/garage_drain.gd",
+ 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
+@@ -23,6 +25,7 @@
+ 
+ func _initialize() -> void: run.call_deferred()
+ func run() -> void:
++	OS.add_logger(bake_errors)
+ 	var transaction := Transaction.new()
+ 	var folder: String = "res://assets/garage"
+ 	for arg: String in OS.get_cmdline_user_args():
+@@ -53,6 +56,7 @@
+ 			file.flush()
+ 			error = file.get_error()
+ 			file.close()
++	if error == OK and bake_errors.failed(): error = ERR_INVALID_DATA
+ 	if error == OK and hashes != _sources(): error = ERR_BUSY
+ 	if error == OK: error = transaction.publish(["workshop_v1.scn", "workshop_v1.provenance.json"])
+ 	transaction.close()
+--- /dev/null
++++ b/game/tests/support/asset_bake_errors.gd
+@@ -0,0 +1,16 @@
++extends Logger
++## Offline producers must reject a generation that emitted engine/script errors.
++var mutex := Mutex.new()
++var errors: int = 0
++
++func _log_error(_function: String, _file: String, _line: int, _code: String, _rationale: String, _editor_notify: bool, error_type: int, _script_backtraces: Array[ScriptBacktrace]) -> void:
++	if error_type == Logger.ERROR_TYPE_WARNING: return
++	mutex.lock()
++	errors += 1
++	mutex.unlock()
++
++func failed() -> bool:
++	mutex.lock()
++	var result: bool = errors > 0
++	mutex.unlock()
++	return result
+--- /dev/null
++++ b/game/tests/support/asset_bake_errors.gd.uid
+@@ -0,0 +1 @@
++uid://8xj4kvqnrrph

@@ -1,0 +1,1782 @@
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -377,7 +377,11 @@
+ 
+ 
+ func _finish_render_model() -> void:
++	preload("res://vehicle/compact_seam_strip.gd").finish(self)
+ 	if simple_model: RacingCarModels.prepare(self)
++	# Reduce each authored piece before assembly. Fixed cars and modular kits
++	# must not receive different geometry merely because they batch differently.
++	if vehicle_id!="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
+ 	if batch_parts:
+ 		_model_stage = "sibling batches"
+ 		await VisualGeometry.batch_static_parts(self,_model_checkpoint if cooperative_build else Callable())
+@@ -385,6 +389,7 @@
+ 		_model_stage = "frame batches"
+ 		await VisualGeometry.batch_car_parts(self,_model_checkpoint if cooperative_build else Callable())
+ 		if not await _model_checkpoint(): return
++	if vehicle_id=="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
+ 	_model_stage = "snapshot"
+ 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+ 	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
+@@ -480,6 +485,7 @@
+ 					if CompactKits.choice(self,"rims")!="stock": CompactKits.build_caliper(brake,side)
+ 		_reduce_changed_kit(category)
+ 		for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
++	if vehicle_id=="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
+ 	graphics = LiveryGraphics.new()
+ 	graphics.configure(self)
+ 
+@@ -487,7 +493,8 @@
+ 	# Match construction-time reduction before batching newly fitted primitives.
+ 	# Offline modules and a direct fitted build must describe the same model.
+ 	if simple_model:
+-		for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame)
++		for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame,vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
++		if vehicle_id!="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self,kit_frames.get(category,[]))
+ 
+ 
+ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:
+@@ -818,6 +825,9 @@
+ 
+ 
+ func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: Material) -> void:
++	if vehicle_id=="compact" and simple_model and str(parent.name) in ["DoorSeamsLeft","DoorSeamsRight","TailgatePanelSeam"]:
++		preload("res://vehicle/compact_seam_strip.gd").add(parent,start,end,width,surface)
++		return
+ 	var stroke := VisualGeometry.box(parent,Vector3(width,width,start.distance_to(end)),(start+end)*0.5,surface)
+ 	var up: Vector3 = Vector3.RIGHT if absf((end-start).normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
+ 	stroke.basis = Basis.looking_at(end-start,up)
+diff --git a/game/vehicle/racing_car_models.gd b/game/vehicle/racing_car_models.gd
+--- a/game/vehicle/racing_car_models.gd
++++ b/game/vehicle/racing_car_models.gd
+@@ -7,7 +7,7 @@
+ static var shadow_material: ShaderMaterial
+ 
+ static func prepare(car: CarVisual) -> void:
+-	_reduce_primitives(car)
++	_reduce_primitives(car,car.vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
+ 	# Editable assemblies retain their own casters through later part replacements.
+ 	if car.editable_kits: return
+ 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
+@@ -47,7 +47,7 @@
+ 		if child is MeshInstance3D: child.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		if child is Node3D: _disable_casters(child)
+ 
+-static func _reduce_primitives(parent: Node3D) -> void:
++static func _reduce_primitives(parent: Node3D, axial: bool = false) -> void:
+ 	for child: Node in parent.get_children():
+ 		if child is MeshInstance3D:
+ 			var source: Mesh = child.mesh
+@@ -55,6 +55,7 @@
+ 			if source is CylinderMesh:
+ 				simple = source.duplicate()
+ 				(simple as CylinderMesh).radial_segments = mini(source.radial_segments,12)
++				if axial: (simple as CylinderMesh).rings = 1
+ 			elif source is SphereMesh:
+ 				simple = source.duplicate()
+ 				(simple as SphereMesh).radial_segments = mini(source.radial_segments,12)
+@@ -66,7 +67,7 @@
+ 			if simple != null:
+ 				simple.custom_aabb = source.get_aabb()
+ 				child.mesh = simple
+-		if child is Node3D: _reduce_primitives(child)
++		if child is Node3D: _reduce_primitives(child,axial)
+ 
+ static func shadow_source(frame: Node3D) -> ArrayMesh:
+ 	# Offline only: one positions-only stream for each articulated frame.
+diff --git a/game/vehicle/car_mesh_lods.gd b/game/vehicle/car_mesh_lods.gd
+--- a/game/vehicle/car_mesh_lods.gd
++++ b/game/vehicle/car_mesh_lods.gd
+@@ -30,6 +30,7 @@
+ 	return result
+ 
+ func prepare(source: Mesh) -> Mesh:
++	if source.has_meta("car_authored_far"): return source
+ 	if meshes.has(source): return meshes[source]
+ 	if not source is ArrayMesh or source.get_blend_shape_count() != 0: return source
+ 	var importer := ImporterMesh.new()
+@@ -101,7 +102,8 @@
+ func prepare_vehicle(holder: Node, vehicle: String, bias: float = 1.0) -> void:
+ 	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
+ 		if part.mesh == null: continue
+-		part.mesh = prepare(part.mesh) if eligible(part,vehicle) else full_detail(part.mesh)
++		if not part.mesh.has_meta("car_authored_far"):
++			part.mesh = prepare(part.mesh) if eligible(part,vehicle) else full_detail(part.mesh)
+ 		# The race viewport retains its world-wide one-pixel policy. A car-only
+ 		# bias of two uses the conservative half-pixel car threshold instead.
+ 		# Garage viewports already use half a pixel and retain their unit bias.
+diff --git a/game/vehicle/prepared_asset_dependencies.json b/game/vehicle/prepared_asset_dependencies.json
+--- a/game/vehicle/prepared_asset_dependencies.json
++++ b/game/vehicle/prepared_asset_dependencies.json
+@@ -17,6 +17,12 @@
+     "game/assets/vehicles/racing_simple_v1/manifest.json"
+   ],
+   "rules": [
++    {"pattern":"game/assets/vehicles/car_reduced_v1/compact_*","vehicles":["compact"]},
++    {"pattern":"game/assets/vehicles/car_reduced_v1/kart_*","vehicles":["kart"]},
++    {"pattern":"game/assets/vehicles/car_reduced_v1/electric_*","vehicles":["electric"]},
++    {"pattern":"game/assets/vehicles/car_reduced_v1/hovercraft_*","vehicles":["hovercraft"]},
++    {"pattern":"game/vehicle/car_static_reduction.gd","vehicles":["compact","kart","electric","hovercraft"]},
++    {"pattern":"game/vehicle/compact_seam_strip.gd","vehicles":["compact"]},
+     {
+       "pattern": "game/assets/vehicles/challenger_hellcat_v1/*",
+       "vehicles": [
+diff --git a/game/vehicle/car_static_reduction.gd b/game/vehicle/car_static_reduction.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/car_static_reduction.gd
+@@ -0,0 +1,46 @@
++extends RefCounted
++## Load offline-authored static reductions. Runtime never generates LOD indices.
++const ROOT: String = "res://assets/vehicles/car_reduced_v1"
++const IDS: Array[String] = ["compact","kart","electric","hovercraft"]
++static var enabled: bool = true
++static var offline: Callable
++static var meshes: Dictionary = {}
++static var hits: int = 0
++const CACHE_LIMIT: int = 128
++
++static func key(mesh: ArrayMesh) -> String:
++	var hash := HashingContext.new()
++	hash.start(HashingContext.HASH_SHA256)
++	for packet: Dictionary in mesh.get("_surfaces"):
++		hash.update(var_to_bytes([packet.format,packet.primitive,packet.vertex_count,packet.get("index_count",0)]))
++		for field: String in ["vertex_data","attribute_data","index_data"]:
++			var data: PackedByteArray = packet.get(field,PackedByteArray())
++			if not data.is_empty(): hash.update(data)
++	return hash.finish().hex_encode()
++
++static func resolve(source: ArrayMesh, id: String) -> ArrayMesh:
++	var cache_key: String = id+"_"+key(source)
++	if not meshes.has(cache_key):
++		if meshes.size()>=CACHE_LIMIT: meshes.clear()
++		var path: String = ROOT.path_join(cache_key+".res")
++		meshes[cache_key] = load(path) if ResourceLoader.exists(path) else null
++	if meshes[cache_key]!=null:
++		hits+=1
++		return meshes[cache_key]
++	return source
++
++static func apply(car: CarVisual, holders: Variant = null) -> void:
++	if not enabled or not car.simple_model or not car.batch_parts or car.vehicle_id not in IDS: return
++	var parts: Array = []
++	if holders==null: parts=car.find_children("*","MeshInstance3D",true,false)
++	else:
++		for holder: Node in holders: parts.append_array(holder.find_children("*","MeshInstance3D",true,false))
++	for part: MeshInstance3D in parts:
++		if not part.mesh is ArrayMesh or part.mesh.get_blend_shape_count()>0: continue
++		if part.mesh.has_meta("car_reduction_source") or part.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		if offline.is_valid():
++			part.mesh = offline.call(part,car.vehicle_id)
++			continue
++		# Cache by content, never by a transient assembled mesh. A negative lookup
++		# must not pin every old kit assembly for the lifetime of the process.
++		part.mesh = resolve(part.mesh,car.vehicle_id)
+diff --git a/game/vehicle/compact_seam_strip.gd b/game/vehicle/compact_seam_strip.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/compact_seam_strip.gd
+@@ -0,0 +1,51 @@
++extends RefCounted
++## Connected contour strips replace the hidden faces of Rally seam boxes.
++const TAG: String = "compact_seam_segments"
++
++static func add(parent: Node3D, a: Vector3, b: Vector3, width: float, material: Material) -> void:
++	var segments: Array = parent.get_meta(TAG,[])
++	segments.append([a,b,width,material])
++	parent.set_meta(TAG,segments)
++
++static func finish(car: CarVisual) -> void:
++	if car.vehicle_id!="compact" or not car.simple_model: return
++	for group: Node3D in car.find_children("*","Node3D",true,false):
++		if not group.has_meta(TAG): continue
++		var segments: Array = group.get_meta(TAG)
++		group.remove_meta(TAG)
++		var outward: Vector3 = Vector3.BACK if str(group.name)=="TailgatePanelSeam" else Vector3.LEFT if str(group.name)=="DoorSeamsLeft" else Vector3.RIGHT
++		var chains: Array = []
++		for segment: Array in segments:
++			if chains.is_empty() or (chains[-1].points[-1] as Vector3).distance_squared_to(segment[0])>1e-12 or chains[-1].width!=segment[2]:
++				chains.append({"points":[segment[0]],"width":segment[2],"material":segment[3]})
++			chains[-1].points.append(segment[1])
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for chain: Dictionary in chains:
++			var points: Array = chain.points
++			var rows: Array = []
++			var closed: bool = (points[0] as Vector3).distance_squared_to(points[-1])<1e-12
++			for index: int in range(points.size()):
++				var before: Vector3 = points[index-1] if index>0 else points[-2] if closed else points[0]
++				var after: Vector3 = points[index+1] if index+1<points.size() else points[1] if closed else points[-1]
++				var tangent: Vector3 = (after-before).normalized()
++				var across: Vector3 = tangent.cross(outward).normalized()*float(chain.width)*0.5
++				var center: Vector3 = points[index]+outward*float(chain.width)*0.5
++				rows.append([center-across,center+across])
++			for index: int in range(rows.size()-1):
++				var corners: Array = [rows[index][0],rows[index][1],rows[index+1][1],rows[index+1][0]]
++				for triangle: Array in [[0,1,2],[0,2,3]]:
++					var cross: Vector3 = (corners[triangle[1]]-corners[triangle[0]]).cross(corners[triangle[2]]-corners[triangle[0]])
++					if cross.length_squared()<1e-20: continue
++					if cross.dot(outward)>0: triangle.reverse()
++					for vertex: int in triangle:
++						tool.set_normal(outward)
++						tool.set_uv(Vector2.ZERO)
++						tool.add_vertex(corners[vertex])
++		tool.index()
++		var part := MeshInstance3D.new()
++		part.name = "ContinuousContour"
++		part.mesh = tool.commit()
++		part.material_override = segments[0][3]
++		part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		group.add_child(part)
+diff --git a/game/tests/support/car_static_reduction_bake.gd b/game/tests/support/car_static_reduction_bake.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/car_static_reduction_bake.gd
+@@ -0,0 +1,128 @@
++extends RefCounted
++## Offline only: conservative indices and raw encoded vertex compaction.
++const Runtime = preload("res://vehicle/car_static_reduction.gd")
++var lods = preload("res://vehicle/car_mesh_lods.gd").new()
++var saved: Dictionary = {}
++var observations: Array = []
++
++func create(part: MeshInstance3D, id: String) -> Mesh:
++	var source: ArrayMesh = part.mesh
++	if id=="hovercraft" or not lods.eligible(part,id): return source
++	if id=="compact" and str(part.name)=="ContinuousContour": return source
++	var wheel: bool = false
++	var ancestor: Node = part
++	while ancestor!=null:
++		if str(ancestor.name)=="WheelSpin": wheel=true
++		ancestor=ancestor.get_parent()
++	if id=="kart" and str(part.name)!="HelmetStatic" and not wheel: return source
++	if id=="electric" and not wheel: return source
++	var source_key: String = id+"_"+Runtime.key(source)
++	if saved.has(source_key): return saved[source_key]
++	var generated: Mesh = lods.prepare(source)
++	var packets: Array = source.get("_surfaces").duplicate(true)
++	var reduced: bool = false
++	for surface: int in range(packets.size()):
++		var packet: Dictionary = packets[surface]
++		var levels: Array = generated.get("_surfaces")[surface].get("lods",[])
++		var chosen: PackedByteArray = packet.get("index_data",PackedByteArray())
++		var stride: int = 2 if int(packet.vertex_count)<=65536 else 4
++		for at: int in range(0,levels.size(),2):
++			if float(levels[at])<=0.001 and levels[at+1].size()<chosen.size(): chosen=levels[at+1]
++		packet.erase("lods")
++		if not chosen.is_empty() and chosen.size()/stride<int(packet.get("index_count",0)):
++			packet.index_data=chosen
++			packet.index_count=chosen.size()/stride
++			reduced=true
++	if not reduced:
++		saved[source_key]=source
++		return source
++	var result := ArrayMesh.new()
++	result.set("_surfaces",packets)
++	result.custom_aabb=source.custom_aabb
++	result.shadow_mesh=source.shadow_mesh
++	result=compact(result)
++	publish(source,result,id)
++	saved[source_key]=result
++	return result
++
++func publish(source: ArrayMesh, result: ArrayMesh, id: String) -> void:
++	var source_key: String = Runtime.key(source)
++	result.set_meta("car_reduction_source",source_key)
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(Runtime.ROOT))
++	var path: String = Runtime.ROOT.path_join(id+"_"+source_key+".res")
++	assert(ResourceSaver.save(result,path,ResourceSaver.FLAG_COMPRESS)==OK)
++	observations.append({"vehicle":id,"file":path,"before_triangles":source.get_faces().size()/3,"after_triangles":result.get_faces().size()/3,"authored_far":result.has_meta("car_authored_far")})
++	print("STATIC_REDUCTION ",id," ",source.get_faces().size()/3," -> ",result.get_faces().size()/3)
++
++func compact(source: ArrayMesh) -> ArrayMesh:
++	var packets: Array = source.get("_surfaces").duplicate(true)
++	for surface: int in range(packets.size()):
++		var packet: Dictionary = packets[surface]
++		var count: int = packet.vertex_count
++		var format: int = source.surface_get_format(surface)
++		if format&Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES or format&Mesh.ARRAY_FORMAT_BONES: continue
++		var old_indices: PackedByteArray = packet.get("index_data",PackedByteArray())
++		if old_indices.is_empty(): continue
++		var old_stride: int = old_indices.size()/int(packet.index_count)
++		var levels: Array = packet.get("lods",[])
++		var streams: Array = [old_indices]
++		for at: int in range(1,levels.size(),2): streams.append(levels[at])
++		var unique := PackedInt32Array()
++		var remap: Dictionary = {}
++		for stream: PackedByteArray in streams:
++			for offset: int in range(0,stream.size(),old_stride):
++				var old: int = stream.decode_u16(offset) if old_stride==2 else stream.decode_u32(offset)
++				if not remap.has(old):
++					remap[old]=unique.size()
++					unique.append(old)
++		var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++		var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++		var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++		var raw: PackedByteArray = packet.vertex_data
++		var attributes: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++		assert(raw.size()==count*(ps+ns))
++		var positions := PackedByteArray()
++		var normals := PackedByteArray()
++		var attrs := PackedByteArray()
++		for old: int in unique:
++			positions.append_array(raw.slice(old*ps,(old+1)*ps))
++			if ns: normals.append_array(raw.slice(count*ps+old*ns,count*ps+(old+1)*ns))
++			if ats: attrs.append_array(attributes.slice(old*ats,(old+1)*ats))
++		positions.append_array(normals)
++		packet.vertex_data=positions
++		packet.vertex_count=unique.size()
++		if ats: packet.attribute_data=attrs
++		var stride: int = 2 if unique.size()<=65536 else 4
++		var mapped: Array = []
++		for stream: PackedByteArray in streams:
++			var indices := PackedByteArray()
++			indices.resize(stream.size()/old_stride*stride)
++			for corner: int in range(stream.size()/old_stride):
++				var old: int = stream.decode_u16(corner*old_stride) if old_stride==2 else stream.decode_u32(corner*old_stride)
++				if stride==2: indices.encode_u16(corner*stride,remap[old])
++				else: indices.encode_u32(corner*stride,remap[old])
++			mapped.append(indices)
++		packet.index_data=mapped[0]
++		for index: int in range(1,mapped.size()): levels[index*2-1]=mapped[index]
++		if not levels.is_empty(): packet.lods=levels
++	var result := ArrayMesh.new()
++	result.set("_surfaces",packets)
++	result.custom_aabb=source.custom_aabb
++	result.shadow_mesh=source.shadow_mesh
++	return result
++
++func half_seam(source: ArrayMesh) -> ArrayMesh:
++	var arrays: Array = source.surface_get_arrays(0)
++	assert(arrays[Mesh.ARRAY_VERTEX].size()==35)
++	var old_indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	var indices := PackedInt32Array()
++	for row: int in range(6):
++		for column: int in [0,2]:
++			var a: int = row*5+column
++			for triangle: Array in [[a,a+2,a+7],[a,a+7,a+5]]:
++				if old_indices[1]>old_indices[2]: triangle.reverse()
++				for vertex: int in triangle: indices.append(vertex)
++	arrays[Mesh.ARRAY_INDEX]=indices
++	var result := ArrayMesh.new()
++	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	return result
+diff --git a/game/tests/bake_car_static_reductions.gd b/game/tests/bake_car_static_reductions.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_car_static_reductions.gd
+@@ -0,0 +1,79 @@
++extends SceneTree
++const R = preload("res://vehicle/car_static_reduction.gd")
++const Base = preload("res://vehicle/modular_car_base.gd")
++const Kits = preload("res://vehicle/modular_car_kits.gd")
++const Cache = preload("res://vehicle/prepared_car_cache.gd")
++const OUT = "res://../docs/evidence/car-simplification-2026-11-13"
++var baker = preload("res://tests/support/car_static_reduction_bake.gd").new()
++
++func _initialize() -> void: run.call_deferred()
++
++func car_for(id: String, editable: bool, batch: bool = true) -> CarVisual:
++	var car := CarVisual.new()
++	car.vehicle_id=id
++	car.simple_model=true
++	car.editable_kits=editable
++	car.batch_parts=batch
++	car.cache_rest_pose=false
++	car.livery=VehicleLivery.defaults(id)
++	car.customisation=VehicleCustomisation.defaults()
++	return car
++
++func hover_far(editable: bool) -> void:
++	R.enabled=false
++	var near_car: CarVisual = car_for("hovercraft",editable)
++	root.add_child(near_car)
++	while not near_car.model_ready: await process_frame
++	var far_car: CarVisual = car_for("hovercraft",editable,false)
++	root.add_child(far_car)
++	while not far_car.model_ready: await process_frame
++	for part: MeshInstance3D in far_car.find_children("*","MeshInstance3D",true,false):
++		if str(part.name).begins_with("SportSkirtSeam"): part.mesh=baker.half_seam(part.mesh)
++	await VisualGeometry.batch_static_parts(far_car)
++	await VisualGeometry.batch_car_parts(far_car)
++	Cache._stable_names(near_car)
++	Cache._stable_names(far_car)
++	var reductions: int = 0
++	for part: MeshInstance3D in near_car.find_children("*","MeshInstance3D",true,false):
++		if not part.mesh is ArrayMesh or part.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		var other: MeshInstance3D = far_car.get_node_or_null(near_car.get_path_to(part))
++		assert(other!=null,"Far model must retain every attachment")
++		if other.mesh.get_faces().size()==part.mesh.get_faces().size(): continue
++		var result: ArrayMesh = preload("res://rendering/mesh_vertex_packing.gd").with_detail(part.mesh,other.mesh,0.005)
++		assert(result!=part.mesh,"Hover far sampling must be installed")
++		result.set_meta("car_authored_far",true)
++		baker.publish(part.mesh,result,"hovercraft")
++		reductions+=1
++	assert(reductions>0)
++	near_car.free()
++	far_car.free()
++	R.enabled=true
++
++func run() -> void:
++	Base.enabled=false
++	Kits.enabled=false
++	Cache.enabled=false
++	preload("res://ui/garage_car_cache.gd").enabled=false
++	R.offline=baker.create
++	for id: String in ["compact","kart","electric"]:
++		for editable: bool in [false,true]:
++			var car: CarVisual = car_for(id,editable)
++			root.add_child(car)
++			while not car.model_ready: await process_frame
++			if editable:
++				for category: String in VehicleCustomisation.CATEGORIES:
++					for option: Array in VehicleCustomisation.options(category,id):
++						var choices: Dictionary = car.customisation.duplicate()
++						choices[category]=option[0]
++						car.change_kit_parts(choices)
++					var choices: Dictionary = car.customisation.duplicate()
++					choices[category]="stock"
++					car.change_kit_parts(choices)
++			car.free()
++			await process_frame
++		print("CAR_STATIC_BAKE ",id)
++	R.offline=Callable()
++	for editable: bool in [false,true]: await hover_far(editable)
++	FileAccess.open(OUT+"/static-bake.json",FileAccess.WRITE).store_string(JSON.stringify({"resources":baker.observations},"\t"))
++	print("CAR_STATIC_BAKE resources=",baker.observations.size())
++	quit()
+diff --git a/game/tests/test_car_simplification.gd b/game/tests/test_car_simplification.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification.gd
+@@ -0,0 +1,107 @@
++extends "res://tests/review_model_refinement_metrics.gd"
++## Production reduction, encoded attributes, canonical controls and cache hits.
++const DEST = "res://../docs/evidence/car-simplification-2026-11-13"
++const R = preload("res://vehicle/car_static_reduction.gd")
++
++func _initialize() -> void: verify.call_deferred()
++
++func vertex_codes(mesh: ArrayMesh, surface: int, only_referenced: bool) -> Dictionary:
++	var packet: Dictionary = mesh.get("_surfaces")[surface]
++	var count: int = packet.vertex_count
++	var format: int = mesh.surface_get_format(surface)
++	var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++	var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++	var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++	var raw: PackedByteArray = packet.vertex_data
++	var attrs: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++	var indices: PackedByteArray = packet.get("index_data",PackedByteArray())
++	var used: Dictionary = {}
++	if only_referenced and not indices.is_empty():
++		var stride: int = indices.size()/int(packet.index_count)
++		for offset: int in range(0,indices.size(),stride): used[indices.decode_u16(offset) if stride==2 else indices.decode_u32(offset)]=true
++	else:
++		for index: int in range(count): used[index]=true
++	var result: Dictionary = {}
++	for index: int in used:
++		var code: PackedByteArray = raw.slice(index*ps,(index+1)*ps)
++		if ns: code.append_array(raw.slice(count*ps+index*ns,count*ps+(index+1)*ns))
++		if ats: code.append_array(attrs.slice(index*ats,(index+1)*ats))
++		result[code]=true
++	return result
++
++func verify_piece(node: MeshInstance3D, id: String) -> Mesh:
++	var source: ArrayMesh = node.mesh
++	var result: ArrayMesh = R.resolve(source,id)
++	if result==source: return source
++	check(result.get_surface_count()==source.get_surface_count(),"same material slots "+id+str(node.name))
++	check(result.get_aabb()==source.get_aabb(),"same culling bounds "+id+str(node.name))
++	for surface: int in range(source.get_surface_count()):
++		var reference: Dictionary = vertex_codes(source,surface,false)
++		var retained: Dictionary = vertex_codes(result,surface,true)
++		var exact: bool = true
++		for code: PackedByteArray in retained: exact=exact and reference.has(code)
++		check(exact,"retained encoded positions/normals/UVs "+id+str(node.name)+str(surface))
++	return result
++
++func verify() -> void:
++	var start: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(DEST+"/start.json"))
++	for file: String in start:
++		if file.begins_with("game/resources/cars/") or file in [".git/index","game/vehicle/kart_steering.gd","game/vehicle/kart_model.gd","game/vehicle/forklift_model.gd","game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res","game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res"]:
++			check(FileAccess.get_sha256("res://../"+file)==start[file],"exact canonical/driver source "+file)
++	check("super_rally" not in R.IDS,"Challenger excluded from static reduction")
++	var probe := Node3D.new()
++	var part := MeshInstance3D.new()
++	var cylinder := CylinderMesh.new()
++	cylinder.rings=4
++	cylinder.radial_segments=12
++	part.mesh=cylinder
++	probe.add_child(part)
++	RacingCarModels._reduce_primitives(probe)
++	check(part.mesh.rings==4,"default reducer retains excluded-car axial sampling")
++	probe.free()
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	var original_data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(DEST+"/baseline-metrics/headless.json"))
++	preload("res://ui/garage_car_cache.gd").enabled=false
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		Base.enabled=prepared
++		Kits.enabled=prepared
++		Cache.enabled=prepared
++		Cache.entries.clear()
++		R.enabled=true
++		R.offline=Callable() if prepared else verify_piece
++		var car := CarVisual.new()
++		car.vehicle_id=id
++		car.cache_rest_pose=false
++		car.livery=VehicleLivery.defaults(id)
++		var before_hits: int = Base.hits
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		if prepared: check(Base.hits==before_hits+1,"actual prepared-base hit "+id)
++		var data: Dictionary = inventory(car,false)
++		var prior: Dictionary = {}
++		for row: Dictionary in original_data.rows:
++			if row.id==id and row.case==0: prior=row
++		check(data.surfaces==prior.surfaces,"no additional visible surfaces "+id)
++		check(data.triangles<int(prior.triangles) if id!="hovercraft" else data.triangles==int(prior.triangles),"stock master geometry budget "+id)
++		if id=="compact":
++			check(car.find_child("DoorSeamsLeft",true,false)!=null and car.find_child("DoorSeamsRight",true,false)!=null and car.find_child("TailgatePanelSeam",true,false)!=null,"three Rally contour attachment groups survive batching")
++		if id=="kart":
++			var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
++			check(driver.mesh.get_blend_shape_count()==10,"all ten driver poses retained")
++			check(driver.mesh.get_faces().size()/3==6456,"animated cloth/glove topology retained")
++			var helmet: MeshInstance3D = car.find_child("HelmetStatic",true,false)
++			check(helmet.mesh.get_faces().size()/3==3492,"reduced static helmet")
++		if id=="hovercraft":
++			var found: bool = false
++			for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++				if not node.mesh.has_meta("car_authored_far"): continue
++				found=true
++				var packet: Dictionary = node.mesh.get("_surfaces")[0]
++				check(packet.lods.size()>=2 and packet.lods[1].size()<packet.index_data.size(),"smaller authored Hover distant level")
++			check(found,"Hover far sampling survives preparation")
++		print("CAR_SIMPLIFICATION_STOCK ",id," ",data.triangles," triangles; ",data.buffer_bytes," bytes")
++		car.free()
++		await process_frame
++	check(R.meshes.size()<=R.CACHE_LIMIT,"content lookup cache remains bounded")
++	print("CAR_SIMPLIFICATION checks=",checks," failures=",failures)
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_simplification_app.gd b/game/tests/test_car_simplification_app.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_app.gd
+@@ -0,0 +1,80 @@
++extends SceneTree
++## Actual five-car Garage/race integration in disposable local storage.
++var checks: int = 0
++var failures: int = 0
++var output: String
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks+=1
++	if not ok: failures+=1; printerr("SIMPLIFIED_APP_FAIL ",label)
++func settle(frames: int = 10) -> void:
++	for frame: int in range(frames):
++		await process_frame
++		await RenderingServer.frame_post_draw
++func triangles(node: Node) -> int:
++	var count: int = 0
++	if node is MeshInstance3D and node.is_visible_in_tree() and node.cast_shadow!=GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: count+=node.mesh.get_faces().size()/3
++	for child: Node in node.get_children(): count+=triangles(child)
++	return count
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output="res://../docs/evidence/car-simplification-2026-11-13/app-"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size=Vector2i(1280,720)
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		var folder: String = ProjectSettings.globalize_path("res://../build/car-simplification-2026-11-13/app/"+TrackLibrary.unique_id())
++		DirAccess.make_dir_recursive_absolute(folder)
++		var app: Node = load("res://core/app.tscn").instantiate()
++		app.records=LocalRecords.new(folder.path_join("records.json"))
++		app.records.settings.selected_car=id
++		app.library=TrackLibrary.new(folder)
++		app.cloud_root_override=folder.path_join("cloud")
++		root.add_child(app)
++		while not app.startup_complete: await process_frame
++		VehicleCatalog.selected=id
++		app._show_screen("garage")
++		await settle()
++		var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++		check(page!=null,"actual Garage loads "+id)
++		page.open_car(VehicleCatalog.IDS.find(id))
++		while not page.showroom.showroom_ready or not page.showroom.car.model_ready: await process_frame
++		while page.showroom.get("preparing")==true: await process_frame
++		await settle()
++		check(page.showroom.car.vehicle_id==id,"Garage car identity "+id)
++		var direct := CarVisual.new()
++		direct.vehicle_id=id
++		root.add_child(direct)
++		while not direct.model_ready: await process_frame
++		check(triangles(page.showroom.car)==triangles(direct),"current Garage/direct geometry "+id)
++		var expected_triangles: int = triangles(direct)
++		direct.free()
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-garage.png")==OK,"Garage capture "+id)
++		var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++		await app._start_race(track,true,true)
++		await settle(20)
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.countdown_label.hide()
++		check(game.handling.vehicle_id==id and game.car.vehicle_id==id,"race car and handling identity "+id)
++		check(game.handling.snapshot()==VehicleCatalog.config(id).snapshot(),"complete canonical race tune "+id)
++		check(triangles(game.car)==expected_triangles,"race retains current production geometry "+id)
++		if id=="kart":
++			var wheel: Node3D = game.car.find_child("SteeringAssembly",true,false)
++			var driver: MeshInstance3D = game.car.find_child("TomkartDriver",true,false)
++			for input: float in [-1.0,0.0,1.0,0.0]:
++				# A window can lose focus during parallel native runs. Advance the
++				# fixture tick so the paused-presentation cache sees changed state.
++				game.sim.state.tick+=1
++				game.sim.state.steering=input
++				game._present_frame(1.0/60.0)
++				check(wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/3)),"actual race steering wheel")
++				var weight: float = 0
++				for shape: int in range(driver.mesh.get_blend_shape_count()): weight+=driver.get_blend_shape_value(shape)
++				check(is_equal_approx(weight,absf(input)),"actual race ten-pose driver")
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-race.png")==OK,"race capture "+id)
++		app.free()
++		await settle(12)
++		print("CAR_SIMPLIFICATION_APP_CAR ",id)
++	FileAccess.open(output+"/report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures}))
++	print("CAR_SIMPLIFICATION_APP ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_simplification_hover_lod.gd b/game/tests/test_car_simplification_hover_lod.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_hover_lod.gd
+@@ -0,0 +1,31 @@
++extends SceneTree
++## The close master is preserved; the authored distant level reduces rendering.
++func _initialize() -> void: run.call_deferred()
++func settle(view: CarShowroom) -> void:
++	view.invalidate_render()
++	for frame: int in range(16): await process_frame; await RenderingServer.frame_post_draw
++func run() -> void:
++	var view := CarShowroom.new()
++	view.vehicle_id="hovercraft"
++	view.simple_model=true
++	view.read_only=true
++	view.livery=VehicleLivery.defaults("hovercraft")
++	view.size=Vector2(1000,760)
++	root.add_child(view)
++	while not view.showroom_ready or not view.car.model_ready: await process_frame
++	var nodes: Array[MeshInstance3D] = []
++	for part: MeshInstance3D in view.car.find_children("*","MeshInstance3D",true,false):
++		if part.mesh.has_meta("car_authored_far"): nodes.append(part)
++	assert(not nodes.is_empty(),"Current prepared Hover has its authored distance level")
++	for part: MeshInstance3D in nodes: part.lod_bias=1000000
++	await settle(view)
++	var fine: int = view.showroom_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
++	for part: MeshInstance3D in nodes: part.lod_bias=0.000001
++	await settle(view)
++	var far: int = view.showroom_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
++	assert(fine-far==1152,"Authored far level saves exactly 1152 rendered seam triangles")
++	var output: String = "res://../docs/evidence/car-simplification-2026-11-13/hover-lod-"+RenderingServer.get_current_rendering_method()+".json"
++	FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify({"checks":2,"failures":0,"fine_primitives":fine,"far_primitives":far,"saved":fine-far}))
++	view.free()
++	print("HOVER_LOD 2 checks, 0 failures; ",fine," -> ",far)
++	quit()
+diff --git a/game/tests/test_car_simplification_steering.gd b/game/tests/test_car_simplification_steering.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_steering.gd
+@@ -0,0 +1,135 @@
++extends SceneTree
++## KDP01-KDP04: native finish and actual restored cockpit articulation.
++var OUT: String = "res://../docs/evidence/car-simplification-2026-11-13/steering-"+RenderingServer.get_current_rendering_method()
++const DRIVER: ArrayMesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++const STEERING = preload("res://vehicle/kart_steering.gd")
++const BASE = preload("res://vehicle/modular_car_base.gd")
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++func _initialize() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("DRIVER_POLISH_FAIL ",label)
++
++func run() -> void:
++	check(DRIVER.get_blend_shape_count() == STEERING.STEPS*2,"complete intermediate left/right poses")
++	check(DRIVER.get_faces().size()/3 <= 15000,"bounded native driver triangle budget")
++	var old: ArrayMesh = load("res://../docs/evidence/kart-driver-polish-2026-11-12/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++	for surface: int in range(DRIVER.get_surface_count()):
++		var material: StandardMaterial3D = DRIVER.surface_get_material(surface)
++		var arrays: Array = DRIVER.surface_get_arrays(surface)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++		var finite: bool = true
++		for index: int in range(vertices.size()): finite = finite and vertices[index].is_finite() and normals[index].is_finite() and normals[index].length_squared() > 0.8
++		check(finite,"finite geometry and unit shading normals "+material.resource_name)
++		check(material.albedo_texture == null,"native text-free surface "+material.resource_name)
++		if material.resource_name in ["RT_DriverSuit","RT_Gloves"]:
++			check(material.metallic_specular == 0 and material.roughness == 1,"matte cloth and gloves")
++			var preserved: bool = false
++			for prior: int in range(old.get_surface_count()):
++				if old.surface_get_material(prior).resource_name == material.resource_name:
++					var bind: PackedVector3Array = old.surface_get_arrays(prior)[Mesh.ARRAY_VERTEX]
++					preserved = true
++					if material.resource_name == "RT_Gloves":
++						for index: int in range(bind.size()): preserved = preserved and vertices[index].distance_to(bind[index]+STEERING.CENTER-STEERING.SOURCE_CENTER) < 0.000001
++					else:
++						var retained: Dictionary = {}
++						for point: Vector3 in vertices: retained[Vector3i((point*1000000).round())] = true
++						var boot_indices: PackedInt32Array = old.surface_get_arrays(prior)[Mesh.ARRAY_INDEX]
++						for corner: int in range(72*3): preserved = preserved and retained.has(Vector3i((bind[boot_indices[corner]]*1000000).round()))
++			check(preserved,"original boot soles and translated glove geometry remain exact "+material.resource_name)
++		var shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(surface)
++		for shape: Array in shapes:
++			var sound: bool = shape[Mesh.ARRAY_VERTEX].size() == vertices.size()
++			for point: Vector3 in shape[Mesh.ARRAY_VERTEX]: sound = sound and point.is_finite()
++			check(sound,"finite equal-topology steering pose "+material.resource_name)
++			if material.resource_name == "RT_DriverSuit":
++				var lower_fixed: bool = true
++				var count: int = int(DRIVER.get_meta("kart_suit_static_vertices",0))
++				lower_fixed = count > 0 and count < vertices.size()
++				for index: int in range(count): lower_fixed = lower_fixed and shape[Mesh.ARRAY_VERTEX][index] == vertices[index]
++				check(lower_fixed,"knees, feet and pelvis retain their supported pose while steering")
++		if material.resource_name == "RT_Helemt":
++			var outward: bool = true
++			for index: int in range(vertices.size()):
++				var radial := Vector3(vertices[index].x,(vertices[index].y-0.865)*0.3,vertices[index].z-0.388)
++				if vertices[index].y > 0.95: outward = outward and normals[index].dot(radial) > 0
++			check(outward,"helmet crown faces outward and stays opaque from overhead")
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(1100,850)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var world := Node3D.new()
++	viewport.add_child(world)
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	BASE.enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	var car := CarVisual.new()
++	car.vehicle_id = "kart"
++	car.simple_model = true
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	if prepared: check(BASE.hits > 0,"actual prepared base hit")
++	var wheel: Node3D = car.body.find_child("SteeringAssembly",true,false)
++	var driver: MeshInstance3D = car.body.find_child("TomkartDriver",true,false)
++	check(wheel != null and driver != null,"batching retains both cockpit handles")
++	check(wheel.get_child_count() > 0,"wheel geometry remains in the articulated frame")
++	var second := CarVisual.new()
++	second.vehicle_id = "kart"
++	second.simple_model = true
++	root.add_child(second)
++	while not second.model_ready: await process_frame
++	second.visible = false
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	camera.fov = 32
++	camera.current = true
++	world.add_child(camera)
++	var state := VehicleState.new()
++	var frame := DriveFrame.new()
++	var glove_surface: int = -1
++	for surface: int in range(DRIVER.get_surface_count()):
++		if DRIVER.surface_get_material(surface).resource_name == "RT_Gloves": glove_surface = surface
++	var glove: PackedVector3Array = DRIVER.surface_get_arrays(glove_surface)[Mesh.ARRAY_VERTEX]
++	var glove_shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(glove_surface)
++	for input: float in [-1.0,-0.9,-0.8,-0.7,-0.6,-0.5,-0.4,-0.3,-0.2,-0.1,0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.0]:
++		state.steering = input
++		state.tick += 1
++		car.present(Vector2.ZERO,0,state,frame)
++		check(wheel.basis.is_equal_approx(STEERING.REST*Basis(Vector3.UP,-input*PI/3)),"wheel follows input about its inclined shaft")
++		check(is_equal_approx(car.front_wheels[0].rotation.y,-input*0.60),"retained front-wheel steering")
++		var total: float = 0
++		for shape: int in range(DRIVER.get_blend_shape_count()): total += driver.get_blend_shape_value(shape)
++		check(total <= 1.00001 and total >= 0,"bounded interpolation weights")
++		var error: float = 0
++		var rotation: Basis = STEERING.wheel_basis(input)*STEERING.REST.inverse()
++		for index: int in range(glove.size()):
++			var actual: Vector3 = glove[index]*(1-total)
++			for shape: int in range(DRIVER.get_blend_shape_count()): actual += glove_shapes[shape][Mesh.ARRAY_VERTEX][index]*driver.get_blend_shape_value(shape)
++			error = maxf(error,actual.distance_to(STEERING.CENTER+rotation*(glove[index]-STEERING.CENTER)))
++		check(error < 0.0015,"both hands follow the rim within 1.5 mm including intermediate inputs")
++		measurements.append({"input":input,"max_grip_error_mm":error*1000})
++		var other: MeshInstance3D = second.body.find_child("TomkartDriver",true,false)
++		var isolated: bool = true
++		for shape: int in range(DRIVER.get_blend_shape_count()): isolated = isolated and other.get_blend_shape_value(shape) == 0
++		check(isolated,"another car sharing the mesh stays in its own pose")
++		if DisplayServer.get_name() != "headless" and input in [-1.0,-0.5,0.0,0.5,1.0]:
++			for shot: Array in [["cockpit",Vector3(1.0,.95,-.9),Vector3(0,.56,-.25)],["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
++				camera.position = shot[1]
++				camera.look_at(shot[2])
++				for wait: int in range(5): await process_frame; await RenderingServer.frame_post_draw
++				check(viewport.get_texture().get_image().save_png(OUT+"/steering-"+("prepared-" if prepared else "direct-")+shot[0]+"-"+str(input)+".png") == OK,"native steering capture")
++	car.present(Vector2.ZERO,0,state,frame)
++	check(wheel.basis.is_equal_approx(STEERING.REST),"centre restores without accumulated rotation")
++	check(driver.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,"posed driver retains live shadow")
++	for child: MeshInstance3D in wheel.find_children("*","MeshInstance3D",true,false): check(child.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,"rotating wheel retains live shadow")
++	second.free()
++	viewport.free()
++	FileAccess.open(OUT+"/steering-measurements-"+("prepared" if prepared else "direct")+".json",FileAccess.WRITE).store_string(JSON.stringify(measurements,"\t"))
++	print("KART_DRIVER_POLISH ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/capture_car_simplification.gd b/game/tests/capture_car_simplification.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_car_simplification.gd
+@@ -0,0 +1,41 @@
++extends SceneTree
++const OUT = "res://../docs/evidence/car-simplification-2026-11-13"
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var phase: String = "after"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--phase="): phase = arg.trim_prefix("--phase=")
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	var directory: String = OUT.path_join(phase).path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
++	for id: String in VehicleCatalog.IDS:
++		if ("--exclude-vehicle="+id) in OS.get_cmdline_user_args(): continue
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		view.simple_model = true
++		view.read_only = true
++		view.livery = VehicleLivery.defaults(id)
++		view.customisation = VehicleCustomisation.defaults()
++		view.size = Vector2(1000,760)
++		var prior_hits: int = preload("res://vehicle/modular_car_base.gd").hits
++		root.add_child(view)
++		while not view.showroom_ready or not view.car.model_ready: await process_frame
++		if prepared: assert(preload("res://vehicle/modular_car_base.gd").hits==prior_hits+1,"Capture must use current prepared base")
++		for shot: Array in [["front",-0.70,0.31],["rear",2.45,0.31],["side",-PI/2,0.15],["overhead",-0.4,1.02]]:
++			view.yaw = shot[1]
++			view.elevation = shot[2]
++			view.zoom = 1.05 if id in ["compact","forklift","super_rally"] else 0.85
++			view._orbit()
++			view.invalidate_render()
++			for frame: int in range(16):
++				await process_frame
++				await RenderingServer.frame_post_draw
++			assert(view.showroom_viewport.get_texture().get_image().save_png(directory.path_join(id+"-"+shot[0]+".png"))==OK)
++		view.free()
++		await process_frame
++		print("MODEL_REFINEMENT_CAPTURE ",phase," ",id)
++	quit()
+diff --git a/game/tests/measure_car_simplification.gd b/game/tests/measure_car_simplification.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/measure_car_simplification.gd
+@@ -0,0 +1,237 @@
++extends SceneTree
++## CMR01-CMR04: read-only current-model inventory and in-memory packing study.
++const Base = preload("res://vehicle/modular_car_base.gd")
++const Kits = preload("res://vehicle/modular_car_kits.gd")
++const Cache = preload("res://vehicle/prepared_car_cache.gd")
++const Packing = preload("res://rendering/mesh_vertex_packing.gd")
++const OUT = "res://../docs/evidence/car-simplification-2026-11-13/current-metrics"
++var rows: Array = []
++var world: Node3D
++var camera: Camera3D
++var viewport: SubViewport
++var graphical: bool
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("CMR_FAIL ",label)
++
++func payload(mesh: Mesh) -> int:
++	var size: int = 0
++	for surface: int in range(mesh.get_surface_count()):
++		var packet: Dictionary = mesh.get("_surfaces")[surface] if mesh is ArrayMesh else RenderingServer.mesh_get_surface(mesh.get_rid(),surface)
++		for key: String in ["vertex_data","attribute_data","skin_data","index_data"]:
++			size += packet.get(key,PackedByteArray()).size()
++		size += packet.get("blend_shapes",PackedByteArray()).size()
++		var lods: Array = packet.get("lods",[])
++		for index: int in range(1,lods.size(),2): size += lods[index].size()
++	return size
++
++func fingerprint(mesh: ArrayMesh) -> String:
++	# Compare ordered encoded corners, including all distance levels, without
++	# decoding/re-encoding normals or relying on screenshot identity alone.
++	var hash := HashingContext.new()
++	hash.start(HashingContext.HASH_SHA256)
++	for surface: int in range(mesh.get_surface_count()):
++		var packet: Dictionary = mesh.get("_surfaces")[surface]
++		var count: int = packet.vertex_count
++		var format: int = mesh.surface_get_format(surface)
++		var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++		var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++		var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++		var vertices: PackedByteArray = packet.vertex_data
++		var attributes: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++		var indices: PackedByteArray = packet.get("index_data",PackedByteArray())
++		var corners: int = int(packet.get("index_count",0))
++		var stride: int = indices.size()/corners if corners else 2
++		var streams: Array = [indices]
++		var lods: Array = packet.get("lods",[])
++		for level: int in range(1,lods.size(),2): streams.append(lods[level])
++		for stream: PackedByteArray in streams:
++			var length: int = stream.size()/stride if not stream.is_empty() else count
++			hash.update(var_to_bytes(length))
++			for corner: int in range(length):
++				var index: int = corner if stream.is_empty() else stream.decode_u16(corner*stride) if stride==2 else stream.decode_u32(corner*stride)
++				hash.update(vertices.slice(index*ps,(index+1)*ps))
++				if ns: hash.update(vertices.slice(count*ps+index*ns,count*ps+(index+1)*ns))
++				if ats: hash.update(attributes.slice(index*ats,(index+1)*ats))
++	return hash.finish().hex_encode()
++
++func unused(mesh: Mesh) -> Dictionary:
++	var dead: int = 0
++	var bytes: int = 0
++	if not mesh is ArrayMesh or mesh.get_blend_shape_count()>0: return {"vertices":0,"bytes":0}
++	for surface: int in range(mesh.get_surface_count()):
++		var packet: Dictionary = mesh.get("_surfaces")[surface]
++		var count: int = packet.vertex_count
++		var indices: PackedByteArray = packet.get("index_data",PackedByteArray())
++		var corners: int = int(packet.get("index_count",0))
++		if corners==0: continue
++		var stride: int = indices.size()/corners
++		var streams: Array = [indices]
++		var lods: Array = packet.get("lods",[])
++		for level: int in range(1,lods.size(),2): streams.append(lods[level])
++		var used: Dictionary = {}
++		for stream: PackedByteArray in streams:
++			for corner: int in range(stream.size()/stride):
++				used[stream.decode_u16(corner*stride) if stride==2 else stream.decode_u32(corner*stride)] = true
++		var missing: int = count-used.size()
++		dead += missing
++		var format: int = mesh.surface_get_format(surface)
++		if not format & Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES and not format & Mesh.ARRAY_FORMAT_BONES:
++			bytes += missing*(RenderingServer.mesh_surface_get_format_vertex_stride(format,count)+RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)+RenderingServer.mesh_surface_get_format_attribute_stride(format,count))
++	return {"vertices":dead,"bytes":bytes}
++
++func inventory(car: CarVisual, study: bool) -> Dictionary:
++	var result: Dictionary = {"triangles":0,"shadow_only_triangles":0,"surfaces":0,"mesh_instances":0,"unique_meshes":0,"unique_materials":0,"buffer_bytes":0,"candidate_bytes":0,"packing_meshes":0,"lod_surfaces":0,"blend_meshes":0,"blend_bytes":0,"unused_vertices":0,"unused_bytes":0,"parts":[]}
++	var seen: Dictionary = {}
++	var materials: Dictionary = {}
++	for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if part.mesh == null or not part.is_visible_in_tree(): continue
++		var mesh: Mesh = part.mesh
++		var triangles: int = 0
++		var levels: int = 0
++		for surface: int in range(mesh.get_surface_count()):
++			var arrays: Array = mesh.surface_get_arrays(surface)
++			var indices: int = arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size()
++			triangles += indices/3
++			var material: Material = part.get_active_material(surface)
++			if material != null: materials[material.get_instance_id()] = true
++			if mesh is ArrayMesh and not mesh.get("_surfaces")[surface].get("lods",[]).is_empty(): levels += 1
++		var shadow_only: bool = part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
++		result.shadow_only_triangles += triangles if shadow_only else 0
++		result.triangles += 0 if shadow_only else triangles
++		result.surfaces += 0 if shadow_only else mesh.get_surface_count()
++		result.mesh_instances += 1
++		result.lod_surfaces += levels
++		var shapes: int = mesh.get_blend_shape_count() if mesh is ArrayMesh else 0
++		var unused_data: Dictionary = unused(mesh)
++		result.parts.append({"path":str(car.get_path_to(part)),"triangles":triangles,"surfaces":mesh.get_surface_count(),"bytes":payload(mesh),"lod_surfaces":levels,"blend_shapes":shapes,"shadow_only":shadow_only,"unused":unused_data})
++		if seen.has(mesh): continue
++		seen[mesh] = true
++		result.buffer_bytes += payload(mesh)
++		result.unused_vertices += unused_data.vertices
++		result.unused_bytes += unused_data.bytes
++		if shapes>0:
++			result.blend_meshes += 1
++			for packet: Dictionary in mesh.get("_surfaces"):
++				result.blend_bytes += packet.get("blend_shapes",PackedByteArray()).size()
++		var candidate: Mesh = Packing.pack(mesh) if study and mesh is ArrayMesh else mesh
++		result.candidate_bytes += payload(candidate)
++		if candidate != mesh:
++			result.packing_meshes += 1
++			check(fingerprint(mesh)==fingerprint(candidate),"ordered GPU corners and LODs "+str(car.vehicle_id)+"/"+str(part.name))
++	result.unique_meshes = seen.size()
++	result.unique_materials = materials.size()
++	result.parts.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.triangles>b.triangles)
++	return result
++
++func settle() -> void:
++	for frame: int in range(5):
++		await process_frame
++		await RenderingServer.frame_post_draw
++
++func capture(car: CarVisual, label: String) -> Dictionary:
++	var changes: Dictionary = {}
++	for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if part.mesh is ArrayMesh:
++			var candidate: Mesh = Packing.pack(part.mesh)
++			if candidate != part.mesh: changes[part] = [part.mesh,candidate]
++	var observations: Array = []
++	for view: Array in [["front",Vector3(-5,3.0,-6)],["rear",Vector3(5,2.8,6)],["race",Vector3(0,8,4)]]:
++		camera.position = view[1]
++		camera.look_at(Vector3(0,0.55,0))
++		camera.size = 5.1 if view[0]!="race" else 8.5
++		# Exclude first-use viewport/shadow settling before the strict comparisons.
++		for warmup: int in range(4): await settle()
++		await settle()
++		var original: Image = viewport.get_texture().get_image()
++		await settle()
++		check(original.get_data()==viewport.get_texture().get_image().get_data(),"unchanged original repeat pixels "+label+"/"+view[0])
++		var draw_info: int = viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
++		original.save_png(OUT.path_join(label+"-"+view[0]+".png"))
++		for part: MeshInstance3D in changes: part.mesh = changes[part][1]
++		await settle()
++		var candidate: Image = viewport.get_texture().get_image()
++		var exact: bool = original.get_data()==candidate.get_data()
++		candidate.save_png(OUT.path_join(label+"-"+view[0]+"-packed.png"))
++		for part: MeshInstance3D in changes: part.mesh = changes[part][0]
++		await settle()
++		var control: Image = viewport.get_texture().get_image()
++		control.save_png(OUT.path_join(label+"-"+view[0]+"-restored.png"))
++		var restored: bool = original.get_data()==control.get_data()
++		check(exact,"native packing pixels "+label+"/"+view[0])
++		check(restored,"native restoration pixels "+label+"/"+view[0])
++		observations.append({"view":view[0],"visible_draws":draw_info,"packing_pixel_exact":exact,"restoration_pixel_exact":restored})
++	return {"changed_mesh_instances":changes.size(),"views":observations}
++
++func run() -> void:
++	graphical = DisplayServer.get_name()!="headless"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	viewport = SubViewport.new()
++	viewport.size = Vector2i(1000,760)
++	viewport.own_world_3d = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	world = Node3D.new()
++	viewport.add_child(world)
++	if graphical:
++		camera = Camera3D.new()
++		camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++		camera.current = true
++		world.add_child(camera)
++		var light := DirectionalLight3D.new()
++		light.rotation_degrees = Vector3(-55,-32,0)
++		light.shadow_enabled = true
++		world.add_child(light)
++		var ambient := WorldEnvironment.new()
++		ambient.environment = Environment.new()
++		ambient.environment.background_mode = Environment.BG_COLOR
++		ambient.environment.background_color = Color("28343f")
++		ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++		ambient.environment.ambient_light_color = Color("ccd5de")
++		ambient.environment.ambient_light_energy = 0.65
++		world.add_child(ambient)
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		for case: int in range(1 if graphical else 5):
++			var car := CarVisual.new()
++			car.vehicle_id = id
++			car.simple_model = true
++			car.editable_kits = case in [2,3]
++			car.batch_parts = case!=4
++			car.livery = VehicleLivery.defaults(id)
++			car.customisation = VehicleCustomisation.defaults()
++			if case in [1,3]:
++				for category: String in ["hood","aero","rims","body"]:
++					var options: Array = VehicleCustomisation.options(category,id)
++					if options.size()>1: car.customisation[category] = options[1][0]
++			Base.enabled = case!=4
++			Kits.enabled = case!=4
++			Cache.enabled = case!=4
++			Cache.entries.clear()
++			var before_base: int = Base.hits
++			var before_kits: int = Kits.hits
++			var started: int = Time.get_ticks_usec()
++			world.add_child(car)
++			while not car.model_ready: await process_frame
++			var elapsed: int = Time.get_ticks_usec()-started
++			var row: Dictionary = inventory(car,case==0)
++			row.merge({"id":id,"case":case,"editable":car.editable_kits,"selection":car.customisation,"construction_usec":elapsed,"base_hits":Base.hits-before_base,"kit_hits":Kits.hits-before_kits})
++			check(row.triangles>0,"constructed "+id+" case "+str(case))
++			if graphical: row["native"] = await capture(car,id+"-"+RenderingServer.get_current_rendering_method())
++			rows.append(row)
++			print("CMR_CASE ",id," ",case," triangles=",row.triangles," surfaces=",row.surfaces," bytes=",row.buffer_bytes," candidate=",row.candidate_bytes," base_hits=",row.base_hits)
++			car.free()
++			await process_frame
++	var mode: String = RenderingServer.get_current_rendering_method() if graphical else "headless"
++	var file := FileAccess.open(OUT.path_join(mode+".json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"engine":Engine.get_version_info(),"checks":checks,"failures":failures,"rows":rows},"\t"))
++	file.close()
++	viewport.free()
++	print("CMR_RESULT checks=",checks," failures=",failures)
++	quit(1 if failures else 0)
+diff --git a/scripts/run_car_simplification.py b/scripts/run_car_simplification.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/run_car_simplification.py
+@@ -0,0 +1,52 @@
++"""Pinned, bounded offline engine runner for the five-car refinement."""
++import ctypes
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-simplification-2026-11-13"
++
++
++def main():
++    name, script, *options = sys.argv[1:]
++    OUT.mkdir(parents=True, exist_ok=True)
++    profile = ROOT / "build/car-simplification-2026-11-13/profile"
++    for folder in [profile / "roaming", profile / "local"]:
++        folder.mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"), LOCALAPPDATA=str(profile / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++    engine = Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64.exe")
++    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
++    kernel.SetErrorMode(kernel.GetErrorMode() | 0x0002)
++    command = [str(engine), "--path", str(ROOT / "game"), "--audio-driver", "Dummy",
++               "--position", "10000,10000", "--script", script] + options
++    started = time.monotonic()
++    with (OUT / (name + ".log")).open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++        (OUT / (name + "-process.json")).write_text(json.dumps(dict(pid=process.pid, command=command), indent=2))
++        reason = None
++        while process.poll() is None:
++            time.sleep(0.2)
++            content = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
++            if "SCRIPT ERROR:" in content or time.monotonic()-started > 900:
++                reason = "script error" if "SCRIPT ERROR:" in content else "900s timeout"
++                process.kill()
++                break
++        code = process.wait()
++    content = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
++    errors = [line for line in content.splitlines() if line.startswith(("ERROR:", "SCRIPT ERROR:"))
++              and line != "ERROR: Failed to read the root certificate store."]
++    receipt = dict(command=command, exit_code=code, stop_reason=reason, errors=errors,
++                   seconds=time.monotonic()-started)
++    (OUT / (name + "-receipt.json")).write_text(json.dumps(receipt, indent=2))
++    print(json.dumps(receipt))
++    print("\n".join(content.splitlines()[-8:]))
++    return int(code != 0 or bool(errors))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/refresh_car_simplification.py b/scripts/refresh_car_simplification.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_car_simplification.py
+@@ -0,0 +1,99 @@
++"""Refresh five requested cars with source fences; leave Challenger out."""
++from concurrent.futures import ThreadPoolExecutor
++import fnmatch
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-simplification-2026-11-13"
++IDS = ["compact", "kart", "forklift", "electric", "hovercraft"]
++SPEC = json.loads((ROOT / "game/vehicle/prepared_asset_dependencies.json").read_text())
++
++
++def consumed(relative):
++    for rule in SPEC["rules"]:
++        if fnmatch.fnmatchcase(relative, rule["pattern"]):
++            return bool(set(rule["vehicles"]) & set(IDS))
++    return True  # Unknown and shared inputs remain guarded.
++
++
++def protected_sources():
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in (ROOT / "game/assets/vehicles/challenger_hellcat_v1").rglob("*") if p.is_file()}
++
++
++def run(label, script, *options):
++    subprocess.run([sys.executable, str(ROOT / "scripts/run_car_simplification.py"), label, script, *options],
++                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
++    print(label, "passed", flush=True)
++
++
++def sources():
++    paths = []
++    for directory in ["game/vehicle", "game/resources", "game/ui", "game/track"]:
++        paths += [p for p in (ROOT / directory).rglob("*") if p.suffix in [".gd", ".gdshader", ".gdshaderinc", ".json", ".tres"]]
++    paths += [p for p in (ROOT / "game/assets/vehicles").rglob("*") if p.suffix in [".res", ".png"]
++              and "modular_kits_v1" not in p.parts and "modular_car_bases_v1" not in p.parts]
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths
++            if consumed(p.relative_to(ROOT).as_posix())}
++
++
++def identity(label):
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
++               str(ROOT / "scripts/refresh_car_simplification_identity.ps1")]
++    with (OUT / (label + ".log")).open("w", encoding="utf-8") as log:
++        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    data = json.loads((ROOT / "build/car-simplification-2026-11-13/identity/client-build-identity.json").read_text(encoding="utf-8-sig"))
++    (OUT / (label + ".json")).write_text(json.dumps(data, indent=2), encoding="utf-8")
++    print(label, "passed", flush=True)
++    return data
++
++
++def main():
++    selected = IDS
++    for option in sys.argv[1:]:
++        if option.startswith("--vehicles="):
++            selected = option.split("=", 1)[1].split(",")
++            assert selected and set(selected) <= set(IDS)
++    artwork = "--art-only" in sys.argv
++    if artwork:
++        for car in selected:
++            run("liveries-"+car,"res://tests/bake_livery_previews.gd","--rendering-method","gl_compatibility","--","--vehicle="+car)
++            run("news-"+car,"res://tests/bake_news_car_photos.gd","--rendering-method","gl_compatibility","--","--vehicle="+car,
++                "--evidence-root=res://../docs/evidence/car-simplification-2026-11-13/news")
++        return
++    protected_before = protected_sources()
++    before = sources()
++    (OUT / "refresh-source-before.json").write_text(json.dumps(before, indent=2))
++    first = identity("identity-before-bakes")
++    for car in selected:
++        run("bases-"+car,"res://tests/bake_modular_car_bases.gd","--headless","--","--vehicle="+car)
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(run,"kits-"+car,"res://tests/bake_modular_car_kits.gd","--headless","--","--vehicle="+car) for car in selected]
++        for job in jobs: job.result()
++    for car in selected:
++        run("garage-"+car,"res://tests/bake_garage_cars.gd","--headless","--","--vehicle="+car)
++    if "compact" in selected:
++        run("header-template","res://tests/bake_header_simple_compact.gd","--headless")
++    run("garage-pictures","res://../scripts/bake_garage_previews.gd","--rendering-method","gl_compatibility","--","--exclude-vehicle=super_rally")
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    protected_after = protected_sources()
++    protected_changed = sorted(p for p in protected_before.keys() | protected_after.keys()
++                               if protected_before.get(p) != protected_after.get(p))
++    (OUT / "refresh-source-receipt.json").write_text(json.dumps({"scope":IDS,"input_count":len(before),"changed":changed,
++                "concurrent_excluded_inputs":protected_changed}, indent=2))
++    assert not changed, "Authored inputs changed during the prepared refresh"
++    final = identity("identity-after-bakes")
++    assert all(first["modular_car_sha256"][car] == final["modular_car_sha256"][car] for car in IDS), "Generated output changed scoped geometry revisions"
++    run("prepared-preflight","res://tests/check_prepared_assets.gd","--headless","--","--exclude-vehicle=super_rally")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable,"scripts/check_garage_previews.py","--vehicles="+",".join(IDS)],cwd=ROOT,check=True,stdout=log,stderr=subprocess.STDOUT)
++    print("FIVE_CAR_REFRESH: source fence and strict asset/picture preflights passed",flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/refresh_car_simplification_identity.ps1 b/scripts/refresh_car_simplification_identity.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_car_simplification_identity.ps1
+@@ -0,0 +1,4 @@
++$ErrorActionPreference = 'Stop'
++$modelRefinementRoot = Split-Path -Parent $PSScriptRoot
++. (Join-Path $PSScriptRoot 'build_identity.ps1')
++Write-ClientBuildIdentity $modelRefinementRoot (Join-Path $modelRefinementRoot 'build/car-simplification-2026-11-13/identity')
+diff --git a/scripts/import_car_simplification_images.py b/scripts/import_car_simplification_images.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/import_car_simplification_images.py
+@@ -0,0 +1,51 @@
++"""Refresh native texture imports in an owned headless editor; verify source MD5s."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-simplification-2026-11-13"
++PROFILE = ROOT / "build/car-simplification-2026-11-13/profile"
++env = dict(os.environ, APPDATA=str(PROFILE / "roaming"), LOCALAPPDATA=str(PROFILE / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++project_before = hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest()
++command = [r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64.exe", "--headless", "--editor", "--import",
++           "--path", str(ROOT / "game"), "--audio-driver", "Dummy"]
++start = time.monotonic()
++with (OUT / "image-import.log").open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    (OUT / "image-import-process.json").write_text(json.dumps({"pid": process.pid, "command": command}))
++    while process.poll() is None:
++        time.sleep(0.3)
++        if time.monotonic() - start > 300:
++            process.kill()
++            raise RuntimeError("Owned image importer exceeded 300 seconds")
++    code = process.wait()
++assert code == 0, code
++assert hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest() == project_before, "Editor changed project settings"
++images = []
++for car in ["compact", "kart", "forklift", "electric", "hovercraft"]:
++    images += list((ROOT / "game/assets/liveries/previews_v2" / car).glob("*.png"))
++    images += [ROOT / "game/assets/menu" / (car + "_illustration_v1.png"),
++               ROOT / "game/assets/menu/header_cars_v1" / (car + ".png"),
++               ROOT / "game/assets/garage/previews_v1" / (car + ".png")]
++rows = []
++for image in images:
++    metadata = Path(str(image) + ".import").read_text()
++    match = re.search(r'path="res://([^\"]+\.ctex)"', metadata)
++    assert match, image
++    imported = ROOT / "game" / match[1]
++    checksum = imported.with_suffix(".md5").read_text()
++    digest = hashlib.md5(image.read_bytes()).hexdigest()
++    assert imported.is_file() and f'source_md5="{digest}"' in checksum, image
++    rows.append({"path": image.relative_to(ROOT).as_posix(), "source_md5": digest})
++content = (OUT / "image-import.log").read_text(encoding="utf-8", errors="replace")
++diagnostics = [line for line in content.splitlines() if line.startswith(("ERROR:", "SCRIPT ERROR:"))]
++(OUT / "image-import-receipt.json").write_text(json.dumps({"exit_code": code, "verified_images": len(rows),
++     "seconds": time.monotonic() - start, "project_settings_exact": True, "editor_diagnostics": diagnostics,
++     "images": rows}, indent=2))
++print(json.dumps({"verified_images": len(rows), "editor_diagnostics": len(diagnostics), "project_settings_exact": True}))
+diff --git a/scripts/compare_car_simplification.ps1 b/scripts/compare_car_simplification.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/compare_car_simplification.ps1
+@@ -0,0 +1,50 @@
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++$carSimpleRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/evidence/car-simplification-2026-11-13'
++Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
++using System;
++using System.Drawing;
++public static class CarSimplePixels {
++ public static double[] Compare(string first,string second) {
++  using(var a=new Bitmap(first)) using(var b=new Bitmap(second)) {
++   if(a.Size!=b.Size) throw new Exception("Image dimensions differ");
++   long changed=0, significant=0, sum=0;
++   for(int y=0;y<a.Height;y++) for(int x=0;x<a.Width;x++) {
++    Color p=a.GetPixel(x,y),q=b.GetPixel(x,y);
++    int r=Math.Abs(p.R-q.R),g=Math.Abs(p.G-q.G),z=Math.Abs(p.B-q.B);
++    int peak=Math.Max(r,Math.Max(g,z));
++    if(peak>0) changed++; if(peak>8) significant++; sum+=r+g+z;
++   }
++   return new double[]{changed,significant,(double)sum/(a.Width*a.Height*3)};
++  }
++ }
++}
++'@
++$carSimpleRows = @()
++foreach ($carSimpleId in @('compact','kart','forklift','electric','hovercraft')) {
++ foreach ($carSimpleView in @('front','rear','side','overhead')) {
++  $carSimpleName = $carSimpleId+'-'+$carSimpleView+'.png'
++  $carSimpleValues = [CarSimplePixels]::Compare((Join-Path $carSimpleRoot ('before/gl_compatibility/'+$carSimpleName)),(Join-Path $carSimpleRoot ('final/gl_compatibility/'+$carSimpleName)))
++  $carSimpleRows += @{ vehicle=$carSimpleId; view=$carSimpleView; changed_pixels=$carSimpleValues[0]; significant_pixels=$carSimpleValues[1]; rgb_mae_255=$carSimpleValues[2] }
++ }
++}
++$carSimpleRows | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $carSimpleRoot 'native-comparisons.json')
++$carSimpleSheet = New-Object System.Drawing.Bitmap(1200,2450)
++$carSimpleDrawing = [System.Drawing.Graphics]::FromImage($carSimpleSheet)
++$carSimpleDrawing.Clear([System.Drawing.ColorTranslator]::FromHtml('#18232c'))
++$carSimpleFont = New-Object System.Drawing.Font('Segoe UI',16)
++$carSimpleIds = @('compact','kart','forklift','electric','hovercraft')
++for ($carSimpleRow=0; $carSimpleRow -lt 5; $carSimpleRow++) {
++ $carSimpleY = $carSimpleRow*490
++ $carSimpleDrawing.DrawString(($carSimpleIds[$carSimpleRow]+' | BEFORE / AFTER'),$carSimpleFont,[System.Drawing.Brushes]::White,[single]8,[single]$carSimpleY)
++ for ($carSimpleColumn=0; $carSimpleColumn -lt 2; $carSimpleColumn++) {
++  $carSimplePhase = @('before','final')[$carSimpleColumn]
++  $carSimplePath = Join-Path $carSimpleRoot ($carSimplePhase+'/gl_compatibility/'+$carSimpleIds[$carSimpleRow]+'-front.png')
++  $carSimpleImage = [System.Drawing.Image]::FromFile($carSimplePath)
++  $carSimpleDrawing.DrawImage($carSimpleImage,[int]($carSimpleColumn*600),[int]($carSimpleY+28),600,456)
++  $carSimpleImage.Dispose()
++ }
++}
++$carSimpleSheet.Save((Join-Path $carSimpleRoot 'before-after.png'))
++$carSimpleDrawing.Dispose(); $carSimpleSheet.Dispose(); $carSimpleFont.Dispose()
++Write-Output 'CAR_SIMPLIFICATION_COMPARISONS: 20 measured image pairs; five-car sheet saved.'
+diff --git a/scripts/summarise_car_simplification.py b/scripts/summarise_car_simplification.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/summarise_car_simplification.py
+@@ -0,0 +1,71 @@
++"""Reconcile the final production snapshot without discarding rejected attempts."""
++import hashlib
++import json
++from pathlib import Path
++import re
++import runpy
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-simplification-2026-11-13"
++required = ["piece-bake-scoped", "direct-final-pieces", "prepared-pieces", "final-metrics",
++            "modules-compact", "modules-kart", "modules-forklift", "modules-electric", "modules-hovercraft",
++            "app-compat", "app-mobile", "steering-compat", "steering-mobile", "hover-lod-compat", "hover-lod-mobile",
++            "final-views-compat", "final-views-mobile", "contact", "cockpit", "clearance", "driving", "ghosts",
++            "wash-final", "wash-surfaces", "parser-final", "prepared-preflight", "garage-pictures", "factory-art-final"]
++receipts = {}
++for label in required:
++    receipt = json.loads((OUT / (label + "-receipt.json")).read_text())
++    assert receipt["exit_code"] == 0 and not receipt["errors"], label
++    receipts[label] = receipt
++module_checks = 0
++for car in ["compact", "kart", "forklift", "electric", "hovercraft"]:
++    text = (OUT / ("modules-" + car + ".log")).read_text(encoding="utf-8", errors="replace")
++    match = re.search(r"MODULAR_CAR_ASSETS: (\d+) checks, 0 failures", text)
++    assert match, car
++    module_checks += int(match[1])
++assert module_checks == 7557
++assert "468 resources; 1925 checks, 0 failures" in (OUT / "prepared-preflight.log").read_text()
++assert "5 exact native images" in (OUT / "picture-preflight.log").read_text()
++refresh = json.loads((OUT / "refresh-source-receipt.json").read_text())
++assert refresh["changed"] == []
++before = json.loads((OUT / "refresh-source-before.json").read_text())
++current = runpy.run_path(str(ROOT / "scripts/refresh_car_simplification.py"))["sources"]()
++drift = sorted(p for p in before.keys() | current.keys() if before.get(p) != current.get(p))
++assert not drift, drift
++start = json.loads((OUT / "start.json").read_text())
++sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
++assert sha(ROOT / ".git/index") == start[".git/index"]
++controls = {p: sha(ROOT / p) == digest for p, digest in start.items()
++            if p.startswith("game/resources/cars/") or p in ["game/vehicle/kart_steering.gd", "game/vehicle/kart_model.gd",
++            "game/vehicle/forklift_model.gd", "game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res",
++            "game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res"]}
++assert all(controls.values()), controls
++old = json.loads((OUT / "baseline-metrics/headless.json").read_text())
++new = json.loads((OUT / "current-metrics/headless.json").read_text())
++metrics = []
++for row in new["rows"]:
++    if row["case"] != 0:
++        continue
++    prior = next(r for r in old["rows"] if r["id"] == row["id"] and r["case"] == 0)
++    assert row["base_hits"] == 1
++    assert row["surfaces"] == prior["surfaces"]
++    metrics.append({"vehicle": row["id"], "before_triangles": prior["triangles"], "triangles": row["triangles"],
++                    "triangle_reduction_percent": 100 * (prior["triangles"] - row["triangles"]) / prior["triangles"],
++                    "before_buffer_bytes": prior["buffer_bytes"], "buffer_bytes": row["buffer_bytes"],
++                    "buffer_change_percent": 100 * (row["buffer_bytes"] - prior["buffer_bytes"]) / prior["buffer_bytes"],
++                    "visible_surfaces": row["surfaces"], "base_hits": row["base_hits"]})
++imports = json.loads((OUT / "image-import-receipt.json").read_text())
++assert imports["verified_images"] == 260 and not imports["editor_diagnostics"]
++protected = {p: {"before": digest, "after": sha(ROOT / p)} for p, digest in start.items()
++             if ("challenger_hellcat_v1/" in p or p.endswith("super_rally_model.gd"))
++             and (ROOT / p).is_file() and sha(ROOT / p) != digest}
++summary = {"module_checks": module_checks, "prepared_resources": 468, "prepared_checks": 1925,
++           "main_index_exact": True, "controls": controls, "current_input_count": len(current), "current_source_drift": drift,
++           "stock_metrics": metrics, "receipts": receipts, "concurrent_protected_inputs": protected,
++           "limits": ["Challenger assets and cache publication excluded; concurrent edits preserved.",
++                      "Raw active-assembly payload is not total RAM, measured VRAM, package size or FPS.",
++                      "Volt and Hover distance data increase active buffer payload.",
++                      "Owner art acceptance and physical-device qualification remain."]}
++(OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
++print(json.dumps({"module_checks": module_checks, "prepared_checks": 1925, "source_drift": drift,
++                  "main_index_exact": True, "stock_metrics": metrics}))
+diff --git a/scripts/checkpoint_car_simplification.py b/scripts/checkpoint_car_simplification.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/checkpoint_car_simplification.py
+@@ -0,0 +1,80 @@
++"""Check an isolated source-only forward/reverse patch without main-index writes."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-simplification-2026-11-13"
++BUILD = ROOT / "build/car-simplification-2026-11-13"
++modified = ["game/vehicle/car_visual.gd", "game/vehicle/racing_car_models.gd",
++            "game/vehicle/car_mesh_lods.gd", "game/vehicle/prepared_asset_dependencies.json"]
++added = ["game/vehicle/car_static_reduction.gd", "game/vehicle/compact_seam_strip.gd",
++         "game/tests/support/car_static_reduction_bake.gd", "game/tests/bake_car_static_reductions.gd",
++         "game/tests/test_car_simplification.gd", "game/tests/test_car_simplification_app.gd",
++         "game/tests/test_car_simplification_hover_lod.gd", "game/tests/test_car_simplification_steering.gd",
++         "game/tests/capture_car_simplification.gd", "game/tests/measure_car_simplification.gd",
++         "scripts/run_car_simplification.py", "scripts/refresh_car_simplification.py",
++         "scripts/refresh_car_simplification_identity.ps1", "scripts/import_car_simplification_images.py",
++         "scripts/compare_car_simplification.ps1", "scripts/summarise_car_simplification.py",
++         "scripts/checkpoint_car_simplification.py", "docs/CAR_SIMPLIFICATION_2026_11_13.md"]
++added += [name + ".uid" for name in list(added) if name.endswith(".gd") and (ROOT / (name + ".uid")).exists()]
++sha = lambda data: hashlib.sha256(data).hexdigest()
++start = json.loads((OUT / "start.json").read_text())
++assert sha((ROOT / ".git/index").read_bytes()) == start[".git/index"]
++patch = []
++records = {}
++for name in modified + added:
++    after = (ROOT / name).read_bytes()
++    before = (OUT / "before" / name).read_bytes() if name in modified else b""
++    if name in modified:
++        assert sha(before) == start[name], name
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    if name in added:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(before.decode("utf-8").splitlines(True), after.decode("utf-8").splitlines(True),
++                 fromfile="a/" + name if name in modified else "/dev/null", tofile="b/" + name))
++    records[name] = {"before_sha256": sha(before) if name in modified else None, "sha256": sha(after)}
++patch_path = OUT / "source-only.patch"
++patch_path.write_bytes("".join(patch).encode("utf-8"))
++command = ["git", "-c", f"safe.directory={ROOT}", "apply", "--check", "--reverse", str(patch_path)]
++result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
++assert result.returncode == 0, result.stderr
++scratch = Path(tempfile.mkdtemp(prefix="source-roundtrip-", dir=BUILD)).resolve()
++assert scratch.is_relative_to(BUILD.resolve())
++try:
++    subprocess.run(["git", "init", "--quiet", str(scratch)], check=True, capture_output=True)
++    for name in modified:
++        target = scratch / name
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_bytes((OUT / "before" / name).read_bytes())
++    for reverse in [False, True]:
++        command = ["git", "-c", "core.autocrlf=false", "-c",
++                   "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
++                   "apply", "--whitespace=error"]
++        if reverse:
++            command += ["--reverse"]
++        command += [str(patch_path)]
++        result = subprocess.run(command, cwd=scratch, text=True, capture_output=True)
++        assert result.returncode == 0, result.stderr
++        for name in modified + added:
++            target = scratch / name
++            if reverse and name in added:
++                assert not target.exists(), name
++            else:
++                expected = (OUT / "before" / name).read_bytes() if reverse else (ROOT / name).read_bytes()
++                assert target.read_bytes() == expected, name
++finally:
++    assert scratch.is_relative_to(BUILD.resolve())
++    shutil.rmtree(scratch)
++assert sha((ROOT / ".git/index").read_bytes()) == start[".git/index"]
++receipt = {"modified_files_with_independent_baselines": len(modified), "added_source_and_uid_files": len(added),
++           "forward_byte_exact": True, "reverse_byte_exact": True, "whitespace_check": "passed",
++           "main_index_exact": True, "patch_sha256": sha(patch_path.read_bytes()), "files": records,
++           "scope": "Authored source only; generated native assets, images and concurrent Challenger edits excluded."}
++(OUT / "source-checkpoint.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++print(json.dumps({key: receipt[key] for key in ["modified_files_with_independent_baselines", "added_source_and_uid_files",
++                 "forward_byte_exact", "reverse_byte_exact", "whitespace_check", "main_index_exact"]}))
+diff --git a/docs/CAR_SIMPLIFICATION_2026_11_13.md b/docs/CAR_SIMPLIFICATION_2026_11_13.md
+new file mode 100644
+--- /dev/null
++++ b/docs/CAR_SIMPLIFICATION_2026_11_13.md
+@@ -0,0 +1,164 @@
++# Five-car geometry simplification — 13 November 2026
++
++The approved reductions are implemented for Rally, Kart, Forklift, Volt and
++Hover. Challenger model/cache/picture publication is excluded; concurrent
++Challenger work is preserved. The final five-car refresh and all final gates
++pass. A fresh game launch, owner appearance review and physical-device
++qualification remain.
++
++[Native before/after sheet](evidence/car-simplification-2026-11-13/before-after.png),
++[measurements and final command receipts](evidence/car-simplification-2026-11-13/summary.json),
++[per-view pixel measurements](evidence/car-simplification-2026-11-13/native-comparisons.json).
++
++## Delivered changes
++
++| ID | Change | Preserved controls |
++|---|---|---|
++| CSP01 | Straight simple-model cylinders use one axial ring. Their radial samples, end caps and dimensions remain. The default reducer and excluded vehicle IDs retain the old axial policy. Newly fitted kits use the same reduction. | Wheel/steering/fan frames, full-quality references, all eight car configurations and simulation sources. |
++| CSP02 | Rally's 438 boxed door/tailgate seam segments become three connected contour groups. Two triangles per segment replace twelve; 5,256 becomes 876 triangles. Original paths, widths and attachment positions feed the strips; they do not cast self-shadows. | Door/window boundaries, tailgate layout, proportions, paint and original full reference geometry. |
++| CSP03 | Offline conservative index selection reduces individual static source pieces, then compacts only their referenced encoded vertex blocks. This covers Rally static detail, Kart's static helmet/wheels and Volt wheel detail. Reduction happens before batching and only within newly replaced kit frames. | Every retained encoded position, normal and UV; source bounds, material slots, light handles and separate articulation. The animated driver's native file, original helmet reference, ten poses, shoulder/seat/pedal fit and steering source are byte-exact. |
++| CSP04 | Hover keeps its original close master. A separately authored skirt-seam distance level saves 1,152 rendered triangles. Fine and far samples stay in the same mesh/material batches, and the offline LOD preparation retains the authored level. | Close skirt, canopy, hull, fan guards, moving rotors/rudders and stock surface count. The reviewed coarser fan-ring/skirt prototypes were not applied to the close model. |
++| CSP05 | Five-car stock/editable bases, fitted modules, Garage/header scenes, factory art, 245 livery pictures, five Garage pictures and five news photos refresh with source/identity guards. All 265 generated images have verified current native texture imports. | Challenger files and per-picture provenance are excluded from publication; strict default full-catalogue checks remain. |
++
++`car_static_reduction.gd` loads the saved native reductions by the complete
++encoded source-geometry fingerprint. It never runs index generation at runtime.
++A missing or changed source key keeps the original geometry. The content lookup
++cache is bounded to 128 entries and does not retain transient source assemblies
++for negative lookups. Source regeneration is explicit through
++`bake_car_static_reductions.gd`; 883 native recipe resources occupy 1,211,902
++bytes on disk. Native resources are generated output, separate from the source
++checkpoint.
++
++The source-piece boundary matters: reducing already-combined fixed batches gave
++Rally fitted cars different geometry from separately assembled modules. The
++final implementation reduces each authored source piece before assembly, and
++scopes incremental work to the changed kit's frames. All ten sampled
++stock/fitted × fixed/editable construction pairs agree, followed by the complete
++module matrices below.
++
++## Final production stock measurements
++
++The same inventory function measures task-start and final active assemblies.
++Triangles are visible stored masters, before automatic distance selection.
++Payload includes unique active mesh vertex/attribute/index/morph/shadow and LOD
++buffers. It excludes textures, materials, global retained resources, allocator
++overhead and lookup-cache storage. It is not process RAM, measured VRAM, APK
++size or frame time. Shared meshes count once per car.
++
++| Car | Before triangles | Final triangles | Reduction | Before buffers | Final buffers | Buffer change |
++|---|---:|---:|---:|---:|---:|---:|
++| Rally | 40,396 | 26,496 | **34.41%** | 1,693,548 B | 1,023,510 B | −39.56% |
++| Kart | 34,752 | 31,612 | **9.04%** | 1,962,260 B | 1,870,564 B | −4.67% |
++| Forklift | 51,132 | 37,812 | **26.05%** | 2,063,348 B | 1,705,560 B | −17.34% |
++| Volt | 38,746 | 34,594 | **10.72%** | 1,066,620 B | 1,095,216 B | +2.68% |
++| Hover | 22,548 | 22,548 close master | **1,152 fewer at distance** | 565,008 B | 637,388 B | +12.81% |
++
++Stock visible surface counts remain 52/45/26/37/19 respectively. All five final
++stock cases record actual prepared-base hits. Task-start cache-enabled cases
++had only one base hit; therefore the buffer comparison also includes making
++the intended prepared LOD policy effective for the other four cars. This is an
++observed production snapshot comparison, not a controlled device-memory
++experiment.
++
++The static Kart helmet falls from 6,024 to 3,492 triangles; its two animated
++suit/glove surfaces remain 6,456 triangles with ten steering poses. Original
++driver and full helmet resource hashes remain exact. The source reference is
++retained for full detail and future authoring.
++
++Volt and Hover demonstrate the storage tradeoff: lower distant rendering work
++requires additional index/detail data. No universal buffer saving is claimed.
++Hover's native forced-level test measures **26,132 → 24,980 visible viewport
++primitives**, a difference of exactly **1,152**, in both desktop renderers.
++The viewport totals include the studio; the difference isolates the selected
++authored level.
++
++## Final verification
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`; desktop RTX 3090. Vulkan Mobile
++is a desktop renderer here, not a physical Android test. Engine runs use
++private profiles, dummy audio and empty backend URL/auth values.
++
++| Gate | Final result |
++|---|---:|
++| Complete full/simple, stock/fitted/module/ghost matrices | Rally 1,443; Kart 1,160; Forklift 1,726; Volt 1,936; Hover 1,292 — **7,557/0** |
++| Scoped prepared-asset validation | **468 resources / 1,925 checks / zero failures** |
++| Current direct source pieces / actual prepared integration | **441/0 and 38/0**, including retained encoded attributes, exact source controls, bounded lookup cache and five base hits |
++| Actual five-car Garage/race App | **48/0 per desktop renderer**; matching current geometry, canonical tunes and Kart steering |
++| Native prepared steering | **170/0 per desktop renderer** |
++| Actual rendered Hover distance level | **2/0 per desktop renderer**, exactly 1,152 fewer primitives |
++| Driver contact / cockpit / moving steering clearance | **27/0, 286/0, 1,134/0** |
++| Actual native washing / surface eligibility | **1,675/0 and 54/0** |
++| Driving / personal ghost logic | **72/0 and 38/0** |
++| Production script compilation | **557 scripts / zero failures** |
++| Current inventory | **53/0** |
++| Native photo provenance / texture imports | **Five pictures / 161 current source hashes; 265 imports current** |
++
++Forty final prepared studio views, twenty actual App Garage/race pictures and
++native steering captures are retained. The contact sheet compares the same
++task-start and final Compatibility views. The pixel measurements are diagnostic;
++byte-identical images and universal perceptual equivalence are not claimed.
++
++The final refresh fences **21,398 consumed inputs**, with zero changes during
++the refresh or final handoff reconciliation. Vehicle-specific routing uses the
++existing dependency manifest; shared and unknown inputs remain guarded.
++Concurrent Challenger-only resources are recorded separately and not restored.
++All eight car configuration controls, Kart steering/model sources, Forklift
++model source, original driver/helmet resources and the main index remain exact.
++
++## Commands and regeneration order
++
++```powershell
++python scripts/run_car_simplification.py piece-bake-scoped res://tests/bake_car_static_reductions.gd --headless
++python scripts/run_car_simplification.py factory-art-final res://tests/bake_model_refinement_art.gd --rendering-method gl_compatibility
++python scripts/refresh_car_simplification.py --art-only
++python scripts/refresh_car_simplification.py
++python scripts/import_car_simplification_images.py
++python scripts/run_car_simplification.py modules-compact res://tests/test_modular_car_assets.gd --headless -- --vehicle=compact --all-kits
++# The same complete matrix ran for kart, forklift, electric and hovercraft.
++python scripts/run_car_simplification.py app-compat res://tests/test_car_simplification_app.gd --rendering-method gl_compatibility
++python scripts/run_car_simplification.py app-mobile res://tests/test_car_simplification_app.gd --rendering-method mobile
++python scripts/summarise_car_simplification.py
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/compare_car_simplification.ps1
++```
++
++Regenerate native recipes after changing their source geometry, then refresh
++the scoped prepared assets and pictures, import the images and run the gates.
++Do not prune recipe resources while prepared scenes still reference them.
++The source-only patch/manifest records the authored implementation separately
++from generated assets and concurrent work; its forward/reverse roundtrip is
++checked in a private small source checkout without staging the main index.
++
++## Retained attempts and limits
++
++The initial hash helper passed an empty buffer to the engine hash API; it now
++skips empty streams, and the accepted bake exits cleanly. A first source-fence
++rejection records the helper edit and concurrent Challenger writes. The final
++scope uses declared dependencies and checks all five revisions rather than
++asserting unrelated Challenger revision stability. Full-catalogue defaults were
++not weakened, and Challenger caches were not rewritten or rekeyed by this task.
++
++The first module matrix rejected nine Rally fitted/ghost/material assertions
++because of the batching-dependent reduction. Moving reduction to source pieces
++and restricting incremental reduction to the new kit frames fixes the cause;
++the original assertions pass unchanged. An initial contour fixture expected
++individual mesh names after batching; it now checks retained attachment groups
++and current geometry/attribute controls.
++
++Superseded native recipe cleanup briefly left stale Electric prepared scenes
++referencing retired task-created files. The stale simple scenes were retired
++and all affected outputs rebuilt. Rejected loader diagnostics remain; accepted
++imports, prepared gates, module matrices and App runs have no such errors.
++Ninety superseded task-only recipe resources were removed; the final recipe set
++and every expected prepared output are present.
++
++Parallel off-screen App tests can lose focus and pause. Their first steering
++fixture mutated state on the same paused tick, which the unchanged presentation
++cache correctly reused. Advancing the private fixture tick makes each requested
++steering state observable; the steering assertions are retained and production
++steering is untouched. Subsequent two-renderer App and native steering gates pass.
++
++A fresh launch and owner appearance acceptance remain. Physical-device frame
++times, memory, thermals and deployment were not performed. No APK, backend
++request, owner-save edit, owner-process restart, main-index staging or deployment
++was performed. Known certificate-store startup diagnostics remain in applicable
++logs. Generated build output is handled by the owner retention policy.
+diff --git a/game/vehicle/car_static_reduction.gd.uid b/game/vehicle/car_static_reduction.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/car_static_reduction.gd.uid
+@@ -0,0 +1 @@
++uid://baeqlovnhwws
+diff --git a/game/vehicle/compact_seam_strip.gd.uid b/game/vehicle/compact_seam_strip.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/compact_seam_strip.gd.uid
+@@ -0,0 +1 @@
++uid://bkus0nsr02x7u
+diff --git a/game/tests/support/car_static_reduction_bake.gd.uid b/game/tests/support/car_static_reduction_bake.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/car_static_reduction_bake.gd.uid
+@@ -0,0 +1 @@
++uid://cl647raxbjlps
+diff --git a/game/tests/bake_car_static_reductions.gd.uid b/game/tests/bake_car_static_reductions.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_car_static_reductions.gd.uid
+@@ -0,0 +1 @@
++uid://c47v05ti4mflm
+diff --git a/game/tests/test_car_simplification.gd.uid b/game/tests/test_car_simplification.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification.gd.uid
+@@ -0,0 +1 @@
++uid://8xr8j3780reo
+diff --git a/game/tests/test_car_simplification_app.gd.uid b/game/tests/test_car_simplification_app.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_app.gd.uid
+@@ -0,0 +1 @@
++uid://baxgs5lxvfdyc
+diff --git a/game/tests/test_car_simplification_hover_lod.gd.uid b/game/tests/test_car_simplification_hover_lod.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_hover_lod.gd.uid
+@@ -0,0 +1 @@
++uid://drw2kvfiqnxpn
+diff --git a/game/tests/test_car_simplification_steering.gd.uid b/game/tests/test_car_simplification_steering.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_simplification_steering.gd.uid
+@@ -0,0 +1 @@
++uid://sbujfaoyydow
+diff --git a/game/tests/capture_car_simplification.gd.uid b/game/tests/capture_car_simplification.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_car_simplification.gd.uid
+@@ -0,0 +1 @@
++uid://03w1kfgwv4rl
+diff --git a/game/tests/measure_car_simplification.gd.uid b/game/tests/measure_car_simplification.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/measure_car_simplification.gd.uid
+@@ -0,0 +1 @@
++uid://bmy07rf0xd1ii

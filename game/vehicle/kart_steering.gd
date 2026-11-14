@@ -3,8 +3,8 @@ extends RefCounted
 const SOURCE_CENTER := Vector3(0,0.54,-0.31)
 const CENTER := Vector3(0,0.54,-0.265)
 const REST := Basis(Vector3.RIGHT,1.15)
-const LOCK: float = PI/5.0
-const STEPS: int = 3
+const LOCK: float = PI/3.0
+const STEPS: int = 5
 const SHOULDER := Vector3(0.177686388,0.698039100,0.376223732)
 const ELBOW := Vector3(0.265192359,0.562773045,0.082504820)
 const WRIST := Vector3(0.188398396,0.544779528,-0.227622445)

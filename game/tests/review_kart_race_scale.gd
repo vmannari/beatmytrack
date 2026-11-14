@@ -1,10 +1,12 @@
 extends SceneTree
 ## Offline source/pose preview; never reads owner records or contacts the backend.
-const OUT: String = "res://../docs/evidence/kart-driver-race-scale-2026-11-12"
+var OUT: String = "res://../docs/evidence/kart-driver-race-scale-2026-11-12"
 
 func _initialize() -> void: run.call_deferred()
 
 func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): OUT = argument.trim_prefix("--evidence-root=")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var before: bool = "--before" in OS.get_cmdline_user_args()
 	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
@@ -46,7 +48,7 @@ func run() -> void:
 	else:
 		imported.free()
 		var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
-		assert(driver != null and driver.mesh.get_blend_shape_count() == 6)
+		assert(driver != null and driver.mesh.get_blend_shape_count() == preload("res://vehicle/kart_steering.gd").STEPS*2)
 		assert(preload("res://vehicle/modular_car_base.gd").hits > 0)
 	ShowroomStudio.build(world,car)
 	var camera := Camera3D.new()

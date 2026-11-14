@@ -13,7 +13,7 @@ func check(ok: bool, label: String) -> void:
 	if not ok: failures += 1; printerr("DRIVER_POLISH_FAIL ",label)
 
 func run() -> void:
-	check(DRIVER.get_blend_shape_count() == 6,"six intermediate left/right poses")
+	check(DRIVER.get_blend_shape_count() == STEERING.STEPS*2,"complete intermediate left/right poses")
 	check(DRIVER.get_faces().size()/3 <= 15000,"bounded native driver triangle budget")
 	var old: ArrayMesh = load(OUT+"/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
 	for surface: int in range(DRIVER.get_surface_count()):
@@ -95,26 +95,26 @@ func run() -> void:
 		if DRIVER.surface_get_material(surface).resource_name == "RT_Gloves": glove_surface = surface
 	var glove: PackedVector3Array = DRIVER.surface_get_arrays(glove_surface)[Mesh.ARRAY_VERTEX]
 	var glove_shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(glove_surface)
-	for input: float in [-1.0,-0.75,-0.5,-0.25,0.0,0.25,0.5,0.75,1.0,0.0]:
+	for input: float in [-1.0,-0.9,-0.8,-0.7,-0.6,-0.5,-0.4,-0.3,-0.2,-0.1,0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.0]:
 		state.steering = input
 		state.tick += 1
 		car.present(Vector2.ZERO,0,state,frame)
-		check(wheel.basis.is_equal_approx(STEERING.REST*Basis(Vector3.UP,-input*PI/5)),"wheel follows input about its inclined shaft")
+		check(wheel.basis.is_equal_approx(STEERING.REST*Basis(Vector3.UP,-input*PI/3)),"wheel follows input about its inclined shaft")
 		check(is_equal_approx(car.front_wheels[0].rotation.y,-input*0.60),"retained front-wheel steering")
 		var total: float = 0
-		for shape: int in range(6): total += driver.get_blend_shape_value(shape)
+		for shape: int in range(DRIVER.get_blend_shape_count()): total += driver.get_blend_shape_value(shape)
 		check(total <= 1.00001 and total >= 0,"bounded interpolation weights")
 		var error: float = 0
 		var rotation: Basis = STEERING.wheel_basis(input)*STEERING.REST.inverse()
 		for index: int in range(glove.size()):
 			var actual: Vector3 = glove[index]*(1-total)
-			for shape: int in range(6): actual += glove_shapes[shape][Mesh.ARRAY_VERTEX][index]*driver.get_blend_shape_value(shape)
+			for shape: int in range(DRIVER.get_blend_shape_count()): actual += glove_shapes[shape][Mesh.ARRAY_VERTEX][index]*driver.get_blend_shape_value(shape)
 			error = maxf(error,actual.distance_to(STEERING.CENTER+rotation*(glove[index]-STEERING.CENTER)))
 		check(error < 0.0015,"both hands follow the rim within 1.5 mm including intermediate inputs")
 		measurements.append({"input":input,"max_grip_error_mm":error*1000})
 		var other: MeshInstance3D = second.body.find_child("TomkartDriver",true,false)
 		var isolated: bool = true
-		for shape: int in range(6): isolated = isolated and other.get_blend_shape_value(shape) == 0
+		for shape: int in range(DRIVER.get_blend_shape_count()): isolated = isolated and other.get_blend_shape_value(shape) == 0
 		check(isolated,"another car sharing the mesh stays in its own pose")
 		if DisplayServer.get_name() != "headless" and input in [-1.0,-0.5,0.0,0.5,1.0]:
 			for shot: Array in [["cockpit",Vector3(1.0,.95,-.9),Vector3(0,.56,-.25)],["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:

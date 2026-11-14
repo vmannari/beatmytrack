@@ -18,7 +18,7 @@ for name in required:
     receipts[name] = receipt
 assert json.loads((OUT / "refresh-source-receipt.json").read_text())["changed"] == []
 before = json.loads((OUT / "task-start-hashes.json").read_text())
-assert hashlib.sha256((ROOT / ".git/index").read_bytes()).hexdigest() == before[".git/index"]
+index_matches_start = hashlib.sha256((ROOT / ".git/index").read_bytes()).hexdigest() == before[".git/index"]
 module_checks = 0
 for name in required[:5]:
     content = (OUT / (name + ".log")).read_text(encoding="utf-8", errors="replace")
@@ -45,6 +45,7 @@ protected_changes = [name for name, sha in before.items()
                      and (ROOT / name).is_file() and hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != sha]
 summary = {"module_checks": module_checks, "prepared_resources": 468, "prepared_checks": 1925,
            "checked_picture_count": 5, "static_helmet_morph_bytes_removed": 495720,
+           "main_index_equals_task_start_at_handoff": index_matches_start,
            "stock_metrics": metrics, "final_receipts": receipts,
            "concurrent_protected_input_changes": protected_changes,
            "limitations": ["Challenger model/picture authoring excluded; concurrent changes preserved.",
@@ -56,4 +57,4 @@ manifest = {p.relative_to(OUT).as_posix(): hashlib.sha256(p.read_bytes()).hexdig
             for p in OUT.rglob("*") if p.is_file() and p.name not in ["artifact-hashes.json", "source-only.patch"]}
 (OUT / "artifact-hashes.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 print(json.dumps({"module_checks": module_checks, "prepared_checks": 1925, "pictures": 5,
-                  "main_index_exact": True, "stock_metrics": metrics}))
+                  "main_index_equals_task_start_at_handoff": index_matches_start, "stock_metrics": metrics}))

@@ -16,7 +16,9 @@ from mathutils.bvhtree import BVHTree
 from mathutils.geometry import delaunay_2d_cdt
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import challenger_detail_geometry as exterior_detail
+import challenger_shell_geometry as shell_geometry
 from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
+from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals, nose_plan_points, nose_plan_normals, nose_corner_field, nose_corner_normals
 
 args = sys.argv[sys.argv.index("--")+1:]
 source, labels_file, output = map(Path,args[:3])
@@ -89,7 +91,7 @@ def smooth(a,b,value):
 
 def nose(points):
     result=np.array(points,copy=True)
-    result[:,2]-=.14*smooth(1.72,2.1171,-result[:,2])
+    result[:,2]=-nose_distance(-result[:,2],result[:,0])[0]
     return result
 
 # Fit the continuous side skin to dense, unmodified exterior samples. Robust
@@ -126,20 +128,14 @@ def side_surface(y,z,sign):
 def hood_y(x,z):return hood_panel.height(x,z)
 
 # Inverse of the local nose warp, also used by side normals after reduction.
-def unwarp_z(z):
-    result=np.asarray(z,dtype=float).copy()
-    for iteration in range(7):
-        t=np.clip((-result-1.72)/(2.1171-1.72),0,1)
-        derivative=1+.14*6*t*(1-t)/(2.1171-1.72)
-        result-=(result-.14*t*t*(3-2*t)-z)/derivative
-    return result,derivative
+def unwarp_z(z,x=0):return nose_inverse(np.asarray(z,dtype=float),x)
 
 def side_normal(x,y,warped_z):
-    z,stretch=unwarp_z(warped_z);e=.0002
+    z,stretch=unwarp_z(warped_z,x);e=.0002
     dy=(side_x(y+e,z)-side_x(y-e,z))/(2*e)
-    dz=(side_x(y,z+e)-side_x(y,z-e))/(2*e*stretch)
+    dz=(side_x(y,z+e)-side_x(y,z-e))/(2*e)
     normal=np.stack([np.sign(np.asarray(x)-body_centre_x),-dy,-dz],axis=-1)
-    return normal/np.linalg.norm(normal,axis=-1,keepdims=True)
+    return nose_normals(np.stack([x,y,z],axis=-1),normal)
 
 def hull2(points):
     values=sorted(set(map(tuple,np.round(points,6))))
@@ -191,6 +187,11 @@ print('FENDER_FAIRING',{s:f[0].stats for s,f in fender_fields.items()},flush=Tru
 paint_index=[i for i,m in enumerate(mesh.materials) if m.name=='Car Paint'][0]
 join_faces=tri[np.isin(component,[1464,1491,1624,1862,4445])&(mi==paint_index)]
 join_fairing=PanelJoinFairing(BVHTree.FromPolygons(clean_body.tolist(),join_faces.tolist(),all_triangles=True),body_centre_x)
+hood_edges=np.sort(np.concatenate([top_faces[:,[0,1]],top_faces[:,[1,2]],top_faces[:,[2,0]]]),axis=1)
+hood_edge_ids,hood_edge_counts=np.unique(hood_edges,axis=0,return_counts=True)
+reference_hood_boundary=fitted_body[np.unique(hood_edge_ids[hood_edge_counts==1])]
+reference_body=ReferenceBody(side_panel,reference_hood_boundary)
+(output/'reference_profile.json').write_text(json.dumps({'centre_x':body_centre_x,'y':side_panel.a.tolist(),'z':side_panel.b.tolist(),'widths':side_panel.grid.values.tolist()}),encoding='utf-8')
 print('PANEL_JOIN_FAIRING',join_fairing.stats,flush=True)
 (output/'join_fairing.json').write_text(json.dumps({'centre_x':body_centre_x,'patches':[[*p[:-1],p[-1].tolist()] for p in join_fairing.patches]}),encoding='utf-8')
 (output/'hood_profile.json').write_text(json.dumps(hood_panel.profile(),separators=(',',':')),encoding='utf-8')
@@ -263,8 +264,7 @@ def build_fender_charts(add,simple):
             direction=np.array([sign*np.sin(angle),np.cos(angle),0.0]);origin=np.array([field.cx,field.cy,z])+2*direction
             return bvh.ray_cast(origin.tolist(),(-direction).tolist(),2)[0] is not None
         triangles=[f for f in triangles if on_source(f)]
-        normals=field.normal(parameters[:,0],parameters[:,1]);_,stretch=unwarp_z(nose(vertices)[:,2])
-        normals[:,2]/=stretch;normals/=np.linalg.norm(normals,axis=1,keepdims=True)
+        normals=nose_normals(vertices,field.normal(parameters[:,0],parameters[:,1]))
         triangles=[tuple(reversed(f)) if np.cross(vertices[f[1]]-vertices[f[0]],vertices[f[2]]-vertices[f[0]])@normals[list(f)].mean(0)<0 else f for f in triangles]
         add('FairFrontFender'+str(sign),vertices,triangles,'paint','body',orient=False,normal_values=normals)
 
@@ -359,7 +359,7 @@ def reduce(obj, target):
     if obj.name.split('.')[0] in ['body_1464','body_1491']:
         coords=np.asarray([v.co[:] for v in obj.data.vertices])
         xs,ys,zs=coords[:,0],coords[:,2],-coords[:,1]
-        source_z,_=unwarp_z(zs)
+        source_z,_=unwarp_z(zs,xs)
         field_normals=side_normal(xs,ys,zs)[:,[0,2,1]];field_normals[:,1]*=-1
         field_weights=side_weight(ys,source_z)
         caps=np.sqrt(((ys-CAP_Y)/CAP_RY)**2+((source_z-CAP_Z)/CAP_RZ)**2)
@@ -370,7 +370,7 @@ def reduce(obj, target):
             selected=(xs*sign>.65)&(ys>.65)&(ys<1.08)&(source_z>-2.03)&(source_z<-.70)
             points=np.c_[xs[selected],ys[selected],source_z[selected]];angle,z=field.parameters(points)
             angle=np.clip(angle,.10,1.40)
-            n=field.normal(angle,z);_,stretch=unwarp_z(zs[selected]);n[:,2]/=stretch;n/=np.linalg.norm(n,axis=1,keepdims=True)
+            n=nose_normals(points,field.normal(angle,z))
             front_normals[selected]=n[:,[0,2,1]]*np.array([1,-1,1])
             front_weights[selected]=smooth(.65,.72,abs(xs[selected]))*smooth(-2.03,-1.99,z)*(1-smooth(-.78,-.70,z))*smooth(.65,.72,ys[selected])*(1-smooth(1.02,1.08,ys[selected]))
         values=[]
@@ -395,7 +395,7 @@ def reduce(obj, target):
     return len(obj.data.loop_triangles)
 
 def body_target(key, count, simple):
-    explicit={1464:(8700,5200),1491:(3000,2400),1572:(5000,3000),1624:(2400,1500),2149:(2000,1200),
+    explicit={1464:(6200,3000),1491:(2800,2200),1572:(5000,3000),1624:(2400,1500),2149:(2000,1200),
               1862:(700,420),4445:(700,420),2790:(900,450)}
     if key in explicit:return explicit[key][1 if simple else 0]
     return min(count,max(40 if simple else 72,int(count*(.018 if simple else .035))))
@@ -495,8 +495,8 @@ for simple in [False,True]:
             normals=np.asarray(normal_values)[:,[0,2,1]];normals[:,1]*=-1
             data.normals_split_custom_set([normals[loop.vertex_index] for loop in data.loops])
         if group=='hood' and role=='paint':
-            points=np.asarray([v.co[:] for v in data.vertices]);z,stretch=unwarp_z(-points[:,1])
-            normals=hood_panel.normal(points[:,0],z);normals[:,2]/=stretch
+            points=np.asarray([v.co[:] for v in data.vertices]);z,stretch=unwarp_z(-points[:,1],points[:,0])
+            normals=nose_normals(np.c_[points[:,0],points[:,2],z],hood_panel.normal(points[:,0],z))
             normals/=np.linalg.norm(normals,axis=1,keepdims=True)
             normals=normals[:,[0,2,1]];normals[:,1]*=-1
             data.normals_split_custom_set([normals[loop.vertex_index] for loop in data.loops])
@@ -621,35 +621,80 @@ for simple in [False,True]:
                 face.append(lookup[identity])
                 normals.append(tuple(obj.data.corner_normals[loop].vector))
             faces.append(face)
-        if group=='body' and role in ['paint','contour']:
+        if group=='body' and role in ['paint','contour','amber']:
             if '--debug-cache' in args:
                 np.savez_compressed(output/(tier+'_'+role+'_unfaired.npz'),vertices=np.asarray(vertices),loops=np.array([v for f in faces for v in f]),counts=np.array([len(f) for f in faces]),normals=np.asarray(normals))
             points=np.asarray(vertices)[:,[0,2,1]]*np.array([1,1,-1])
-            source_z,stretch=unwarp_z(points[:,2]);points[:,2]=source_z
+            source_z,stretch=unwarp_z(points[:,2],points[:,0]);points[:,2]=source_z
             loop_vertices=np.array([v for face in faces for v in face])
             loop_normals=np.asarray(normals)[:,[0,2,1]]*np.array([1,1,-1])
+            _,stretch,shear=nose_distance(-points[:,2],points[:,0])
+            loop_normals[:,0]+=shear[loop_vertices]*loop_normals[:,2]
             loop_normals[:,2]*=stretch[loop_vertices]
             loop_normals/=np.maximum(np.linalg.norm(loop_normals,axis=1,keepdims=True),1e-12)
             if role=='paint':
                 counts=np.array([len(f) for f in faces])
                 points,loop_vertices,counts,loop_normals=join_fairing.remesh_corners(points,loop_vertices,counts,loop_normals,simple)
                 faces=np.arange(len(points)).reshape(-1,3).tolist()
-                _,stretch=unwarp_z(nose(points)[:,2])
             vertex_normals=np.zeros_like(points);np.add.at(vertex_normals,loop_vertices,loop_normals)
             vertex_normals/=np.maximum(np.linalg.norm(vertex_normals,axis=1,keepdims=True),1e-12)
             if role=='contour':points-=vertex_normals*.0018
             faired,faired_vertex_normals=join_fairing.apply(points,vertex_normals)
             if role=='contour':faired+=faired_vertex_normals*.0018
             _,faired_normals=join_fairing.apply(points[loop_vertices],loop_normals)
+            if '--debug-cache' in args:
+                np.savez_compressed(output/(tier+'_'+role+'_reference_input.npz'),points=faired,faces=np.asarray(faces),normals=faired_normals)
+            if role=='paint':
+                faired,reference_faces,faired_normals=reference_body.mesh(faired,faces,faired_normals)
+                faired,reference_faces,faired_normals,strip_stats=shell_geometry.shoulder_strip(reference_body,faired,reference_faces,faired_normals,simple)
+                faces=reference_faces.tolist()
+                loop_vertices=np.arange(len(faired))
+            elif role=='contour':
+                faired-=faired_vertex_normals*.0018
+                faired,reference_normals=reference_body.apply(faired,faired_vertex_normals,contour=True)
+                faired_normals=reference_normals[loop_vertices]
+            else:
+                # Attached markers keep their original longitudinal size;
+                # move their centres with the shell and refit each corner.
+                for sign in [-1,1]:
+                    ids=np.flatnonzero(faired[:,0]*sign>0)
+                    if not len(ids):continue
+                    centre_z=float(np.mean(faired[ids,2]));centre_x=float(np.mean(faired[ids,0]))
+                    world_z=-nose_distance(-centre_z,centre_x)[0]+faired[ids,2]-centre_z
+                    faired[ids,2]=unwarp_z(world_z,faired[ids,0])[0]
+                    for i in ids:
+                        hit=reference_body.outer.ray_cast((float(sign*2),float(faired[i,1]),float(faired[i,2])),(-sign,0,0),2)[0]
+                        if hit is not None:faired[i,0]=hit.x
+                faired,reference_normals=reference_body.apply(faired,faired_vertex_normals)
+                faired+=reference_normals*.003
+                faired_normals=reference_normals[loop_vertices]
             vertices=blender(nose(faired)).tolist()
-            faired_normals[:,2]/=stretch[loop_vertices]
+            faired_normals=nose_normals(faired[loop_vertices],faired_normals)
             faired_normals/=np.maximum(np.linalg.norm(faired_normals,axis=1,keepdims=True),1e-12)
             normals=(faired_normals[:,[0,2,1]]*np.array([1,-1,1])).tolist()
+        # One final plan deformation for all joined exterior layers. Keeping it
+        # after the side/bonnet fitting prevents the old side-only width blend
+        # from leaving a projecting cap or trim at the front corners.
+        if not group.startswith('wheel_'):
+            world_points=np.asarray(vertices)[:,[0,2,1]]*np.array([1,1,-1])
+            world_normals=np.asarray(normals)[:,[0,2,1]]*np.array([1,1,-1])
+            loop_ids=np.array([v for face in faces for v in face])
+            world_normals=nose_plan_normals(world_points[loop_ids],world_normals)
+            world_points=nose_plan_points(world_points)
+            world_normals=nose_corner_normals(world_points[loop_ids],world_normals)
+            vertices=blender(nose_corner_field(world_points)[0]).tolist()
+            normals=(world_normals[:,[0,2,1]]*np.array([1,-1,1])).tolist()
         data=bpy.data.meshes.new(group+'__'+role);data.from_pydata(vertices,[],faces);data.materials.append(materials[role]);data.update()
         for polygon in data.polygons:polygon.use_smooth=True
         data.set_sharp_from_angle(angle=math.radians(52))
         data.normals_split_custom_set(normals)
         obj=bpy.data.objects.new(group+'__'+role,data);bpy.context.scene.collection.objects.link(obj);exports.append(obj)
+        if group=='body' and role=='paint':
+            shell_stats=shell_geometry.refine(obj,simple)
+            print('JOINED_SHELL',tier,shell_stats,flush=True)
+    paint_shell=next(obj for obj in exports if obj.name=='body__paint')
+    contour_shell=next(obj for obj in exports if obj.name=='body__contour')
+    fitted_contours=shell_geometry.fit_contours(paint_shell,contour_shell)
     bpy.ops.object.select_all(action='DESELECT')
     for obj in pieces:obj.hide_set(True);obj.hide_render=True
     for obj in exports:obj.select_set(True)
@@ -662,6 +707,9 @@ for simple in [False,True]:
         obj.data.calc_loop_triangles();total+=len(obj.data.loop_triangles)
     statistics.append({'detail':'continuous corner seam replacement','after':total-sum(row.get('after',0) for row in statistics)})
     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
+    record['tiers'][tier]['joined_shell']=shell_stats
+    record['tiers'][tier]['shoulder_strips']=strip_stats
+    record['tiers'][tier]['fitted_contour_vertices']=fitted_contours
     print('CHALLENGER_EXPORT',tier,total,len(exports),flush=True)
     for obj in exports:obj.hide_set(True);obj.hide_render=True;obj.name='ARCHIVE_'+tier+'_'+obj.name
 for o in original_wheels.values():o.data.calc_loop_triangles()
@@ -671,5 +719,9 @@ record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source 
 record['opaque_glazing']='Single smooth opaque exterior panes, 2% pane overlap and an opaque low-poly backing inset clear of the panes. No cabin contents or rig.'
 record['refinement']={'nose_extension_metres':.14,'nose_stretch_starts_z':-1.72,'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,'side_surface':side_panel.stats,'fitted_hood_height_reference':hood_panel.stats,'hood':'source-sampled retopology constrained to original boundary, apertures and raised shoulders; measured smooth tangent field','fuel_and_handles':'no protruding source detail meshes','glazing':'single exterior pane skins; one measured tangent field per pane','glazing_backing_inset_scale':.93,'exterior_details':'four projectors, light guides, open honeycomb grille, smoked rear applique without overlapping original trim, rolled oval exhaust tips'}
 record['refinement']['panel_joins']={'method':'four measured radial fairings with common geometry and tangents; clipped and constrained continuous corner skins','fits':join_fairing.stats}
+record['refinement']['reference_body']={'source':'owner photograph supplied 2026-11-13','character_line':'crease-aligned topology with 1.5 mm analytic fillet','nose':'fuller, near-vertical outer flank below the shoulder','crease_z':ReferenceBody.Z,'crease_y':ReferenceBody.Y}
+record['refinement']['reference_body']['nose_transform']='shared monotone front compression and outer-corner advance; original 14 cm leading extension retained'
+record['refinement']['reference_body']['nose_plan']='shared C2 transverse taper continues the wing curvature through the front corners; no separate side flare'
+record['refinement']['reference_body']['nose_corners']='graduated 1.5 to 13.5 mm shoulder fillet; shared outer lip downturn up to 18 mm and rounded corner return up to 16 mm'
 (output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
 print('CHALLENGER_PREPARED',output,flush=True)

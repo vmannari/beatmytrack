@@ -1,0 +1,317 @@
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -177,6 +177,11 @@
+ 
+ static func _operator(car: CarVisual, seat: Material, rubber: Material, dark: Material, steel: Material, bright: Material, detail: int) -> void:
+ 	var parent: Node3D = car.body
++	# Floor-mounted supports overlap the floor and the fittings they carry.
++	# Keep the suspension travel, driving position and control reach unchanged.
++	_box(parent,Vector3(0.57,0.15,0.52),Vector3(0,0.925,0.25),0.025,dark,detail,"SeatPlinth")
++	_box(parent,Vector3(0.65,0.35,0.22),Vector3(0,1.015,-0.66),0.035,dark,detail,"DashboardPedestal")
++	_box(parent,Vector3(0.36,0.25,0.32),Vector3(0.465,0.965,-0.10),0.025,dark,detail,"HydraulicControlConsole")
+ 	_box(parent,Vector3(0.49,0.15,0.44),Vector3(0,1.02,0.25),0.035,steel,detail,"SeatSuspension")
+ 	for side: float in [-1.0,1.0]:
+ 		_box(parent,Vector3(0.04,0.06,0.59),Vector3(side*0.21,1.10,0.24),0.013,dark,detail,"SeatRail")
+--- /dev/null
++++ b/game/tests/test_forklift_operator_supports.gd
+@@ -0,0 +1,58 @@
++extends SceneTree
++## Floor-to-fitting connections, in model coordinates at both detail levels.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func bounds(car: CarVisual, part: MeshInstance3D) -> AABB:
++	return car.body.global_transform.affine_inverse()*part.global_transform*part.mesh.get_aabb()
++
++func run() -> void:
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "forklift"
++		car.simple_model = simple
++		car.batch_parts = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		if "--baseline" in OS.get_cmdline_user_args():
++			car.graphics.restore_originals()
++			for child: Node in car.body.get_children(): child.free()
++			load("res://../docs/evidence/forklift-operator-supports-2026-11-13/before/forklift_model.gd").build(car)
++		var floor_part: MeshInstance3D = car.find_child("OperatorFloor",true,false)
++		var floor_box: AABB = bounds(car,floor_part)
++		for pair: Array in [["SeatPlinth","SeatSuspension"],["DashboardPedestal","InstrumentConsole"],["HydraulicControlConsole","LeverGaiter"]]:
++			var support: MeshInstance3D = car.find_child(pair[0],true,false)
++			var fittings: Array[Node] = car.find_children(str(pair[1])+"*","MeshInstance3D",true,false)
++			checks += 1
++			if fittings.is_empty():
++				failures += 1
++				print("FAIL missing fitting ",pair[1])
++			checks += 1
++			if support == null:
++				failures += 1
++				print("FAIL missing support ",pair[0])
++				continue
++			var support_box: AABB = bounds(car,support)
++			if not support_box.intersects(floor_box):
++				failures += 1
++				print("FAIL floor connection ",pair[0])
++			for fitting: MeshInstance3D in fittings:
++				checks += 1
++				if not support_box.intersects(bounds(car,fitting)):
++					failures += 1
++					print("FAIL fitting connection ",fitting.name)
++		var control: MeshInstance3D = car.find_child("HydraulicControlConsole",true,false)
++		if control != null:
++			for index: int in range(3):
++				checks += 1
++				if not bounds(car,control).has_point(Vector3(0.36+index*0.105,1.08,-0.10)):
++					failures += 1
++					print("FAIL control mounting ",index)
++		car.free()
++	print("FORKLIFT_OPERATOR_SUPPORTS: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/capture_forklift_operator_supports.gd
+@@ -0,0 +1,42 @@
++extends SceneTree
++## Settled native operator-support views using the production Garage world.
++var output: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	assert(not output.is_empty())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	if not prepared:
++		preload("res://vehicle/modular_car_base.gd").enabled = false
++		preload("res://vehicle/prepared_car_cache.gd").enabled = false
++		preload("res://ui/garage_car_cache.gd").enabled = false
++	root.size = Vector2i(1280,960)
++	root.content_scale_size = root.size
++	var showroom := CarShowroom.new()
++	showroom.vehicle_id = "forklift"
++	showroom.garage_mode = true
++	showroom.livery = VehicleLivery.defaults("forklift")
++	root.add_child(showroom)
++	MenuStyle.fill(showroom)
++	while not showroom.showroom_ready: await process_frame
++	var poses: Dictionary = {
++		"controls": [Vector3(2.8,1.85,-1.6),Vector3(0.22,1.12,-0.12)],
++		"seat": [Vector3(-2.8,1.55,-0.2),Vector3(0,1.12,0.12)]
++	}
++	for label: String in poses:
++		var pose: Array = poses[label]
++		var transform: Transform3D = showroom.car.body.global_transform
++		showroom.camera.look_at_from_position(transform*pose[0],transform*pose[1])
++		showroom.invalidate_render()
++		if showroom.reflections != null: showroom.reflections.sync()
++		for tick: int in range(8): await process_frame
++		await RenderingServer.frame_post_draw
++		assert(showroom.showroom_viewport.get_texture().get_image().save_png(output.path_join(label+".png")) == OK)
++	showroom.free()
++	print("FORKLIFT_OPERATOR_CAPTURE: 2 native views; prepared=",prepared)
++	quit()
+--- /dev/null
++++ b/scripts/run_forklift_operator_supports.py
+@@ -0,0 +1,51 @@
++"""Pinned dev entry point with private disposable profiles and concise receipts."""
++import os
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/forklift-operator-supports-2026-11-13"
++WORK = ROOT / "build/forklift-operator-supports-2026-11-13"
++
++
++def run(label, script, *options):
++    env = os.environ.copy()
++    profile = WORK / "profiles" / label
++    profile.mkdir(parents=True, exist_ok=True)
++    (profile / "local").mkdir(exist_ok=True)
++    env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="", PYTHONIOENCODING="utf-8")
++    def quote(value):
++        return "'"+str(value).replace("'", "''")+"'"
++
++    invocation = "& "+quote(ROOT / "scripts/dev.ps1")
++    invocation += " -Action Import" if script == "IMPORT" else " -Action TestScript -ScriptPath "+quote(script)
++    invocation += " -CommandTimeoutSeconds 600"
++    index = 0
++    while index < len(options):
++        option = options[index]
++        if option == "-TestArgument":
++            invocation += " -TestArgument @("+",".join(quote(x) for x in options[index+1:])+")"
++            break
++        assert option in ("-Graphical", "-RenderingMethod"), option
++        invocation += " "+option
++        if option == "-RenderingMethod":
++            index += 1
++            invocation += " "+quote(options[index])
++        index += 1
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", invocation]
++    OUT.mkdir(parents=True, exist_ok=True)
++    with (OUT / f"{label}.log").open("w", encoding="utf-8") as log:
++        result = subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    lines = (OUT / f"{label}.log").read_text(encoding="utf-8").splitlines()
++    (OUT / f"{label}-command.json").write_text(
++        json.dumps({"command": command, "exit_code": result.returncode}, indent=2), encoding="utf-8")
++    print("\n".join(lines[-14:]), flush=True)
++    if result.returncode:
++        raise SystemExit(result.returncode)
++
++
++if __name__ == "__main__":
++    run(*sys.argv[1:])
+--- /dev/null
++++ b/scripts/refresh_forklift_operator_supports.py
+@@ -0,0 +1,23 @@
++"""Refresh only the forklift dependency scope through the pinned dev entry."""
++import subprocess
++import sys
++from run_forklift_operator_supports import ROOT, run
++
++for label, script in (
++    ("shadows", "bake_forklift_racing_shadows"),
++):
++    run(label, "res://tests/"+script+".gd", "-TestArgument", "--vehicle=forklift")
++for label, script in (
++    ("profile-art", "bake_model_refinement_art"),
++    ("livery-art", "bake_livery_previews"),
++    ("news-art", "bake_news_car_photos"),
++):
++    args = ["--vehicle=forklift"]
++    if label == "news-art":
++        args.append("--evidence-root=res://../docs/evidence/forklift-operator-supports-2026-11-13/news")
++    run(label, "res://tests/"+script+".gd", "-Graphical",
++        "-RenderingMethod", "gl_compatibility", "-TestArgument", *args)
++subprocess.run([sys.executable, "scripts/refresh_forklift_support_dependencies.py"],
++               cwd=ROOT, check=True)
++run("prepared-kits", "res://tests/test_forklift_prepared_kits.gd")
++run("garage-race", "res://tests/test_forklift_garage.gd")
+--- /dev/null
++++ b/scripts/refresh_forklift_support_dependencies.py
+@@ -0,0 +1,26 @@
++"""Rebuild shared prepared dependencies after the livery photograph update."""
++import json
++import subprocess
++import sys
++from refresh_forklift_front_panel import sources
++from run_forklift_operator_supports import OUT, ROOT, run
++
++before = sources()
++(OUT / "dependency-inputs.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++run("dependency-bases", "res://tests/bake_modular_car_bases.gd")
++for vehicle in ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally"):
++    run("dependency-kits-"+vehicle, "res://tests/bake_modular_car_kits.gd",
++        "-TestArgument", "--vehicle="+vehicle)
++run("dependency-garage", "res://tests/bake_garage_cars.gd")
++run("dependency-header", "res://tests/bake_header_simple_compact.gd")
++after = sources()
++drift = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
++(OUT / "dependency-source-receipt.json").write_text(json.dumps(
++    {"inputs":len(before), "changed":drift}, indent=2), encoding="utf-8")
++assert not drift, "Source changes during prepared refresh; retained rather than overwritten"
++run("final-catalogue", "res://tests/bake_forklift_front_catalogue.gd", "-Graphical",
++    "-RenderingMethod", "gl_compatibility")
++run("full-preflight", "res://tests/check_prepared_assets.gd")
++with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++    subprocess.run([sys.executable, "scripts/check_garage_previews.py"],cwd=ROOT,
++                   stdout=log,stderr=subprocess.STDOUT,check=True)
+--- /dev/null
++++ b/scripts/checkpoint_forklift_operator_supports.py
+@@ -0,0 +1,41 @@
++"""Create and round-trip a small source-only review patch without staging."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++from run_forklift_operator_supports import OUT, ROOT, WORK
++
++files = ["game/vehicle/forklift_model.gd", "game/tests/test_forklift_operator_supports.gd",
++         "game/tests/capture_forklift_operator_supports.gd",
++         "scripts/run_forklift_operator_supports.py", "scripts/refresh_forklift_operator_supports.py",
++         "scripts/refresh_forklift_support_dependencies.py", "scripts/checkpoint_forklift_operator_supports.py"]
++files.append("scripts/verify_forklift_operator_supports.py")
++files.append("scripts/repair_forklift_operator_supports.py")
++scratch = WORK / "checkpoint"
++patch = OUT / "source-changes.patch"
++changes = []
++expected = {}
++for name in files:
++    original = (OUT / "before/forklift_model.gd").read_bytes() if name == files[0] else b""
++    current = (ROOT / name).read_bytes()
++    target = scratch / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    if original:
++        target.write_bytes(original)
++    changes.extend(difflib.unified_diff(original.decode("utf-8").splitlines(True),
++        current.decode("utf-8").splitlines(True),
++        fromfile="a/"+name if original else "/dev/null", tofile="b/"+name))
++    expected[name] = (original, current)
++patch.write_bytes("".join(changes).encode("utf-8"))
++base = ["git", "apply", "--directory="+scratch.relative_to(ROOT).as_posix()]
++for args in (["--check"], [], ["--reverse", "--check"], ["--reverse"]):
++    subprocess.run(base+args+[str(patch)], cwd=ROOT, check=True)
++    if args == []:
++        assert all((scratch / name).read_bytes() == current for name, (_, current) in expected.items())
++assert (scratch / files[0]).read_bytes() == expected[files[0]][0]
++assert all(not (scratch / name).exists() for name in files[1:])
++(OUT / "checkpoint-receipt.json").write_text(json.dumps({
++    "files":{name:hashlib.sha256(current).hexdigest() for name, (_, current) in expected.items()},
++    "forward_exact":True, "reverse_exact":True, "main_index_written":False},indent=2), encoding="utf-8")
++print("FORKLIFT_SUPPORT_CHECKPOINT: forward and reverse byte-exact")
+--- /dev/null
++++ b/scripts/verify_forklift_operator_supports.py
+@@ -0,0 +1,9 @@
++"""Focused geometry, prepared-model and Garage/race regressions."""
++from run_forklift_operator_supports import run
++
++run("final-supports", "res://tests/test_forklift_operator_supports.gd")
++run("final-garage-race", "res://tests/test_forklift_garage.gd")
++run("final-parse", "res://tests/check_model_refinement_parse.gd")
++run("final-operator-view", "res://tests/capture_forklift_operator_supports.gd",
++    "-Graphical", "-RenderingMethod", "gl_compatibility", "-TestArgument",
++    "--prepared", "--output=res://../docs/evidence/forklift-operator-supports-2026-11-13/prepared-close")
+--- /dev/null
++++ b/scripts/repair_forklift_operator_supports.py
+@@ -0,0 +1,29 @@
++"""Publish a source-fenced forklift scope after concurrent shared-source writes."""
++import json
++import time
++from refresh_forklift_front_panel import sources
++from run_forklift_operator_supports import OUT, run
++
++before = sources()
++time.sleep(15)
++assert before == sources(), "Shared sources still changing; no scoped bake started"
++(OUT / "repair-inputs.json").write_text(json.dumps(before,indent=2),encoding="utf-8")
++for label, script in (("bases","bake_modular_car_bases"),
++                      ("kits","bake_modular_car_kits"),
++                      ("garage","bake_garage_cars")):
++    run("repair-"+label,"res://tests/"+script+".gd","-TestArgument","--vehicle=forklift")
++after = sources()
++drift = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
++(OUT / "repair-source-receipt.json").write_text(json.dumps(
++    {"inputs":len(before),"changed":drift},indent=2),encoding="utf-8")
++assert not drift, "Concurrent sources changed; validation remains unqualified"
++run("repair-preflight","res://tests/check_prepared_assets.gd","-TestArgument",
++    *["--exclude-vehicle="+v for v in ("compact","kart","electric","hovercraft","super_rally")])
++run("repair-prepared-kits","res://tests/test_forklift_prepared_kits.gd")
++run("repair-garage-race","res://tests/test_forklift_garage.gd")
++run("repair-parse","res://tests/check_model_refinement_parse.gd")
++run("repair-catalogue","res://tests/bake_forklift_front_catalogue.gd","-Graphical",
++    "-RenderingMethod","gl_compatibility")
++run("repair-close","res://tests/capture_forklift_operator_supports.gd","-Graphical",
++    "-RenderingMethod","gl_compatibility","-TestArgument","--prepared",
++    "--output=res://../docs/evidence/forklift-operator-supports-2026-11-13/prepared-close")

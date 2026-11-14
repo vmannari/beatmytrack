@@ -38,10 +38,12 @@ func run() -> void:
 	var head: ArrayMesh = load(ROOT+"helmet_static.res")
 	if "--before" in OS.get_cmdline_user_args(): mesh = old; head = old_head
 	check(mesh.get_faces().size()==old.get_faces().size() and head.get_faces().size()==old_head.get_faces().size(),"native triangle budget retained")
-	check(mesh.get_surface_count()==2 and head.get_surface_count()==4 and mesh.get_blend_shape_count()==6,"moving cloth and static helmet roles retained")
+	check(mesh.get_surface_count()==2 and head.get_surface_count()==4 and mesh.get_blend_shape_count()==preload("res://vehicle/kart_steering.gd").STEPS*2,"moving cloth and static helmet roles retained")
 	var old_packet: Dictionary = old.get("_surfaces")[0]
 	var packet: Dictionary = mesh.get("_surfaces")[0]
-	for key: String in ["vertex_data","attribute_data","index_data","blend_shapes"]: check(packet.get(key)==old_packet.get(key),"raw glove/contact packet retained "+key)
+	# Steering travel has been enlarged; protect the neutral grip packet here.
+	# Posed grip fidelity at every new target/midpoint is checked by driver_polish.
+	for key: String in ["vertex_data","attribute_data","index_data"]: check(packet.get(key)==old_packet.get(key),"raw neutral glove/contact packet retained "+key)
 	var arrays: Array = mesh.surface_get_arrays(1)
 	var prior: Array = old.surface_get_arrays(1)
 	for attribute: int in [Mesh.ARRAY_INDEX,Mesh.ARRAY_COLOR,Mesh.ARRAY_TEX_UV]: check(arrays[attribute]==prior[attribute],"sewn topology and cloth attributes retained "+str(attribute))
@@ -56,7 +58,7 @@ func run() -> void:
 	check(fixed and count>600,"hips, legs, soles and supported back retain their fitted positions")
 	var poses: Array[Array] = [arrays]
 	poses.append_array(mesh.surface_get_blend_shape_arrays(1))
-	for pose: int in range(7):
+	for pose: int in range(poses.size()):
 		var points: PackedVector3Array = poses[pose][Mesh.ARRAY_VERTEX]
 		var normals: PackedVector3Array = poses[pose][Mesh.ARRAY_NORMAL]
 		var finite: bool = points.size()==arrays[Mesh.ARRAY_VERTEX].size()

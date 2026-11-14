@@ -28,14 +28,14 @@ func pose(input: float) -> ArrayMesh:
 	dummy.mesh = DRIVER
 	preload("res://vehicle/kart_steering.gd").present(null,dummy,input)
 	var total: float = 0
-	for shape: int in range(6): total += dummy.get_blend_shape_value(shape)
+	for shape: int in range(DRIVER.get_blend_shape_count()): total += dummy.get_blend_shape_value(shape)
 	for surface: int in range(DRIVER.get_surface_count()):
 		var arrays: Array = DRIVER.surface_get_arrays(surface)
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		var shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(surface)
 		for index: int in range(vertices.size()):
 			vertices[index] *= 1-total
-			for shape: int in range(6): vertices[index] += shapes[shape][Mesh.ARRAY_VERTEX][index]*dummy.get_blend_shape_value(shape)
+			for shape: int in range(DRIVER.get_blend_shape_count()): vertices[index] += shapes[shape][Mesh.ARRAY_VERTEX][index]*dummy.get_blend_shape_value(shape)
 		arrays[Mesh.ARRAY_VERTEX] = vertices
 		result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
 	dummy.free()
@@ -46,7 +46,7 @@ func run() -> void:
 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
 	preload("res://ui/garage_car_cache.gd").enabled = false
 	var poses: Dictionary = {}
-	for input: float in [-1.0,-0.5,0.0,0.5,1.0]: poses[input] = pose(input)
+	for input: float in [-1.0,-0.9,-0.8,-0.7,-0.6,-0.5,-0.4,-0.3,-0.2,-0.1,0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]: poses[input] = pose(input)
 	for simple: bool in [false,true]:
 		for category: String in ["hood","body"]:
 			for option: Array in VehicleCustomisation.options(category,"kart"):

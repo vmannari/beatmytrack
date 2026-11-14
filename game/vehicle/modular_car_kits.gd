@@ -25,8 +25,8 @@ static func key_for(car: CarVisual, category: String, option: String) -> Array:
 	if car.model_id == "compact" and category == "body": key.append("rally-body-2")
 	if car.model_id == "compact" and category == "aero": key.append("rally-aero-2")
 	if car.model_id == "electric": key.append("volt-visible-kits-2")
-	if car.model_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
-	if car.model_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
+	if car.model_id == "electric" and category == "body": key.append(load("res://vehicle/electric_body_kits.gd").REVISION)
+	if car.model_id == "electric" and category == "hood": key.append(load("res://vehicle/electric_kits.gd").HOOD_REVISION)
 	return key
 
 static func path_for(car: CarVisual, category: String, option: String) -> String:
@@ -87,7 +87,7 @@ static func _open(car: CarVisual, category: String, option: String) -> Dictionar
 	var data: Dictionary = holder.get_meta("modular_kit",{})
 	if data.get("key",[]) != key_for(car,category,option): holder.free(); return {}
 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
-		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+		var validation=load("res://vehicle/prepared_asset_sources.gd")
 		if not source_hashes.has(car.model_id):
 			var current: Dictionary=validation.runtime_hashes(car.model_id)
 			current["vehicle/modular_car_kits.gd"]=FileAccess.get_sha256("res://vehicle/modular_car_kits.gd")

@@ -1,0 +1,444 @@
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -17,6 +17,7 @@
+ sys.path.insert(0,str(Path(__file__).resolve().parent))
+ import challenger_detail_geometry as exterior_detail
+ from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
++from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals
+ 
+ args = sys.argv[sys.argv.index("--")+1:]
+ source, labels_file, output = map(Path,args[:3])
+@@ -89,7 +90,7 @@
+ 
+ def nose(points):
+     result=np.array(points,copy=True)
+-    result[:,2]-=.14*smooth(1.72,2.1171,-result[:,2])
++    result[:,2]=-nose_distance(-result[:,2],result[:,0])[0]
+     return result
+ 
+ # Fit the continuous side skin to dense, unmodified exterior samples. Robust
+@@ -126,20 +127,14 @@
+ def hood_y(x,z):return hood_panel.height(x,z)
+ 
+ # Inverse of the local nose warp, also used by side normals after reduction.
+-def unwarp_z(z):
+-    result=np.asarray(z,dtype=float).copy()
+-    for iteration in range(7):
+-        t=np.clip((-result-1.72)/(2.1171-1.72),0,1)
+-        derivative=1+.14*6*t*(1-t)/(2.1171-1.72)
+-        result-=(result-.14*t*t*(3-2*t)-z)/derivative
+-    return result,derivative
++def unwarp_z(z,x=0):return nose_inverse(np.asarray(z,dtype=float),x)
+ 
+ def side_normal(x,y,warped_z):
+-    z,stretch=unwarp_z(warped_z);e=.0002
++    z,stretch=unwarp_z(warped_z,x);e=.0002
+     dy=(side_x(y+e,z)-side_x(y-e,z))/(2*e)
+-    dz=(side_x(y,z+e)-side_x(y,z-e))/(2*e*stretch)
++    dz=(side_x(y,z+e)-side_x(y,z-e))/(2*e)
+     normal=np.stack([np.sign(np.asarray(x)-body_centre_x),-dy,-dz],axis=-1)
+-    return normal/np.linalg.norm(normal,axis=-1,keepdims=True)
++    return nose_normals(np.stack([x,y,z],axis=-1),normal)
+ 
+ def hull2(points):
+     values=sorted(set(map(tuple,np.round(points,6))))
+@@ -191,6 +186,11 @@
+ paint_index=[i for i,m in enumerate(mesh.materials) if m.name=='Car Paint'][0]
+ join_faces=tri[np.isin(component,[1464,1491,1624,1862,4445])&(mi==paint_index)]
+ join_fairing=PanelJoinFairing(BVHTree.FromPolygons(clean_body.tolist(),join_faces.tolist(),all_triangles=True),body_centre_x)
++hood_edges=np.sort(np.concatenate([top_faces[:,[0,1]],top_faces[:,[1,2]],top_faces[:,[2,0]]]),axis=1)
++hood_edge_ids,hood_edge_counts=np.unique(hood_edges,axis=0,return_counts=True)
++reference_hood_boundary=fitted_body[np.unique(hood_edge_ids[hood_edge_counts==1])]
++reference_body=ReferenceBody(side_panel,reference_hood_boundary)
++(output/'reference_profile.json').write_text(json.dumps({'centre_x':body_centre_x,'y':side_panel.a.tolist(),'z':side_panel.b.tolist(),'widths':side_panel.grid.values.tolist()}),encoding='utf-8')
+ print('PANEL_JOIN_FAIRING',join_fairing.stats,flush=True)
+ (output/'join_fairing.json').write_text(json.dumps({'centre_x':body_centre_x,'patches':[[*p[:-1],p[-1].tolist()] for p in join_fairing.patches]}),encoding='utf-8')
+ (output/'hood_profile.json').write_text(json.dumps(hood_panel.profile(),separators=(',',':')),encoding='utf-8')
+@@ -263,8 +263,7 @@
+             direction=np.array([sign*np.sin(angle),np.cos(angle),0.0]);origin=np.array([field.cx,field.cy,z])+2*direction
+             return bvh.ray_cast(origin.tolist(),(-direction).tolist(),2)[0] is not None
+         triangles=[f for f in triangles if on_source(f)]
+-        normals=field.normal(parameters[:,0],parameters[:,1]);_,stretch=unwarp_z(nose(vertices)[:,2])
+-        normals[:,2]/=stretch;normals/=np.linalg.norm(normals,axis=1,keepdims=True)
++        normals=nose_normals(vertices,field.normal(parameters[:,0],parameters[:,1]))
+         triangles=[tuple(reversed(f)) if np.cross(vertices[f[1]]-vertices[f[0]],vertices[f[2]]-vertices[f[0]])@normals[list(f)].mean(0)<0 else f for f in triangles]
+         add('FairFrontFender'+str(sign),vertices,triangles,'paint','body',orient=False,normal_values=normals)
+ 
+@@ -359,7 +358,7 @@
+     if obj.name.split('.')[0] in ['body_1464','body_1491']:
+         coords=np.asarray([v.co[:] for v in obj.data.vertices])
+         xs,ys,zs=coords[:,0],coords[:,2],-coords[:,1]
+-        source_z,_=unwarp_z(zs)
++        source_z,_=unwarp_z(zs,xs)
+         field_normals=side_normal(xs,ys,zs)[:,[0,2,1]];field_normals[:,1]*=-1
+         field_weights=side_weight(ys,source_z)
+         caps=np.sqrt(((ys-CAP_Y)/CAP_RY)**2+((source_z-CAP_Z)/CAP_RZ)**2)
+@@ -370,7 +369,7 @@
+             selected=(xs*sign>.65)&(ys>.65)&(ys<1.08)&(source_z>-2.03)&(source_z<-.70)
+             points=np.c_[xs[selected],ys[selected],source_z[selected]];angle,z=field.parameters(points)
+             angle=np.clip(angle,.10,1.40)
+-            n=field.normal(angle,z);_,stretch=unwarp_z(zs[selected]);n[:,2]/=stretch;n/=np.linalg.norm(n,axis=1,keepdims=True)
++            n=nose_normals(points,field.normal(angle,z))
+             front_normals[selected]=n[:,[0,2,1]]*np.array([1,-1,1])
+             front_weights[selected]=smooth(.65,.72,abs(xs[selected]))*smooth(-2.03,-1.99,z)*(1-smooth(-.78,-.70,z))*smooth(.65,.72,ys[selected])*(1-smooth(1.02,1.08,ys[selected]))
+         values=[]
+@@ -395,7 +394,7 @@
+     return len(obj.data.loop_triangles)
+ 
+ def body_target(key, count, simple):
+-    explicit={1464:(8700,5200),1491:(3000,2400),1572:(5000,3000),1624:(2400,1500),2149:(2000,1200),
++    explicit={1464:(6200,3000),1491:(2800,2200),1572:(5000,3000),1624:(2400,1500),2149:(2000,1200),
+               1862:(700,420),4445:(700,420),2790:(900,450)}
+     if key in explicit:return explicit[key][1 if simple else 0]
+     return min(count,max(40 if simple else 72,int(count*(.018 if simple else .035))))
+@@ -495,8 +494,8 @@
+             normals=np.asarray(normal_values)[:,[0,2,1]];normals[:,1]*=-1
+             data.normals_split_custom_set([normals[loop.vertex_index] for loop in data.loops])
+         if group=='hood' and role=='paint':
+-            points=np.asarray([v.co[:] for v in data.vertices]);z,stretch=unwarp_z(-points[:,1])
+-            normals=hood_panel.normal(points[:,0],z);normals[:,2]/=stretch
++            points=np.asarray([v.co[:] for v in data.vertices]);z,stretch=unwarp_z(-points[:,1],points[:,0])
++            normals=nose_normals(np.c_[points[:,0],points[:,2],z],hood_panel.normal(points[:,0],z))
+             normals/=np.linalg.norm(normals,axis=1,keepdims=True)
+             normals=normals[:,[0,2,1]];normals[:,1]*=-1
+             data.normals_split_custom_set([normals[loop.vertex_index] for loop in data.loops])
+@@ -621,28 +620,54 @@
+                 face.append(lookup[identity])
+                 normals.append(tuple(obj.data.corner_normals[loop].vector))
+             faces.append(face)
+-        if group=='body' and role in ['paint','contour']:
++        if group=='body' and role in ['paint','contour','amber']:
+             if '--debug-cache' in args:
+                 np.savez_compressed(output/(tier+'_'+role+'_unfaired.npz'),vertices=np.asarray(vertices),loops=np.array([v for f in faces for v in f]),counts=np.array([len(f) for f in faces]),normals=np.asarray(normals))
+             points=np.asarray(vertices)[:,[0,2,1]]*np.array([1,1,-1])
+-            source_z,stretch=unwarp_z(points[:,2]);points[:,2]=source_z
++            source_z,stretch=unwarp_z(points[:,2],points[:,0]);points[:,2]=source_z
+             loop_vertices=np.array([v for face in faces for v in face])
+             loop_normals=np.asarray(normals)[:,[0,2,1]]*np.array([1,1,-1])
++            _,stretch,shear=nose_distance(-points[:,2],points[:,0])
++            loop_normals[:,0]+=shear[loop_vertices]*loop_normals[:,2]
+             loop_normals[:,2]*=stretch[loop_vertices]
+             loop_normals/=np.maximum(np.linalg.norm(loop_normals,axis=1,keepdims=True),1e-12)
+             if role=='paint':
+                 counts=np.array([len(f) for f in faces])
+                 points,loop_vertices,counts,loop_normals=join_fairing.remesh_corners(points,loop_vertices,counts,loop_normals,simple)
+                 faces=np.arange(len(points)).reshape(-1,3).tolist()
+-                _,stretch=unwarp_z(nose(points)[:,2])
+             vertex_normals=np.zeros_like(points);np.add.at(vertex_normals,loop_vertices,loop_normals)
+             vertex_normals/=np.maximum(np.linalg.norm(vertex_normals,axis=1,keepdims=True),1e-12)
+             if role=='contour':points-=vertex_normals*.0018
+             faired,faired_vertex_normals=join_fairing.apply(points,vertex_normals)
+             if role=='contour':faired+=faired_vertex_normals*.0018
+             _,faired_normals=join_fairing.apply(points[loop_vertices],loop_normals)
++            if '--debug-cache' in args:
++                np.savez_compressed(output/(tier+'_'+role+'_reference_input.npz'),points=faired,faces=np.asarray(faces),normals=faired_normals)
++            if role=='paint':
++                faired,reference_faces,faired_normals=reference_body.mesh(faired,faces,faired_normals)
++                faces=reference_faces.tolist()
++                loop_vertices=np.arange(len(faired))
++            elif role=='contour':
++                faired-=faired_vertex_normals*.0018
++                faired,reference_normals=reference_body.apply(faired,faired_vertex_normals,contour=True)
++                faired_normals=reference_normals[loop_vertices]
++            else:
++                # Attached markers keep their original longitudinal size;
++                # move their centres with the shell and refit each corner.
++                for sign in [-1,1]:
++                    ids=np.flatnonzero(faired[:,0]*sign>0)
++                    if not len(ids):continue
++                    centre_z=float(np.mean(faired[ids,2]));centre_x=float(np.mean(faired[ids,0]))
++                    world_z=-nose_distance(-centre_z,centre_x)[0]+faired[ids,2]-centre_z
++                    faired[ids,2]=unwarp_z(world_z,faired[ids,0])[0]
++                    for i in ids:
++                        hit=reference_body.outer.ray_cast((float(sign*2),float(faired[i,1]),float(faired[i,2])),(-sign,0,0),2)[0]
++                        if hit is not None:faired[i,0]=hit.x
++                faired,reference_normals=reference_body.apply(faired,faired_vertex_normals)
++                faired+=reference_normals*.003
++                faired_normals=reference_normals[loop_vertices]
+             vertices=blender(nose(faired)).tolist()
+-            faired_normals[:,2]/=stretch[loop_vertices]
++            faired_normals=nose_normals(faired[loop_vertices],faired_normals)
+             faired_normals/=np.maximum(np.linalg.norm(faired_normals,axis=1,keepdims=True),1e-12)
+             normals=(faired_normals[:,[0,2,1]]*np.array([1,-1,1])).tolist()
+         data=bpy.data.meshes.new(group+'__'+role);data.from_pydata(vertices,[],faces);data.materials.append(materials[role]);data.update()
+@@ -671,5 +696,7 @@
+ record['opaque_glazing']='Single smooth opaque exterior panes, 2% pane overlap and an opaque low-poly backing inset clear of the panes. No cabin contents or rig.'
+ record['refinement']={'nose_extension_metres':.14,'nose_stretch_starts_z':-1.72,'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,'side_surface':side_panel.stats,'fitted_hood_height_reference':hood_panel.stats,'hood':'source-sampled retopology constrained to original boundary, apertures and raised shoulders; measured smooth tangent field','fuel_and_handles':'no protruding source detail meshes','glazing':'single exterior pane skins; one measured tangent field per pane','glazing_backing_inset_scale':.93,'exterior_details':'four projectors, light guides, open honeycomb grille, smoked rear applique without overlapping original trim, rolled oval exhaust tips'}
+ record['refinement']['panel_joins']={'method':'four measured radial fairings with common geometry and tangents; clipped and constrained continuous corner skins','fits':join_fairing.stats}
++record['refinement']['reference_body']={'source':'owner photograph supplied 2026-11-13','character_line':'crease-aligned topology with 1.5 mm analytic fillet','nose':'fuller, near-vertical outer flank below the shoulder','crease_z':ReferenceBody.Z,'crease_y':ReferenceBody.Y}
++record['refinement']['reference_body']['nose_transform']='shared monotone front compression and outer-corner advance; original 14 cm leading extension retained'
+ (output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+ print('CHALLENGER_PREPARED',output,flush=True)
+--- a/scripts/challenger_detail_geometry.py
++++ b/scripts/challenger_detail_geometry.py
+@@ -27,7 +27,7 @@
+     return vertices, faces
+ 
+ 
+-def disk(path, z_at, rear=False):
++def disk(path, z_at, rear=False, spacing=.025):
+     from mathutils import Vector
+     from mathutils.geometry import delaunay_2d_cdt
+     def inside(x,y):
+@@ -39,10 +39,10 @@
+     # corner samples wrongly pulled the wide applique back toward its ends.
+     boundary=[]
+     for a,b in zip(path,np.roll(path,-1,axis=0)):
+-        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/.025)),endpoint=False):boundary.append(a*(1-t)+b*t)
++        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/spacing)),endpoint=False):boundary.append(a*(1-t)+b*t)
+     points=list(boundary);low,high=path.min(0),path.max(0)
+-    for x in np.arange(low[0]+.0125,high[0],.025):
+-        for y in np.arange(low[1]+.0125,high[1],.025):
++    for x in np.arange(low[0]+spacing*.5,high[0],spacing):
++        for y in np.arange(low[1]+spacing*.5,high[1],spacing):
+             if inside(x,y):points.append([x,y])
+     xy,_,faces,*_=delaunay_2d_cdt([Vector(p) for p in points],[],[list(range(len(boundary)))],1,1e-6,False)
+     vertices=[[p.x,p.y,z_at(p.x,p.y)] for p in xy]
+@@ -57,6 +57,16 @@
+     theta = np.arange(count)*2*math.pi/count
+     def emit(name, vertices, faces, role, group='body'):
+         add(name, vertices, faces, role, group, orient=False)
++
++    # One restrained curved carrier keeps the optical face almost upright;
++    # the previous 130 mm centre/corner sweep pinched the side of the nose.
++    carrier=rounded(0,.709,1.628,.184,.035,8)
++    def carrier_z(x):
++        t=np.clip((abs(x)-.49)/.05,0,1);t=t*t*(3-2*t)
++        return (-2.046+.104*(abs(x)/.8)**2+.018)*(1-t)+(-1.946+.035*(abs(x)/.8)**2+.010)*t
++    v,f=disk(carrier,lambda x,y:carrier_z(x),spacing=.060 if simple else .045)
++    emit('FrontOpticCarrier',v,f,'dark')
++    emit('LowerIntakeBacking',[[-.78,.33,-1.880],[.78,.33,-1.880],[.78,.52,-1.880],[-.78,.52,-1.880]],[(2,1,0),(3,2,0)],'dark')
+ 
+     # Four projector optics: a turned bezel, recessed dark reflector, lens and
+     # a restrained light guide. The two white buckets remain the night lenses.
+--- /dev/null
++++ b/scripts/challenger_reference_geometry.py
+@@ -0,0 +1,190 @@
++"""Reference-guided Challenger character line and fuller front-quarter section.
++
++The supplied photograph guides the intentional shoulder break. These stations
++are authored model-space proportions, not measurements recovered from a single
++perspective photograph. Existing seams and the retained bonnet remain separate.
++"""
++import numpy as np
++
++NOSE_INPUT=np.array([1.72,1.80,1.88,1.96,2.04,2.1171])
++NOSE_OUTPUT=np.array([1.72,1.90,2.080,2.145,2.205,2.2571])
++NOSE_TANGENT=np.array([1.0,2.25,1.20,.80,.70,.65])
++
++
++def nose_distance(distance,x):
++    d,x=np.broadcast_arrays(distance,x)
++    i=np.clip(np.searchsorted(NOSE_INPUT,d)-1,0,len(NOSE_INPUT)-2)
++    length=NOSE_INPUT[i+1]-NOSE_INPUT[i];t=np.clip((d-NOSE_INPUT[i])/length,0,1)
++    a,b=NOSE_OUTPUT[i],NOSE_OUTPUT[i+1];m,n=NOSE_TANGENT[i],NOSE_TANGENT[i+1]
++    base=(2*t**3-3*t*t+1)*a+(t**3-2*t*t+t)*length*m+(-2*t**3+3*t*t)*b+(t**3-t*t)*length*n
++    derivative=(6*t*t-6*t)*a/length+(3*t*t-4*t+1)*m+(-6*t*t+6*t)*b/length+(3*t*t-2*t)*n
++    before=d<=NOSE_INPUT[0];after=d>=NOSE_INPUT[-1]
++    base=np.where(before,d,np.where(after,NOSE_OUTPUT[-1]+(d-NOSE_INPUT[-1])*NOSE_TANGENT[-1],base))
++    derivative=np.where(before,1,np.where(after,NOSE_TANGENT[-1],derivative))
++    u=np.clip((abs(x)-.35)/.35,0,1);amount=.55*u**3*(10+u*(-15+6*u))
++    dx=.55*30*u*u*(1-u)**2/.35*np.sign(x)
++    span=NOSE_OUTPUT[-1]-NOSE_INPUT[0];s=np.clip((base-NOSE_INPUT[0])/span,0,1)
++    active=~before&~after
++    value=base+np.where(active,amount*span*s*(1-s),0)
++    dz=derivative*np.where(active,1+amount*(1-2*s),1)
++    shear=-np.where(active,dx*span*s*(1-s),0)
++    return value,dz,shear
++
++
++def nose_inverse(z,x):
++    z,x=np.broadcast_arrays(z,x);low=np.full_like(z,1.72);high=np.full_like(z,2.1171)
++    for _ in range(36):
++        mid=(low+high)*.5;value=nose_distance(mid,x)[0]
++        low=np.where(value< -z,mid,low);high=np.where(value>=-z,mid,high)
++    distance=(low+high)*.5
++    distance=np.where(-z<=1.72,-z,np.where(-z>=2.2571,2.1171+(-z-2.2571)/.65,distance))
++    return -distance,nose_distance(distance,x)[1]
++
++
++def nose_normals(points,normals):
++    _,stretch,shear=nose_distance(-points[:,2],points[:,0])
++    n=np.array(normals,copy=True);n[:,0]-=shear*n[:,2]/stretch;n[:,2]/=stretch
++    return n/np.maximum(np.linalg.norm(n,axis=1,keepdims=True),1e-12)
++
++
++def ramp(a,b,x):
++    t=np.clip((x-a)/(b-a),0,1)
++    return t*t*t*(10+t*(-15+6*t))
++
++
++def curve(z,keys,values):
++    keys=np.asarray(keys);values=np.asarray(values)
++    slopes=np.diff(values)/np.diff(keys)
++    tangents=np.r_[slopes[0],(slopes[:-1]+slopes[1:])*.5,slopes[-1]]
++    tangents[1:-1]=np.where(slopes[:-1]*slopes[1:]<=0,0,tangents[1:-1])
++    i=np.clip(np.searchsorted(keys,z)-1,0,len(keys)-2)
++    length=keys[i+1]-keys[i];t=np.clip((z-keys[i])/length,0,1)
++    return (2*t**3-3*t*t+1)*values[i]+(t**3-2*t*t+t)*length*tangents[i]+(-2*t**3+3*t*t)*values[i+1]+(t**3-t*t)*length*tangents[i+1]
++
++
++class ReferenceBody:
++    Z=[-2.117,-1.98,-1.75,-1.50,-1.0,-.60,0,.45,.70,.95,1.30,1.70,2.0,2.18]
++    Y=[.745,.775,.798,.815,.825,.832,.833,.842,.865,.900,.925,.930,.900,.850]
++    FILLET=.0015
++
++    def __init__(self,side,hood):
++        self.side=side;self.cx=side.centre_x
++        self.outer=None
++        self.hood=np.asarray(hood)[::3]
++        self.hood_z=np.linspace(np.min(hood[:,2]),np.max(hood[:,2]),81)
++        joins=[]
++        for z in self.hood_z:
++            selected=hood[abs(hood[:,2]-z)<.018]
++            if not len(selected):selected=hood[np.argsort(abs(hood[:,2]-z))[:20]]
++            width=np.max(abs(selected[:,0]-self.cx))
++            joins.append([width,np.max(selected[abs(selected[:,0]-self.cx)>width-.006,1])])
++        joins=np.asarray(joins)
++        self.hood_x=joins[:,0];self.hood_y=joins[:,1]
++
++    def crease(self,z):return curve(z,self.Z,self.Y)
++
++    def nose_amount(self,z):return ramp(-2.117,-2.075,z)*(1-ramp(-1.72,-1.50,z))
++
++    def width(self,y,z):
++        base=self.side.width(y,z);yc=self.crease(z)
++        nose=self.nose_amount(z)
++        wall=curve(z,[-2.117,-2.06,-1.95,-1.80,-1.55],[.825,.865,.895,.915,.920])
++        xc=self.side.width(yc,z)+.006
++        xc=xc*(1-nose)+wall*nose
++        below=np.clip((xc-self.side.width(yc-.070,z))/.070,-.12,.20)
++        below=below*(1-nose)+.055*nose
++        above=np.clip((self.side.width(yc+.075,z)-xc)/.075,-2.5,-.50)
++        hx=np.interp(z,self.hood_z,self.hood_x);hy=np.interp(z,self.hood_z,self.hood_y)
++        on_hood=ramp(self.hood_z[0]-.01,self.hood_z[0]+.03,z)*(1-ramp(self.hood_z[-1]-.04,self.hood_z[-1],z))
++        attach_slope=np.clip((hx-xc)/np.maximum(hy-yc,.025),-4.5,-.5)
++        above=above*(1-on_hood)+attach_slope*on_hood
++        d=y-yc
++        sharp=xc+(above+below)*.5*d+(above-below)*.5*(np.sqrt(d*d+self.FILLET**2)-self.FILLET)
++        band=ramp(-.12,-.055,d)*(1-ramp(.055,.125,d))
++        # The reference has a near-vertical outer nose wall below the crease,
++        # rather than the old early inward turn below the front wing.
++        nose_band=nose*ramp(.34,.49,y)*(1-ramp(-.012,0,d))
++        wall_width=xc+.055*d
++        target=base*(1-band)+sharp*band
++        return target*(1-nose_band)+wall_width*nose_band
++
++    def apply(self,points,normals,contour=False):
++        canonical,shared=np.unique(np.round(points,6),axis=0,return_inverse=True)
++        points=canonical[shared]
++        y,z=points[:,1],points[:,2];sign=np.sign(points[:,0]-self.cx)
++        base=self.side.width(y,z)
++        yc=self.crease(z);d=y-yc
++        band=ramp(-.12,-.055,d)*(1-ramp(.055,.125,d))
++        nose=self.nose_amount(z)*ramp(.34,.49,y)*(1-ramp(.015,.080,d))
++        original_width=abs(points[:,0]-self.cx)
++        outer_width=original_width.copy()
++        if self.outer is not None:
++            for i in np.flatnonzero(np.maximum(band,nose)>1e-8):
++                hit=self.outer.ray_cast((float(self.cx+sign[i]*2),float(y[i]),float(z[i])),(-float(sign[i]),0,0),2)[0]
++                if hit is not None:outer_width[i]=abs(hit.x-self.cx)
++        # Preserve the thickness of the original skin and its inner returns.
++        # Projecting both layers onto one coordinate creates intersecting paint
++        # around the hood attachment even when their normals look smooth.
++        eligible=(1-ramp(.035,.10,outer_width-original_width))*ramp(.43,.64,outer_width)
++        # Keep frontal returns and the top lip in their own tangent domain.
++        # Use a common normal at coincident positions so component boundaries
++        # cannot receive different geometric displacements.
++        common=np.zeros((int(shared.max())+1,3));np.add.at(common,shared,normals)
++        common/=np.maximum(np.linalg.norm(common,axis=1,keepdims=True),1e-12)
++        eligible*=ramp(.15,.55,common[shared,0]*sign)
++        amount=np.maximum(band,nose)*eligible
++        # Width already contains the zero-slope blend ring; apply the field
++        # itself to the outer skin and retain inner returns away from it.
++        q=points.copy();target=self.width(y,z)
++        w=amount
++        selected=np.flatnonzero(w>1e-8)
++        for start in range(0,len(selected),256):
++            ids=selected[start:start+256]
++            outer_points=points[ids].copy();outer_points[:,0]=self.cx+sign[ids]*outer_width[ids]
++            distance=np.sqrt(np.min(np.sum((outer_points[:,None,:]-self.hood[None,:,:])**2,axis=-1),axis=1))
++            w[ids]*=ramp(.007,.032,distance)
++        q[:,0]=points[:,0]+sign*(target-outer_width)*w
++        e=.000025
++        dy=(self.width(y+e,z)-self.width(y-e,z))/(2*e)
++        dz=(self.width(y,z+e)-self.width(y,z-e))/(2*e)
++        n=np.stack([sign,-dy,-dz],axis=-1)
++        n/=np.maximum(np.linalg.norm(n,axis=1,keepdims=True),1e-12)
++        n=normals*(1-w[:,None])+n*w[:,None]
++        n/=np.maximum(np.linalg.norm(n,axis=1,keepdims=True),1e-12)
++        if contour:q+=n*.0018
++        return q,n
++
++    def mesh(self,points,faces,normals):
++        """Insert shared, crease-aligned rows; never shade across a broad roll."""
++        from mathutils.bvhtree import BVHTree
++        self.outer=BVHTree.FromPolygons(points.tolist(),np.asarray(faces).tolist(),all_triangles=True)
++        output=[];start=0;original=[]
++        for face in faces:
++            count=len(face);p=points[face];n=normals[start:start+count];start+=count
++            original.extend([np.c_[p[[0,i,i+1]],n[[0,i,i+1]]] for i in range(1,count-1)])
++        for triangle in original:
++                z=triangle[:,2];d=triangle[:,1]-self.crease(z)
++                if np.min(abs(triangle[:,0]-self.cx))<.64 or z.max()<-2.10 or z.min()>2.12 or d.min()>.006 or d.max()<-.006:
++                    output.append(triangle);continue
++                polygons=[triangle]
++                for offset in [-.003,0,.003]:
++                    pieces=[]
++                    for polygon in polygons:
++                        distances=polygon[:,1]-self.crease(polygon[:,2])-offset
++                        if distances.min()>=-1e-10 or distances.max()<=1e-10:pieces.append(polygon);continue
++                        lower=[];upper=[]
++                        for i,a in enumerate(polygon):
++                            b=polygon[(i+1)%len(polygon)];da=distances[i];db=distances[(i+1)%len(polygon)]
++                            if da<=1e-10:lower.append(a)
++                            if da>=-1e-10:upper.append(a)
++                            if (da<0 and db>0) or (da>0 and db<0):
++                                v=a+(b-a)*(da/(da-db));v[1]=self.crease(v[2])+offset
++                                lower.append(v);upper.append(v)
++                        for piece in [lower,upper]:
++                            if len(piece)>=3:pieces.append(np.asarray(piece))
++                    polygons=pieces
++                for polygon in polygons:
++                    for i in range(1,len(polygon)-1):output.append(polygon[[0,i,i+1]])
++        values=np.concatenate(output)
++        q,n=self.apply(values[:,:3],values[:,3:])
++        return q,np.arange(len(q)).reshape(-1,3),n
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,10 @@
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-4/"
++const KEY: String = "super-rally-hellcat-5/"
++const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
++const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
++const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
+ static var meshes: Dictionary = {}
+ static var hood_profile: Dictionary = {}
+ const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
+@@ -76,7 +79,22 @@
+ static func hood_point(across: float, v: float, _kind: String = "stock") -> Vector3:
+ 	var x: float = across*0.70
+ 	var z: float = lerpf(-1.94,-1.04,v)
+-	return Vector3(x,_hood_height(x,z),z-0.14*smoothstep(1.72,2.1171,-z))
++	return Vector3(x,_hood_height(x,z),_nose_z(z,x))
++
++static func _nose_z(z: float,x: float=0.0) -> float:
++	var d: float = -z
++	if d<=NOSE_INPUT[0]:return z
++	if d>=NOSE_INPUT[-1]:return -(NOSE_OUTPUT[-1]+(d-NOSE_INPUT[-1])*NOSE_TANGENT[-1])
++	var i: int = 0
++	while i<NOSE_INPUT.size()-2 and d>NOSE_INPUT[i+1]:i+=1
++	var length: float = NOSE_INPUT[i+1]-NOSE_INPUT[i]
++	var t: float = (d-NOSE_INPUT[i])/length
++	var base: float = (2*t*t*t-3*t*t+1)*NOSE_OUTPUT[i]+(t*t*t-2*t*t+t)*length*NOSE_TANGENT[i]+(-2*t*t*t+3*t*t)*NOSE_OUTPUT[i+1]+(t*t*t-t*t)*length*NOSE_TANGENT[i+1]
++	var u: float = clampf((absf(x)-0.35)/0.35,0,1)
++	var amount: float = 0.55*u*u*u*(10+u*(-15+6*u))
++	var span: float = NOSE_OUTPUT[-1]-NOSE_INPUT[0]
++	var s: float = clampf((base-NOSE_INPUT[0])/span,0,1)
++	return -(base+amount*span*s*(1-s))
+ 
+ static func _cubic_weights(t: float) -> Vector4:
+ 	return Vector4(-0.5*t+t*t-0.5*t*t*t,1-2.5*t*t+1.5*t*t*t,0.5*t+2*t*t-1.5*t*t*t,-0.5*t*t+0.5*t*t*t)

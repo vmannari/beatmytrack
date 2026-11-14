@@ -18,18 +18,18 @@ static func build(car: CarVisual, id: String) -> void:
 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
 	match id:
 		"hovercraft":
-			preload("res://vehicle/hovercraft_model.gd").build(car)
+			load("res://vehicle/hovercraft_model.gd").build(car)
 			return
 		"electric":
-			preload("res://vehicle/electric_car_model.gd").build(car)
+			load("res://vehicle/electric_car_model.gd").build(car)
 			return
 		"pickup": _pickup(car,paint,cream,trim,glass,accent)
 		"classic": _classic(car,paint,cream,trim,glass,accent)
 		"formula": _formula(car,paint,cream,trim,glass,accent)
 		"kart":
-			preload("res://vehicle/kart_model.gd").build(car)
+			load("res://vehicle/kart_model.gd").build(car)
 			return
-		"forklift": preload("res://vehicle/forklift_model.gd").build(car)
+		"forklift": load("res://vehicle/forklift_model.gd").build(car)
 	var config: HandlingConfig = VehicleCatalog.config(id)
 	var half_axle: float = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
 	var half_track: float = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
@@ -38,13 +38,13 @@ static func build(car: CarVisual, id: String) -> void:
 		for axle: float in [-half_axle,half_axle]:
 			if id == "forklift":
 				var wheel_radius: float = 0.43 if axle < 0.0 else 0.30
-				preload("res://vehicle/forklift_model.gd").wheel(car,Vector3(side*half_track,wheel_radius,axle),wheel_radius,0.32 if axle < 0.0 else 0.25)
+				load("res://vehicle/forklift_model.gd").wheel(car,Vector3(side*half_track,wheel_radius,axle),wheel_radius,0.32 if axle < 0.0 else 0.25)
 			else:
 				_wheel(car,Vector3(side*half_track,radius,axle),radius,0.36 if id == "formula" else 0.27,trim)
 
 	if id == "forklift":
 		for category: String in VehicleCustomisation.CATEGORIES:
-			preload("res://vehicle/forklift_kits.gd").build(car,category)
+			load("res://vehicle/forklift_kits.gd").build(car,category)
 
 static func _box(car: CarVisual, dimensions: Vector3, center: Vector3, material: Material) -> MeshInstance3D:
 	return VisualGeometry.box(car.body,dimensions,center,material)

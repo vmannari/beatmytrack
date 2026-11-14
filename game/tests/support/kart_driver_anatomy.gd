@@ -1,7 +1,7 @@
 extends RefCounted
-## Offline anatomy enlargement. Contact points, topology and six poses stay fitted.
+## Offline anatomy enlargement. Contact points, topology and authored steering poses stay fitted.
 const STEERING = preload("res://vehicle/kart_steering.gd")
-const REVISION = "race_readability_v1"
+const REVISION = "race_readability_wider_shoulders_v2"
 const HELMET_SCALE: float = 1.20
 const COLUMNS: int = 17
 const ARM_VERTICES: int = 21*COLUMNS
@@ -10,7 +10,7 @@ static func torso(point: Vector3) -> Vector3:
 	var front: float = 1-smoothstep(0.18,0.30,point.z)
 	var free_back: float = smoothstep(0.60,0.68,point.y)
 	var weight: float = smoothstep(0.46,0.68,point.y)*maxf(front,free_back)
-	return Vector3(point.x*(1+0.18*weight),point.y+maxf(0,point.y-0.60)*0.35,point.z-0.020*weight*front)
+	return Vector3(point.x*(1+0.28*weight),point.y+maxf(0,point.y-0.60)*0.35,point.z-0.020*weight*front)
 
 static func center(t: float, root: Vector3, elbow: Vector3, wrist: Vector3) -> Vector3:
 	var entry: Vector3 = elbow+(root-elbow).normalized()*0.035
@@ -93,10 +93,11 @@ static func suit(arrays: Array, prefix: int, input: float) -> Array:
 
 static func resize(original: ArrayMesh) -> ArrayMesh:
 	if original.get_meta("kart_driver_anatomy","")==REVISION: return original
-	assert(original.get_surface_count()==6 and original.get_blend_shape_count()==6)
+	var pose_count: int = STEERING.STEPS*2
+	assert(original.get_surface_count()==6 and original.get_blend_shape_count()==pose_count)
 	var result := ArrayMesh.new()
 	result.blend_shape_mode = original.blend_shape_mode
-	for shape: int in range(6): result.add_blend_shape(original.get_blend_shape_name(shape))
+	for shape: int in range(pose_count): result.add_blend_shape(original.get_blend_shape_name(shape))
 	var prefix: int = original.get_meta("kart_suit_static_vertices")
 	var packets: Array = original.get("_surfaces").duplicate(true)
 	var bounds := AABB()
@@ -104,13 +105,13 @@ static func resize(original: ArrayMesh) -> ArrayMesh:
 	for surface: int in range(1,6):
 		var arrays: Array = original.surface_get_arrays(surface)
 		var targets: Array[Array] = original.surface_get_blend_shape_arrays(surface)
-		for pose: int in range(7):
+		for pose: int in range(pose_count+1):
 			var current: Array = arrays.duplicate(true)
 			if pose>0:
 				current[Mesh.ARRAY_VERTEX] = targets[pose-1][Mesh.ARRAY_VERTEX]
 				current[Mesh.ARRAY_NORMAL] = targets[pose-1][Mesh.ARRAY_NORMAL]
 			if surface==1:
-				var input: float = 0 if pose==0 else float((pose-1)%3+1)/3*(-1 if pose<=3 else 1)
+				var input: float = 0 if pose==0 else float((pose-1)%STEERING.STEPS+1)/STEERING.STEPS*(-1 if pose<=STEERING.STEPS else 1)
 				current = suit(current,prefix,input)
 			else:
 				var points: PackedVector3Array = current[Mesh.ARRAY_VERTEX]
@@ -126,7 +127,7 @@ static func resize(original: ArrayMesh) -> ArrayMesh:
 				targets[pose-1][Mesh.ARRAY_NORMAL] = current[Mesh.ARRAY_NORMAL]
 		var rebuilt := ArrayMesh.new()
 		rebuilt.blend_shape_mode = original.blend_shape_mode
-		for shape: int in range(6): rebuilt.add_blend_shape(original.get_blend_shape_name(shape))
+		for shape: int in range(pose_count): rebuilt.add_blend_shape(original.get_blend_shape_name(shape))
 		rebuilt.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays,targets)
 		var packet: Dictionary = rebuilt.get("_surfaces")[0]
 		packet.material = original.surface_get_material(surface)

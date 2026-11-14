@@ -62,7 +62,7 @@ static func ribbon(parent: Node3D,label: String,sample: Callable,count: int,radi
 static func fitted_line(parent: Node3D,label: String,skin: MeshInstance3D,sample: Callable,count: int,width: float,material: Material,outward: Vector3,simple: bool) -> void:
 	# Thin flush strips follow the triangles actually rendered, including the
 	# lower-density exterior. An analytical offset can sink below those chords.
-	var key: String = label+"_fitted_v1"+("_simple" if simple else "")
+	var key: String = label+"_fitted_v2"+("_simple" if simple else "")
 	var path: String = ASSET_ROOT.path_join(key.sha256_text().left(24)+".res")
 	if use_baked and not meshes.has(key) and ResourceLoader.exists(path): meshes[key] = load(path)
 	if not meshes.has(key):
@@ -71,36 +71,67 @@ static func fitted_line(parent: Node3D,label: String,skin: MeshInstance3D,sample
 		var stations: Array = []
 		for index: int in range(count+1):
 			var t: float = index/float(count)
-			var center: Vector3 = sample.call(t)
-			var tangent: Vector3 = sample.call(minf(1,t+0.0001))-sample.call(maxf(0,t-0.0001))
-			var across: Vector3 = tangent.cross(outward).normalized()*width*0.5
-			var row: Array = []
-			for edge: float in [-1.0,1.0]:
-				var hit: Dictionary = tree.intersect_ray(center+across*edge+outward*0.20,-outward)
-				row.append(hit.position+outward*0.0008 if not hit.is_empty() else null)
-			stations.append(row)
+			stations.append({"t":t,"row":_fitted_station(tree,sample,t,width,outward)})
+		# The two ends can lie above a panel while their joining chord crosses
+		# a crease. Refine only those intervals, keeping the same flush offset.
+		for pass_index: int in range(8):
+			var refined: Array = []
+			var changed: bool = false
+			for index: int in range(stations.size()-1):
+				refined.append(stations[index])
+				if _fitted_chord_clear(tree,stations[index].row,stations[index+1].row,outward): continue
+				var t: float = (float(stations[index].t)+float(stations[index+1].t))*0.5
+				refined.append({"t":t,"row":_fitted_station(tree,sample,t,width,outward)})
+				changed = true
+			refined.append(stations[-1])
+			stations = refined
+			if not changed: break
 		var tool := SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-		for index: int in range(count):
-			if null in stations[index] or null in stations[index+1]: continue
-			var points: Array = [stations[index][0],stations[index][1],stations[index+1][1],stations[index+1][0]]
+		for index: int in range(stations.size()-1):
+			var a: Array = stations[index].row; var b: Array = stations[index+1].row
+			if null in a or null in b: continue
+			var points: Array = [a[0],a[1],b[1],b[0]]
 			for triangle: Array in [[0,1,2],[0,2,3]]:
 				var cross: Vector3 = (points[triangle[1]]-points[triangle[0]]).cross(points[triangle[2]]-points[triangle[0]])
 				if cross.length_squared()<1e-20: continue
 				var order: Array = triangle.duplicate()
 				if cross.dot(outward)>0: order.reverse()
 				for corner: int in order:
+					var other: int = [1,0,3,2][corner]
+					var half: Vector3 = (points[corner]-points[other])*0.5
 					tool.set_normal(outward)
-					tool.set_uv(Vector2(0,0))
+					tool.set_uv(Vector2(-1.0 if corner in [0,3] else 1.0,half.length()))
+					tool.set_tangent(Plane(half.normalized(),1.0))
 					tool.add_vertex(points[corner])
 		tool.index()
 		meshes[key] = tool.commit()
+		meshes[key].set_meta("pixel_integrated_contour",true)
 	var node := MeshInstance3D.new()
 	node.name = label
 	node.mesh = meshes[key]
-	node.material_override = material
+	node.material_override = preload("res://vehicle/panel_contour.gd").material(material)
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(node)
+
+static func _fitted_station(tree: TriangleMesh,sample: Callable,t: float,width: float,outward: Vector3) -> Array:
+	var center: Vector3 = sample.call(t)
+	var tangent: Vector3 = sample.call(minf(1,t+0.0001))-sample.call(maxf(0,t-0.0001))
+	var across: Vector3 = tangent.cross(outward).normalized()*width*0.5
+	var row: Array = []
+	for edge: float in [-1.0,1.0]:
+		var hit: Dictionary = tree.intersect_ray(center+across*edge+outward*0.20,-outward)
+		row.append(hit.position+outward*0.0008 if not hit.is_empty() else null)
+	return row
+
+static func _fitted_chord_clear(tree: TriangleMesh,a: Array,b: Array,outward: Vector3) -> bool:
+	if null in a or null in b: return true
+	for along: float in [0.25,0.5,0.75]:
+		for across: float in [0.0,0.5,1.0]:
+			var p: Vector3 = (a[0] as Vector3).lerp(a[1],across).lerp((b[0] as Vector3).lerp(b[1],across),along)
+			var hit: Dictionary = tree.intersect_ray(p+outward*0.10,-outward)
+			if not hit.is_empty() and (p-hit.position).dot(outward)<0.00035: return false
+	return true
 
 static func rounded(parent: Node3D,label: String,size: Vector3,center: Vector3,radius: float,material: Material) -> void:
 	var half: Vector3=size*0.5

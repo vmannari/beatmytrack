@@ -148,7 +148,7 @@ func particles() -> void:
 		check(a.amount == b.amount and a.lifetime == b.lifetime and a.fixed_fps == b.fixed_fps,"particle budgets/cadence unchanged")
 		check(a.draw_pass_1.surface_get_arrays(0) == b.draw_pass_1.surface_get_arrays(0) and material_key(a.draw_pass_1.surface_get_material(0)) == material_key(b.draw_pass_1.surface_get_material(0)),"particle geometry/finish exact")
 		check(a.process_material != b.process_material and a.draw_pass_1 != b.draw_pass_1 and a.draw_pass_1.surface_get_material(0) != b.draw_pass_1.surface_get_material(0),"process and bridge/finish bindings independently owned")
-	first._set_desert_profile(true)
+	first._set_sand_profile("desert")
 	check(second.dust_emitters[0].amount == 360 and second.dust_emitters[0].lifetime == 5.2,"desert cannot change another biome's budget")
 	var third := SandDustEffect.new(); stage.add_child(third)
 	check(third.dust_emitters[0].amount == 360 and third.dust_emitters[0].lifetime == 5.2,"cached particle template stays pristine")

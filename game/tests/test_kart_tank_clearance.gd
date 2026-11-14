@@ -38,7 +38,7 @@ func run() -> void:
 				if bounds.end.x> -0.30 or bounds.position.z<0.60: failures += 1
 			var part_faces: PackedVector3Array = node.mesh.get_faces()
 			for index: int in range(part_faces.size()): part_faces[index] = transform*part_faces[index]
-			for pose: int in range(7):
+			for pose: int in range(body.get_blend_shape_count()+1):
 				var posed := ArrayMesh.new()
 				for surface: int in range(body.get_surface_count()):
 					var arrays: Array = body.surface_get_arrays(surface)

@@ -9,9 +9,9 @@ static var glass_shader: ShaderMaterial
 static func build(car: CarVisual) -> void:
 	car.body.name = "ElectricFastback"
 	var paint := CompactFinish.paint(Color("b8bbb9"))
-	paint.roughness = 0.30
-	paint.metallic = 0.26
-	paint.clearcoat = 0.30
+	paint.roughness = 0.36
+	paint.metallic = 0.18
+	paint.clearcoat = 0.26
 	var accent := CompactFinish.paint(Color("272f33"))
 	var alloy := CompactFinish.alloy(Color("9ba8ab"))
 	var bright := CompactFinish.alloy(Color("bac6c6"))

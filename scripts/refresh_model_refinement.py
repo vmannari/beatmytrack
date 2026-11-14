@@ -1,4 +1,4 @@
-"""Refresh five changed cars; protected Challenger scenes receive metadata only."""
+"""Refresh five requested cars with source fences; leave Challenger out."""
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json

@@ -1,0 +1,40 @@
+from pathlib import Path
+import hashlib
+import json
+import os
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parents[2]
+WORK = Path(__file__).resolve().parent
+OUT = ROOT / 'docs/evidence/visual-review-2026-11-13'
+OUT.mkdir(parents=True, exist_ok=True)
+profile = WORK / 'profile'
+for name in ['roaming', 'local']:
+    (profile / name).mkdir(parents=True, exist_ok=True)
+env = dict(os.environ, APPDATA=str(profile / 'roaming'), LOCALAPPDATA=str(profile / 'local'), BMT_API_URL='', BMT_DEV_AUTH_KEY='')
+engine = r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
+version = subprocess.check_output([engine, '--version'], text=True).strip()
+assert version == (ROOT / 'godot-version.txt').read_text().strip(), version
+command = [engine, '--path', str(ROOT / 'game'), '--audio-driver', 'Dummy', '--position', '10000,10000', '--rendering-method', 'gl_compatibility', '--script', str(WORK / 'capture.gd')]
+paths = list((ROOT / 'game').rglob('*.gd')) + list((ROOT / 'game').rglob('*.gdshader')) + [ROOT / 'game/project.godot', ROOT / '.git/index']
+def hashes():
+    return {str(p.relative_to(ROOT)).replace('\\', '/'): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths if p.exists()}
+before = hashes()
+started = time.monotonic()
+with (OUT / 'capture.log').open('w', encoding='utf-8') as log:
+    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+    reason = None
+    while process.poll() is None:
+        time.sleep(0.2)
+        contents = (OUT / 'capture.log').read_text(encoding='utf-8', errors='replace')
+        if 'SCRIPT ERROR:' in contents or time.monotonic() - started > 240:
+            reason = 'script error' if 'SCRIPT ERROR:' in contents else '240s timeout'
+            process.kill()
+            break
+    code = process.wait()
+after = hashes()
+receipt = dict(engine=version, command=command, exit_code=code, stop_reason=reason, seconds=time.monotonic()-started, changed_during_capture=[p for p in before if before[p] != after.get(p)], source_sha256=before, images={p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in OUT.glob('*.png')})
+(OUT / 'capture-receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
+print(json.dumps({k:v for k,v in receipt.items() if k not in ['source_sha256', 'images']}, indent=2))
+print((OUT / 'capture.log').read_text(encoding='utf-8', errors='replace')[-5000:])

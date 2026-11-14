@@ -5,14 +5,14 @@ static var meshes: Dictionary = {}
 const TRANSPORT_LIFT: float = 0.60 # Raised carriage; model metres, before shared body scale.
 
 static func build(car: CarVisual) -> void:
-	var paint := CompactFinish.paint(Color("d5a62d"))
-	var accent := CompactFinish.paint(Color("e0d5b5"))
+	var paint := CompactFinish.industrial_paint(Color("d5a62d"))
+	var accent := CompactFinish.industrial_paint(Color("e0d5b5"))
 	var steel := CompactFinish.alloy(Color("687576"))
 	var bright := CompactFinish.alloy(Color("bac5c1"))
 	var dark := CompactFinish.paint(Color("273439"))
 	dark.roughness = 0.54
 	var rubber := CompactFinish.rubber(Color("172024"))
-	var seat := CompactFinish.rubber(Color("343d3e"))
+	var seat := CompactFinish.polymer(Color("343d3e"))
 	var amber := CompactFinish.paint(Color("c58025"))
 	car.brake_material = CompactFinish.paint(Color("802d2b"))
 	car.paint_materials = {"body":paint,"accent":accent}
@@ -177,6 +177,11 @@ static func _face(tool: SurfaceTool, points: Array[Vector3], outward: Vector3) -
 
 static func _operator(car: CarVisual, seat: Material, rubber: Material, dark: Material, steel: Material, bright: Material, detail: int) -> void:
 	var parent: Node3D = car.body
+	# Floor-mounted supports overlap the floor and the fittings they carry.
+	# Keep the suspension travel, driving position and control reach unchanged.
+	_box(parent,Vector3(0.57,0.15,0.52),Vector3(0,0.925,0.25),0.025,dark,detail,"SeatPlinth")
+	_box(parent,Vector3(0.65,0.35,0.22),Vector3(0,1.015,-0.66),0.035,dark,detail,"DashboardPedestal")
+	_box(parent,Vector3(0.36,0.25,0.32),Vector3(0.465,0.965,-0.10),0.025,dark,detail,"HydraulicControlConsole")
 	_box(parent,Vector3(0.49,0.15,0.44),Vector3(0,1.02,0.25),0.035,steel,detail,"SeatSuspension")
 	for side: float in [-1.0,1.0]:
 		_box(parent,Vector3(0.04,0.06,0.59),Vector3(side*0.21,1.10,0.24),0.013,dark,detail,"SeatRail")

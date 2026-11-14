@@ -3,7 +3,10 @@ extends RefCounted
 ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
 ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
 ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
-const KEY: String = "super-rally-hellcat-4/"
+const KEY: String = "super-rally-hellcat-6/"
+const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
+const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
+const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
 static var meshes: Dictionary = {}
 static var hood_profile: Dictionary = {}
 const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
@@ -76,7 +79,30 @@ static func width(z: float) -> float:
 static func hood_point(across: float, v: float, _kind: String = "stock") -> Vector3:
 	var x: float = across*0.70
 	var z: float = lerpf(-1.94,-1.04,v)
-	return Vector3(x,_hood_height(x,z),z-0.14*smoothstep(1.72,2.1171,-z))
+	var mapped_z: float = _nose_z(z,x)
+	return Vector3(_nose_plan_x(x,mapped_z),_hood_height(x,z),mapped_z)
+
+static func _nose_plan_x(x: float,z: float) -> float:
+	var scale: float = 1.0
+	for band: Array in [[1.53,1.73,0.040],[1.65,2.22,0.035]]:
+		var t: float = clampf((-z-float(band[0]))/(float(band[1])-float(band[0])),0,1)
+		scale-=float(band[2])*t*t*t*(10+t*(-15+6*t))
+	return 0.005052088637516661+(x-0.005052088637516661)*scale
+
+static func _nose_z(z: float,x: float=0.0) -> float:
+	var d: float = -z
+	if d<=NOSE_INPUT[0]:return z
+	if d>=NOSE_INPUT[-1]:return -(NOSE_OUTPUT[-1]+(d-NOSE_INPUT[-1])*NOSE_TANGENT[-1])
+	var i: int = 0
+	while i<NOSE_INPUT.size()-2 and d>NOSE_INPUT[i+1]:i+=1
+	var length: float = NOSE_INPUT[i+1]-NOSE_INPUT[i]
+	var t: float = (d-NOSE_INPUT[i])/length
+	var base: float = (2*t*t*t-3*t*t+1)*NOSE_OUTPUT[i]+(t*t*t-2*t*t+t)*length*NOSE_TANGENT[i]+(-2*t*t*t+3*t*t)*NOSE_OUTPUT[i+1]+(t*t*t-t*t)*length*NOSE_TANGENT[i+1]
+	var u: float = clampf((absf(x)-0.35)/0.35,0,1)
+	var amount: float = 0.55*u*u*u*(10+u*(-15+6*u))
+	var span: float = NOSE_OUTPUT[-1]-NOSE_INPUT[0]
+	var s: float = clampf((base-NOSE_INPUT[0])/span,0,1)
+	return -(base+amount*span*s*(1-s))
 
 static func _cubic_weights(t: float) -> Vector4:
 	return Vector4(-0.5*t+t*t-0.5*t*t*t,1-2.5*t*t+1.5*t*t*t,0.5*t+2*t*t-1.5*t*t*t,-0.5*t*t+0.5*t*t*t)
@@ -95,20 +121,16 @@ static func _hood_height(x: float,z: float) -> float:
 
 static func _paint(color: Color) -> StandardMaterial3D:
 	var result: StandardMaterial3D = CompactFinish.paint(color)
-	result.roughness = 0.35
-	result.metallic = 0.10
-	result.metallic_specular = 0.34
-	result.clearcoat = 0.40
-	result.clearcoat_roughness = 0.24
+	result.roughness = 0.40
+	result.metallic = 0.06
+	result.metallic_specular = 0.38
+	result.clearcoat = 0.24
+	result.clearcoat_roughness = 0.32
 	return result
 
 static func _materials(car: CarVisual) -> Dictionary:
 	if car.has_meta("hellcat_materials"): return car.get_meta("hellcat_materials")
-	var glass := VisualGeometry.material(Color("101b20"))
-	glass.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-	glass.cull_mode = BaseMaterial3D.CULL_DISABLED # Opaque from both sides of every source pane.
-	glass.roughness = 0.15; glass.metallic = 0.0; glass.metallic_specular = 0.65
-	glass.clearcoat_enabled = true; glass.clearcoat = 0.45; glass.clearcoat_roughness = 0.14
+	var glass := CompactFinish.glass(Color("101b20"))
 	var contour := VisualGeometry.material(Color("303b40"))
 	contour.roughness = 0.85; contour.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var led := VisualGeometry.material(Color("a3b7bf"))
@@ -133,6 +155,9 @@ static func _asset(car: CarVisual, parent: Node3D, group: String, roles: Array[S
 		if not assets.has(path): assets[path] = load(path)
 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
+		if item.role == "contour":
+			part.mesh = preload("res://vehicle/challenger_panel_contours.gd").mesh(part.mesh,car.simple_model)
+			part.material_override = preload("res://vehicle/panel_contour.gd").material(part.material_override)
 		if item.role in ["contour","led","red","white","reverse","lens_red","vent_metal","glass"] or (group == "hood" and item.role == "dark"): part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		parent.add_child(part)
 		if group.begins_with("tail_"): car.brake_lights.append(part)

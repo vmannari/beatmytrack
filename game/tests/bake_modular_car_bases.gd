@@ -8,8 +8,14 @@ func _initialize() -> void: run.call_deferred()
 func run() -> void:
 	var lods = preload("res://tests/support/car_refinement_lods.gd").new()
 	var only: String = ""
+	var quality_filter: String = ""
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--vehicle="): only = argument.trim_prefix("--vehicle=")
+		if argument.begins_with("--quality="): quality_filter = argument.trim_prefix("--quality=")
+	if not quality_filter.is_empty() and quality_filter not in ["simple","full"]:
+		push_error("Unknown model quality: "+quality_filter)
+		quit(1)
+		return
 	if not only.is_empty() and only not in VehicleCatalog.IDS:
 		push_error("Unknown vehicle: "+only)
 		quit(1)
@@ -23,6 +29,7 @@ func run() -> void:
 		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
 		if not only.is_empty() and only != id: continue
 		for simple: bool in [false,true]:
+			if not quality_filter.is_empty() and quality_filter != ("simple" if simple else "full"): continue
 			var edit_modes: Array[bool] = [false]
 			if VehicleCustomisation.supported(id): edit_modes.append(true)
 			for editable: bool in edit_modes:
@@ -35,6 +42,7 @@ func run() -> void:
 				while not car.model_ready: await process_frame
 				BASE.enabled = true
 				if id in ["compact","forklift"]: preload("res://tests/support/car_model_buffers.gd").detach(car)
+				lods.remember(BASE.path_for(car))
 				var error: Error = BASE.bake(car)
 				if error == OK: error = lods.bake(BASE.path_for(car),id,0.5 if simple else 2.0)
 				if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(BASE.path_for(car),id)

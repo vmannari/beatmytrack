@@ -7,7 +7,7 @@ static var shadow_meshes: Dictionary = {}
 static var shadow_material: ShaderMaterial
 
 static func prepare(car: CarVisual) -> void:
-	_reduce_primitives(car)
+	_reduce_primitives(car,car.vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
 	# Editable assemblies retain their own casters through later part replacements.
 	if car.editable_kits: return
 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
@@ -47,7 +47,7 @@ static func _disable_casters(parent: Node3D) -> void:
 		if child is MeshInstance3D: child.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		if child is Node3D: _disable_casters(child)
 
-static func _reduce_primitives(parent: Node3D) -> void:
+static func _reduce_primitives(parent: Node3D, axial: bool = false) -> void:
 	for child: Node in parent.get_children():
 		if child is MeshInstance3D:
 			var source: Mesh = child.mesh
@@ -55,6 +55,7 @@ static func _reduce_primitives(parent: Node3D) -> void:
 			if source is CylinderMesh:
 				simple = source.duplicate()
 				(simple as CylinderMesh).radial_segments = mini(source.radial_segments,12)
+				if axial: (simple as CylinderMesh).rings = 1
 			elif source is SphereMesh:
 				simple = source.duplicate()
 				(simple as SphereMesh).radial_segments = mini(source.radial_segments,12)
@@ -66,7 +67,7 @@ static func _reduce_primitives(parent: Node3D) -> void:
 			if simple != null:
 				simple.custom_aabb = source.get_aabb()
 				child.mesh = simple
-		if child is Node3D: _reduce_primitives(child)
+		if child is Node3D: _reduce_primitives(child,axial)
 
 static func shadow_source(frame: Node3D) -> ArrayMesh:
 	# Offline only: one positions-only stream for each articulated frame.

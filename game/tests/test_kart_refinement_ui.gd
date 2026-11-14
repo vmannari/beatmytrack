@@ -91,9 +91,9 @@ func run() -> void:
 		for input: float in [-1.0,0.0,1.0,0.0]:
 			game.sim.state.steering = input
 			game._present_frame(1.0/60.0)
-			check(steering_wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/5)),"actual Game presentation turns the steering wheel")
+			check(steering_wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/3)),"actual Game presentation turns the steering wheel")
 			var shape_weight: float = 0
-			for shape: int in range(6): shape_weight += steering_driver.get_blend_shape_value(shape)
+			for shape: int in range(steering_driver.mesh.get_blend_shape_count()): shape_weight += steering_driver.get_blend_shape_value(shape)
 			check(is_equal_approx(shape_weight,absf(input)),"actual Game presentation poses both arms and centres exactly")
 		game.camera.current = false
 		game.hud.hide()

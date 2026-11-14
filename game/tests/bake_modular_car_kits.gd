@@ -48,6 +48,7 @@ func run() -> void:
 					var parts: Dictionary = car.customisation.duplicate(true)
 					parts[category] = option
 					car.change_kit_parts(parts)
+					lods.remember(Kits.path_for(car,category,option))
 					var error: Error = Kits.bake(car,category,option)
 					if error == OK: error = lods.bake(Kits.path_for(car,category,option),id,0.5 if simple else 2.0)
 					if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(Kits.path_for(car,category,option),id)

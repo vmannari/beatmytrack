@@ -7,6 +7,11 @@ uniform vec4 glass_tint : source_color = vec4(0.075, 0.125, 0.145, 1.0);
 uniform vec4 sky_tint : source_color = vec4(0.40, 0.55, 0.63, 1.0);
 uniform vec4 cloud_tint : source_color = vec4(0.79, 0.81, 0.76, 1.0);
 uniform bool studio_mode = false;
+varying vec3 reflection_point;
+
+void vertex() {
+	reflection_point = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
@@ -34,9 +39,12 @@ void fragment() {
 	EMISSION = environment * strength * mix(0.09, 0.4, side_pane);
 	ROUGHNESS = 0.65;
 	if (studio_mode) {
-		float softbox = pow(max(0.0,dot(direction,normalize(vec3(-0.6,0.9,-0.4)))),24.0);
-		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),14.0);
-		vec3 studio = vec3(0.10,0.15,0.20) + vec3(0.75,0.79,0.83)*softbox + vec3(0.19,0.27,0.38)*fill;
+		vec3 studio_ray = normalize(direction + reflection_point * 0.45);
+		float softbox = pow(max(0.0,dot(studio_ray,normalize(vec3(-0.6,0.9,-0.4)))),5.0);
+		float fill = pow(max(0.0,dot(studio_ray,normalize(vec3(0.8,0.35,0.5)))),7.0);
+		float ceiling = smoothstep(0.05,0.65,studio_ray.y);
+		vec3 studio = mix(vec3(0.07,0.10,0.13),vec3(0.15,0.20,0.25),ceiling);
+		studio += vec3(0.48,0.51,0.54)*softbox + vec3(0.20,0.25,0.32)*fill;
 		ALBEDO = mix(vec3(0.055,0.085,0.105),studio,0.35+fresnel*0.55);
 		EMISSION = studio*(0.06+0.18*fresnel);
 		ROUGHNESS = 0.2;

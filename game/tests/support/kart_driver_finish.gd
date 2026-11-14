@@ -2,10 +2,11 @@ extends RefCounted
 ## Split invariant helmet surfaces without changing positions or steering poses.
 const ROOT = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"
 static func save(original: ArrayMesh) -> void:
-	assert(original.get_surface_count()==6 and original.get_blend_shape_count()==6)
+	var pose_count: int = original.get_blend_shape_count()
+	assert(original.get_surface_count()==6 and pose_count==preload("res://vehicle/kart_steering.gd").STEPS*2)
 	var animated := ArrayMesh.new()
 	animated.blend_shape_mode = original.blend_shape_mode
-	for shape: int in range(6): animated.add_blend_shape(original.get_blend_shape_name(shape))
+	for shape: int in range(pose_count): animated.add_blend_shape(original.get_blend_shape_name(shape))
 	var packets: Array = original.get("_surfaces")
 	var active: Array = []
 	var static_packets: Array = []
@@ -21,7 +22,7 @@ static func save(original: ArrayMesh) -> void:
 				for shape: Array in shapes: shape[Mesh.ARRAY_NORMAL] = soften(shape[Mesh.ARRAY_NORMAL],indices)
 				var refined := ArrayMesh.new()
 				refined.blend_shape_mode = original.blend_shape_mode
-				for index: int in range(6): refined.add_blend_shape(original.get_blend_shape_name(index))
+				for index: int in range(pose_count): refined.add_blend_shape(original.get_blend_shape_name(index))
 				refined.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays,shapes)
 				var polished: Dictionary = refined.get("_surfaces")[0]
 				var count: int = packet.vertex_count
@@ -31,10 +32,10 @@ static func save(original: ArrayMesh) -> void:
 				var vertices: PackedByteArray = packet.vertex_data.slice(0,positions)
 				vertices.append_array(polished.vertex_data.slice(positions))
 				packet.vertex_data = vertices
-				var stride: int = packet.blend_shapes.size()/6
+				var stride: int = packet.blend_shapes.size()/pose_count
 				assert(packet.blend_shapes.size()==polished.blend_shapes.size())
 				var poses := PackedByteArray()
-				for pose: int in range(6):
+				for pose: int in range(pose_count):
 					poses.append_array(packet.blend_shapes.slice(pose*stride,pose*stride+positions))
 					poses.append_array(polished.blend_shapes.slice(pose*stride+positions,(pose+1)*stride))
 				packet.blend_shapes = poses
@@ -52,9 +53,11 @@ static func save(original: ArrayMesh) -> void:
 	var helmet := ArrayMesh.new()
 	helmet.set("_surfaces",static_packets)
 	helmet.custom_aabb = original.get_aabb()
-	assert(removed==495720)
+	assert(removed==82620*pose_count)
 	assert(ResourceSaver.save(animated,ROOT+"driver.res",ResourceSaver.FLAG_COMPRESS)==OK)
 	assert(ResourceSaver.save(helmet,ROOT+"helmet_static.res",ResourceSaver.FLAG_COMPRESS)==OK)
+	# Keep the production simple driver in step with every future anatomy bake.
+	preload("res://tests/support/kart_driver_split.gd").new().save(animated,ROOT)
 	print("MODEL_DRIVER_SPLIT removed_morph_bytes=",removed," animated_surfaces=",animated.get_surface_count()," static_surfaces=",helmet.get_surface_count())
 
 static func soften(normals: PackedVector3Array, indices: PackedInt32Array) -> PackedVector3Array:

@@ -27,7 +27,7 @@ def ring(loops):
     return vertices, faces
 
 
-def disk(path, z_at, rear=False):
+def disk(path, z_at, rear=False, spacing=.025):
     from mathutils import Vector
     from mathutils.geometry import delaunay_2d_cdt
     def inside(x,y):
@@ -39,10 +39,10 @@ def disk(path, z_at, rear=False):
     # corner samples wrongly pulled the wide applique back toward its ends.
     boundary=[]
     for a,b in zip(path,np.roll(path,-1,axis=0)):
-        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/.025)),endpoint=False):boundary.append(a*(1-t)+b*t)
+        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/spacing)),endpoint=False):boundary.append(a*(1-t)+b*t)
     points=list(boundary);low,high=path.min(0),path.max(0)
-    for x in np.arange(low[0]+.0125,high[0],.025):
-        for y in np.arange(low[1]+.0125,high[1],.025):
+    for x in np.arange(low[0]+spacing*.5,high[0],spacing):
+        for y in np.arange(low[1]+spacing*.5,high[1],spacing):
             if inside(x,y):points.append([x,y])
     xy,_,faces,*_=delaunay_2d_cdt([Vector(p) for p in points],[],[list(range(len(boundary)))],1,1e-6,False)
     vertices=[[p.x,p.y,z_at(p.x,p.y)] for p in xy]
@@ -57,6 +57,16 @@ def details(add, simple, rear_surface):
     theta = np.arange(count)*2*math.pi/count
     def emit(name, vertices, faces, role, group='body'):
         add(name, vertices, faces, role, group, orient=False)
+
+    # One restrained curved carrier keeps the optical face almost upright;
+    # the previous 130 mm centre/corner sweep pinched the side of the nose.
+    carrier=rounded(0,.709,1.628,.184,.035,8)
+    def carrier_z(x):
+        t=np.clip((abs(x)-.49)/.05,0,1);t=t*t*(3-2*t)
+        return (-2.046+.104*(abs(x)/.8)**2+.018)*(1-t)+(-1.946+.035*(abs(x)/.8)**2+.010)*t
+    v,f=disk(carrier,lambda x,y:carrier_z(x),spacing=.060 if simple else .045)
+    emit('FrontOpticCarrier',v,f,'dark')
+    emit('LowerIntakeBacking',[[-.78,.33,-1.880],[.78,.33,-1.880],[.78,.52,-1.880],[-.78,.52,-1.880]],[(2,1,0),(3,2,0)],'dark')
 
     # Four projector optics: a turned bezel, recessed dark reflector, lens and
     # a restrained light guide. The two white buckets remain the night lenses.

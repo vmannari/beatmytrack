@@ -1,0 +1,74 @@
+extends SceneTree
+## Review fixture: current native renderer, ordinary camera, no owner data.
+const OUTPUT := "res://../docs/evidence/visual-review-2026-11-13/authored"
+
+func _initialize() -> void:
+	run.call_deferred()
+
+func run() -> void:
+	root.size = Vector2i(1600, 900)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
+	for biome: String in ["pine", "desert", "night_city", "winter", "storm", "ellipse", "storm_timber"]:
+		var track: NativeTrack
+		if biome in ["ellipse", "storm_timber"]:
+			track = NativeTrack.read("res://resources/tracks/" + biome + ".json")
+		else:
+			var document: Dictionary = TrackDocument.create_blank()
+			document.theme = biome
+			var position := Vector2(-42, -12)
+			var heading: float = 0.0
+			for kind: String in ["straight", "hairpin", "straight", "hairpin"]:
+				var piece: Dictionary = RoadPieces.create(kind, position, heading)
+				piece.length = 44.0 if kind == "straight" else 0.0
+				piece.radius = 12.0
+				piece.width = 10.0
+				document.pieces.append(piece)
+				var pose: Dictionary = RoadPieces.end_pose(piece)
+				position = pose.position
+				heading = pose.heading
+			document = RoadPieces.route_from_pieces(document).document
+			document.start_line = {"position": [-20.0, -12.0], "heading": 0.0}
+			document = JSON.parse_string(JSON.stringify(document))
+			track = TrackCompiler.compile(document)
+		assert(track != null)
+		var race: Node = load("res://core/game.tscn").instantiate()
+		race.initial_track = track
+		race.production_mode = true
+		root.add_child(race)
+		race.set_physics_process(false)
+		race.set_process(false)
+		race.paused = true
+		var deadline: int = Time.get_ticks_msec() + 45000
+		while not race.car.model_ready and Time.get_ticks_msec() < deadline:
+			await process_frame
+		assert(race.car.model_ready)
+		race.countdown_ticks = 0
+		race.race_cues.hide()
+		race._process(0.0)
+		var point: Vector2 = track.spawn
+		var direction: float = track.spawn_heading
+		if biome not in ["ellipse", "storm_timber"]:
+			var at: int = track.nearest_route(Vector2(12.8, -5.2))
+			point = track.route[at]
+			var delta: Vector2 = track.route[(at + 1) % track.route.size()] - point
+			direction = atan2(delta.x, delta.y)
+		race.sim.state.position = point
+		race.sim.state.heading = direction
+		race.previous_position = point
+		race.previous_heading = direction
+		race._process(0.0)
+		race.camera.follow(point, Vector2.ZERO, direction, 0.0, true)
+		for frame: int in range(24):
+			await process_frame
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().save_png(OUTPUT + "/" + biome + "-hud.png") == OK)
+		race.hud.hide()
+		for frame: int in range(4):
+			await process_frame
+		await RenderingServer.frame_post_draw
+		assert(root.get_texture().get_image().save_png(OUTPUT + "/" + biome + "-world.png") == OK)
+		print("VISUAL_REVIEW_CAPTURE ", biome, " renderer=", RenderingServer.get_current_rendering_method(), " scale=", root.scaling_3d_scale, " size=", root.size)
+		race.free()
+		await process_frame
+	print("VISUAL_REVIEW_COMPLETE: 5 authored theme fixtures plus 2 shipped tracks, 14 native stills; motion and device untested")
+	quit()

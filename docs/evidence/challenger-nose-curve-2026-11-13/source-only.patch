@@ -1,0 +1,104 @@
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -17,7 +17,7 @@
+ sys.path.insert(0,str(Path(__file__).resolve().parent))
+ import challenger_detail_geometry as exterior_detail
+ from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
+-from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals
++from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals, nose_plan_points, nose_plan_normals
+ 
+ args = sys.argv[sys.argv.index("--")+1:]
+ source, labels_file, output = map(Path,args[:3])
+@@ -670,6 +670,16 @@
+             faired_normals=nose_normals(faired[loop_vertices],faired_normals)
+             faired_normals/=np.maximum(np.linalg.norm(faired_normals,axis=1,keepdims=True),1e-12)
+             normals=(faired_normals[:,[0,2,1]]*np.array([1,-1,1])).tolist()
++        # One final plan deformation for all joined exterior layers. Keeping it
++        # after the side/bonnet fitting prevents the old side-only width blend
++        # from leaving a projecting cap or trim at the front corners.
++        if not group.startswith('wheel_'):
++            world_points=np.asarray(vertices)[:,[0,2,1]]*np.array([1,1,-1])
++            world_normals=np.asarray(normals)[:,[0,2,1]]*np.array([1,1,-1])
++            loop_ids=np.array([v for face in faces for v in face])
++            world_normals=nose_plan_normals(world_points[loop_ids],world_normals)
++            vertices=blender(nose_plan_points(world_points)).tolist()
++            normals=(world_normals[:,[0,2,1]]*np.array([1,-1,1])).tolist()
+         data=bpy.data.meshes.new(group+'__'+role);data.from_pydata(vertices,[],faces);data.materials.append(materials[role]);data.update()
+         for polygon in data.polygons:polygon.use_smooth=True
+         data.set_sharp_from_angle(angle=math.radians(52))
+@@ -698,5 +708,6 @@
+ record['refinement']['panel_joins']={'method':'four measured radial fairings with common geometry and tangents; clipped and constrained continuous corner skins','fits':join_fairing.stats}
+ record['refinement']['reference_body']={'source':'owner photograph supplied 2026-11-13','character_line':'crease-aligned topology with 1.5 mm analytic fillet','nose':'fuller, near-vertical outer flank below the shoulder','crease_z':ReferenceBody.Z,'crease_y':ReferenceBody.Y}
+ record['refinement']['reference_body']['nose_transform']='shared monotone front compression and outer-corner advance; original 14 cm leading extension retained'
++record['refinement']['reference_body']['nose_plan']='shared C2 transverse taper continues the wing curvature through the front corners; no separate side flare'
+ (output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+ print('CHALLENGER_PREPARED',output,flush=True)
+--- a/scripts/challenger_reference_geometry.py
++++ b/scripts/challenger_reference_geometry.py
+@@ -9,6 +9,38 @@
+ NOSE_INPUT=np.array([1.72,1.80,1.88,1.96,2.04,2.1171])
+ NOSE_OUTPUT=np.array([1.72,1.90,2.080,2.145,2.205,2.2571])
+ NOSE_TANGENT=np.array([1.0,2.25,1.20,.80,.70,.65])
++NOSE_PLAN_CENTRE=.005052088637516661
++
++
++def nose_plan_scale(z):
++    """Continue the wing's plan curve through the previously swollen corners.
++
++    Apply to every joined exterior part after the longitudinal nose map. Both
++    quintic blends have zero first/second derivatives at their endpoints.
++    Wheel geometry and axle/contact locations are outside this operation.
++    """
++    depth=-np.asarray(z)
++    scale=np.ones_like(depth,dtype=float);derivative=np.zeros_like(depth,dtype=float)
++    for start,end,amount in [(1.53,1.73,.040),(1.65,2.22,.035)]:
++        t=np.clip((depth-start)/(end-start),0,1)
++        scale-=amount*t**3*(10+t*(-15+6*t))
++        derivative+=amount*30*t*t*(1-t)**2/(end-start)
++    return scale,derivative
++
++
++def nose_plan_points(points):
++    result=np.array(points,copy=True)
++    scale,_=nose_plan_scale(result[:,2])
++    result[:,0]=NOSE_PLAN_CENTRE+(result[:,0]-NOSE_PLAN_CENTRE)*scale
++    return result
++
++
++def nose_plan_normals(points,normals):
++    scale,derivative=nose_plan_scale(points[:,2])
++    result=np.array(normals,copy=True)
++    result[:,0]/=scale
++    result[:,2]-=derivative*(points[:,0]-NOSE_PLAN_CENTRE)*result[:,0]
++    return result/np.maximum(np.linalg.norm(result,axis=1,keepdims=True),1e-12)
+ 
+ 
+ def nose_distance(distance,x):
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,7 @@
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-5/"
++const KEY: String = "super-rally-hellcat-6/"
+ const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
+ const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
+ const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
+@@ -79,7 +79,15 @@
+ static func hood_point(across: float, v: float, _kind: String = "stock") -> Vector3:
+ 	var x: float = across*0.70
+ 	var z: float = lerpf(-1.94,-1.04,v)
+-	return Vector3(x,_hood_height(x,z),_nose_z(z,x))
++	var mapped_z: float = _nose_z(z,x)
++	return Vector3(_nose_plan_x(x,mapped_z),_hood_height(x,z),mapped_z)
++
++static func _nose_plan_x(x: float,z: float) -> float:
++	var scale: float = 1.0
++	for band: Array in [[1.53,1.73,0.040],[1.65,2.22,0.035]]:
++		var t: float = clampf((-z-float(band[0]))/(float(band[1])-float(band[0])),0,1)
++		scale-=float(band[2])*t*t*t*(10+t*(-15+6*t))
++	return 0.005052088637516661+(x-0.005052088637516661)*scale
+ 
+ static func _nose_z(z: float,x: float=0.0) -> float:
+ 	var d: float = -z

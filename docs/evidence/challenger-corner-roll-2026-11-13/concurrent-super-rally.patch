@@ -1,0 +1,39 @@
+--- task-start/super_rally_model.gd
++++ concurrent/super_rally_model.gd
+@@ -121,20 +121,16 @@
+ 
+ static func _paint(color: Color) -> StandardMaterial3D:
+ 	var result: StandardMaterial3D = CompactFinish.paint(color)
+-	result.roughness = 0.35
+-	result.metallic = 0.10
+-	result.metallic_specular = 0.34
+-	result.clearcoat = 0.40
+-	result.clearcoat_roughness = 0.24
++	result.roughness = 0.40
++	result.metallic = 0.06
++	result.metallic_specular = 0.38
++	result.clearcoat = 0.24
++	result.clearcoat_roughness = 0.32
+ 	return result
+ 
+ static func _materials(car: CarVisual) -> Dictionary:
+ 	if car.has_meta("hellcat_materials"): return car.get_meta("hellcat_materials")
+-	var glass := VisualGeometry.material(Color("101b20"))
+-	glass.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+-	glass.cull_mode = BaseMaterial3D.CULL_DISABLED # Opaque from both sides of every source pane.
+-	glass.roughness = 0.15; glass.metallic = 0.0; glass.metallic_specular = 0.65
+-	glass.clearcoat_enabled = true; glass.clearcoat = 0.45; glass.clearcoat_roughness = 0.14
++	var glass := CompactFinish.glass(Color("101b20"))
+ 	var contour := VisualGeometry.material(Color("303b40"))
+ 	contour.roughness = 0.85; contour.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 	var led := VisualGeometry.material(Color("a3b7bf"))
+@@ -159,6 +155,9 @@
+ 		if not assets.has(path): assets[path] = load(path)
+ 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
+ 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
++		if item.role == "contour":
++			part.mesh = preload("res://vehicle/challenger_panel_contours.gd").mesh(part.mesh,car.simple_model)
++			part.material_override = preload("res://vehicle/panel_contour.gd").material(part.material_override)
+ 		if item.role in ["contour","led","red","white","reverse","lens_red","vent_metal","glass"] or (group == "hood" and item.role == "dark"): part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		parent.add_child(part)
+ 		if group.begins_with("tail_"): car.brake_lights.append(part)

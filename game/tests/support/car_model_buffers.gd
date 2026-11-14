@@ -1,7 +1,7 @@
 extends RefCounted
 ## Offline final packing, after batching and LOD creation. No runtime work.
 static func bake(path: String, vehicle: String) -> Error:
-	if vehicle not in ["compact","forklift"]: return OK
+	if vehicle not in ["compact","kart","forklift","electric","hovercraft"]: return OK
 	var scene: PackedScene = load(path)
 	if scene==null: return ERR_CANT_OPEN
 	var holder: Node = scene.instantiate()
@@ -9,13 +9,15 @@ static func bake(path: String, vehicle: String) -> Error:
 	var before: int = 0
 	var after: int = 0
 	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
-		if not part.mesh is ArrayMesh: continue
+		if vehicle not in ["compact","forklift"] or not part.mesh is ArrayMesh: continue
 		if not seen.has(part.mesh):
 			before += payload(part.mesh)
 			seen[part.mesh] = preload("res://rendering/mesh_vertex_packing.gd").pack(part.mesh)
 			after += payload(seen[part.mesh])
 		part.mesh = seen[part.mesh]
-	detach(holder)
+	var shared: int=preload("res://tests/support/car_mesh_sharing.gd").apply(holder)
+	if vehicle in ["compact","forklift"]: detach(holder)
+	print("CAR_MESH_SHARE ",vehicle," instances=",shared)
 	var packed := PackedScene.new()
 	var error: Error = packed.pack(holder)
 	if error==OK: error = ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)

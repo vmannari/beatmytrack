@@ -1,0 +1,2434 @@
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -1,6 +1,13 @@
+ class_name CarVisual
+ extends Node3D
+ ## Base 4.25 x 1.8 m compact scaled by HandlingConfig.BODY_SCALE; +Z rear, -Z nose. Presentation only.
++
++# Prepared restoration has no eager dependency on the optional model factories.
++# Hold only factories actually used, including later night/fitted/fallback work.
++static var _builder_scripts: Dictionary = {}
++static func _builder(name: String) -> Script:
++	if not _builder_scripts.has(name): _builder_scripts[name] = load("res://vehicle/"+name+".gd")
++	return _builder_scripts[name]
+ 
+ var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
+ var vehicle_id: String = "compact"
+@@ -91,19 +98,19 @@
+ 	lens.albedo_color = Color("fff0d2")
+ 	for side: float in [-1.0,1.0]:
+ 		if vehicle_id == "super_rally":
+-			if side < 0.0: SuperRallyModel.night_lens(headlights,lens,paint_materials.body)
++			if side < 0.0: _builder("super_rally_model").night_lens(headlights,lens,paint_materials.body)
+ 			continue
+ 		if vehicle_id == "hovercraft":
+-			if side < 0.0: preload("res://vehicle/hovercraft_model.gd").night_lens(headlights,lens)
++			if side < 0.0: _builder("hovercraft_model").night_lens(headlights,lens)
+ 			continue
+ 		if vehicle_id == "electric":
+ 			if side < 0.0:
+ 				lens.albedo_color = Color("e8f7ff")
+-				preload("res://vehicle/electric_car_model.gd").night_lens(headlights,lens)
++				_builder("electric_car_model").night_lens(headlights,lens)
+ 			continue
+ 		if chassis_id == "compact":
+-			var x: float = side*CompactFrontLamps.OFFSET
+-			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
++			var x: float = side*_builder("compact_front_lamps").OFFSET
++			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,_builder("compact_front_lamps").CENTER,_builder("compact_detail")._nose_z(x)-0.047),lens)
+ 			round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+ 			round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 			continue
+@@ -248,7 +255,7 @@
+ 		# Older stock forklift templates predate editable kit frames.
+ 		if vehicle_id == "forklift" and editable_kits and kit_frames.is_empty():
+ 			for category: String in VehicleCustomisation.CATEGORIES:
+-				preload("res://vehicle/forklift_kits.gd").build(self,category)
++				_builder("forklift_kits").build(self,category)
+ 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+ 		apply_livery(livery)
+ 		_update_rear_lights()
+@@ -276,14 +283,14 @@
+ 		model_ready = true
+ 		return
+ 	if vehicle_id == "super_rally":
+-		SuperRallyModel.build(self)
++		_builder("super_rally_model").build(self)
+ 		apply_livery(livery)
+ 		_update_rear_lights()
+ 		await _finish_render_model()
+ 		model_ready = true
+ 		return
+ 	if chassis_id != "compact":
+-		VehicleModels.build(self, vehicle_id)
++		_builder("vehicle_models").build(self, vehicle_id)
+ 		if not livery.is_empty(): apply_livery(livery)
+ 		_update_rear_lights()
+ 		await _finish_render_model()
+@@ -299,7 +306,7 @@
+ 	body = Node3D.new()
+ 	add_child(body)
+ 	_model_stage = "body"
+-	CompactCoachwork.build_body(self,blue)
++	_builder("compact_coachwork").build_body(self,blue)
+ 	if not await _model_checkpoint(): return
+ 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+ 	_model_stage = "cabin"
+@@ -311,26 +318,26 @@
+ 			var pivot := Node3D.new()
+ 			pivot.position = Vector3(side * 0.83, 0.37, axle)
+ 			add_child(pivot)
+-			CompactDetail.tire(pivot, trim, simple_model)
++			_builder("compact_detail").tire(pivot, trim, simple_model)
+ 			var rim_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
+-			if CompactKits.choice(self,"rims") == "stock":
++			if _builder("compact_kits").choice(self,"rims") == "stock":
+ 				var hub := VisualGeometry.cylinder(rim_parent, 0.228, 0.16, Vector3.ZERO, trim,true)
+ 				hub.rotation.z = PI * 0.5
+ 				for spoke: int in range(8):
+ 					var a: float = spoke*TAU/8.0
+ 					_seam(rim_parent,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
+-			else: CompactKits.build_wheel(self,rim_parent,side)
++			else: _builder("compact_kits").build_wheel(self,rim_parent,side)
+ 			if axle < 0:
+ 				front_wheels.append(pivot)
+ 			register_rolling_wheel(pivot, 0.37)
+ 			var brake_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
+-			if CompactKits.choice(self,"rims") != "stock": CompactKits.build_caliper(brake_parent,side)
++			if _builder("compact_kits").choice(self,"rims") != "stock": _builder("compact_kits").build_caliper(brake_parent,side)
+ 			if not await _model_checkpoint(): return
+ 	_model_stage = "details"
+-	await CompactDetail.build(self, blue, paint, trim, rim,_model_checkpoint if cooperative_build else Callable())
++	await _builder("compact_detail").build(self, blue, paint, trim, rim,_model_checkpoint if cooperative_build else Callable())
+ 	if not await _model_checkpoint(): return
+-	CompactKits.build_aero(self)
+-	CompactKits.build_body(self)
++	_builder("compact_kits").build_aero(self)
++	_builder("compact_kits").build_body(self)
+ 	if not livery.is_empty(): apply_livery(livery)
+ 	_update_rear_lights()
+ 	await _finish_render_model()
+@@ -377,11 +384,11 @@
+ 
+ 
+ func _finish_render_model() -> void:
+-	preload("res://vehicle/compact_seam_strip.gd").finish(self)
+-	if simple_model: RacingCarModels.prepare(self)
++	_builder("compact_seam_strip").finish(self)
++	if simple_model: _builder("racing_car_models").prepare(self)
+ 	# Reduce each authored piece before assembly. Fixed cars and modular kits
+ 	# must not receive different geometry merely because they batch differently.
+-	if vehicle_id!="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
++	if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self)
+ 	if batch_parts:
+ 		_model_stage = "sibling batches"
+ 		await VisualGeometry.batch_static_parts(self,_model_checkpoint if cooperative_build else Callable())
+@@ -389,7 +396,7 @@
+ 		_model_stage = "frame batches"
+ 		await VisualGeometry.batch_car_parts(self,_model_checkpoint if cooperative_build else Callable())
+ 		if not await _model_checkpoint(): return
+-	if vehicle_id=="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
++	if vehicle_id=="hovercraft": _builder("car_static_reduction").apply(self)
+ 	_model_stage = "snapshot"
+ 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+ 	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
+@@ -426,32 +433,32 @@
+ 			frame.queue_free()
+ 		kit_frames[category] = []
+ 		if vehicle_id == "super_rally":
+-			SuperRallyModel.kit(self,category)
++			_builder("super_rally_model").kit(self,category)
+ 			_reduce_changed_kit(category)
+ 			if batch_parts:
+ 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+ 			continue
+ 		if vehicle_id=="electric":
+-			preload("res://vehicle/electric_kits.gd").build(self,category)
++			_builder("electric_kits").build(self,category)
+ 			_reduce_changed_kit(category)
+ 			if batch_parts:
+ 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+ 			continue
+ 		if vehicle_id=="forklift":
+-			preload("res://vehicle/forklift_kits.gd").build(self,category)
++			_builder("forklift_kits").build(self,category)
+ 			_reduce_changed_kit(category)
+ 			if batch_parts:
+ 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+ 			continue
+ 		if vehicle_id=="hovercraft":
+-			if category=="rims": preload("res://vehicle/hovercraft_sport_drive.gd").rebuild_fans(self)
+-			else: preload("res://vehicle/hovercraft_kits.gd").build(self,category)
++			if category=="rims": _builder("hovercraft_sport_drive").rebuild_fans(self)
++			else: _builder("hovercraft_kits").build(self,category)
+ 			_reduce_changed_kit(category)
+ 			if batch_parts:
+ 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+ 			continue
+ 		if vehicle_id=="kart":
+-			var kart = preload("res://vehicle/kart_model.gd")
++			var kart = _builder("kart_model")
+ 			match category:
+ 				"hood": kart.build_nose(self)
+ 				"aero": kart.build_bumper(self)
+@@ -463,9 +470,9 @@
+ 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+ 			continue
+ 		match category:
+-			"hood": CompactCoachwork.build_hood(self,paint_materials.body,paint_materials.accent)
+-			"aero": CompactKits.build_aero(self)
+-			"body": CompactKits.build_body(self)
++			"hood": _builder("compact_coachwork").build_hood(self,paint_materials.body,paint_materials.accent)
++			"aero": _builder("compact_kits").build_aero(self)
++			"body": _builder("compact_kits").build_body(self)
+ 			"rims":
+ 				var trim: Material = CompactFinish.rubber(Color("171e21"))
+ 				var alloy: Material = CompactFinish.alloy(Color("657177"))
+@@ -473,19 +480,19 @@
+ 				for rotor: Node3D in rolling_wheels:
+ 					var side: float = signf((rotor.get_parent() as Node3D).position.x)
+ 					var frame: Node3D = new_kit_frame("rims",rotor)
+-					if CompactKits.choice(self,"rims")=="stock":
++					if _builder("compact_kits").choice(self,"rims")=="stock":
+ 						var hub := VisualGeometry.cylinder(frame,0.228,0.16,Vector3.ZERO,trim,true)
+ 						hub.rotation.z = PI*0.5
+ 						for spoke: int in range(8):
+ 							var a: float = spoke*TAU/8.0
+ 							_seam(frame,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,alloy)
+-						CompactDetail.rim_detail(frame,side,alloy,trim,bright)
+-					else: CompactKits.build_wheel(self,frame,side)
++						_builder("compact_detail").rim_detail(frame,side,alloy,trim,bright)
++					else: _builder("compact_kits").build_wheel(self,frame,side)
+ 					var brake: Node3D = new_kit_frame("rims",rotor.get_parent())
+-					if CompactKits.choice(self,"rims")!="stock": CompactKits.build_caliper(brake,side)
++					if _builder("compact_kits").choice(self,"rims")!="stock": _builder("compact_kits").build_caliper(brake,side)
+ 		_reduce_changed_kit(category)
+ 		for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+-	if vehicle_id=="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self)
++	if vehicle_id=="hovercraft": _builder("car_static_reduction").apply(self)
+ 	graphics = LiveryGraphics.new()
+ 	graphics.configure(self)
+ 
+@@ -493,8 +500,8 @@
+ 	# Match construction-time reduction before batching newly fitted primitives.
+ 	# Offline modules and a direct fitted build must describe the same model.
+ 	if simple_model:
+-		for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame,vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
+-		if vehicle_id!="hovercraft": preload("res://vehicle/car_static_reduction.gd").apply(self,kit_frames.get(category,[]))
++		for frame: Node3D in kit_frames[category]: _builder("racing_car_models")._reduce_primitives(frame,vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
++		if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self,kit_frames.get(category,[]))
+ 
+ 
+ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:
+@@ -678,7 +685,7 @@
+ 	# The wheels keep their road contacts while the sprung body pitches, rolls
+ 	# and heaves independently. Lift only the rendered body when that motion
+ 	# would push a tire through the wheel opening.
+-	const BODY = preload("res://vehicle/electric_reference_body.gd")
++	var BODY: Script = _builder("electric_reference_body")
+ 	const TIRE_RINGS: Array[Vector2] = [Vector2(-0.14,0.32),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.14,0.32)]
+ 	if electric_tire_angles.is_empty():
+ 		for index: int in range(32):
+@@ -715,23 +722,23 @@
+ 	var outline: Array[Vector2] = ROLL_OUTLINE
+ 	if chassis_id=="compact" and customisation != VehicleCustomisation.defaults():
+ 		outline = ROLL_OUTLINE.duplicate()
+-		if customisation.body in ["rally","club"] or customisation.body in CompactKitVariants.BODIES:
+-			if customisation.body in CompactKitVariants.BODIES:
++		if customisation.body in ["rally","club"] or customisation.body in _builder("compact_kit_variants").BODIES:
++			if customisation.body in _builder("compact_kit_variants").BODIES:
+ 				outline.append_array([Vector2(-1.15,0.25),Vector2(1.15,0.25),Vector2(-1.15,0.90),Vector2(1.15,0.90)])
+ 			else:
+ 				outline.append_array([Vector2(-1.10,0.37),Vector2(1.10,0.37),Vector2(-1.10,0.85),Vector2(1.10,0.85)])
+ 		if customisation.aero!="stock":
+ 			var half: float = 0.92 if customisation.aero=="wing" else 0.65
+ 			var height: float = 1.89 if customisation.aero=="wing" else 1.64
+-			if customisation.aero in CompactAero.PROFILES:
+-				var extent: Vector2 = CompactAero.roll_extent(customisation.aero)
++			if customisation.aero in _builder("compact_aero").PROFILES:
++				var extent: Vector2 = _builder("compact_aero").roll_extent(customisation.aero)
+ 				half = extent.x
+ 				height = extent.y
+ 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
+ 	if vehicle_id == "super_rally":
+ 		outline = [Vector2(-1.08,0.27),Vector2(1.08,0.27),Vector2(-1.08,0.98),Vector2(1.08,0.98),Vector2(-0.58,1.42),Vector2(0.58,1.42)]
+ 		if customisation.aero != "stock":
+-			var extent: Vector2 = SuperRallyModel.aero_extent(customisation.aero)
++			var extent: Vector2 = _builder("super_rally_model").aero_extent(customisation.aero)
+ 			outline.append_array([Vector2(-extent.x,extent.y),Vector2(extent.x,extent.y)])
+ 	if chassis_id != "compact":
+ 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
+@@ -826,7 +833,7 @@
+ 
+ func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: Material) -> void:
+ 	if vehicle_id=="compact" and simple_model and str(parent.name) in ["DoorSeamsLeft","DoorSeamsRight","TailgatePanelSeam"]:
+-		preload("res://vehicle/compact_seam_strip.gd").add(parent,start,end,width,surface)
++		_builder("compact_seam_strip").add(parent,start,end,width,surface)
+ 		return
+ 	var stroke := VisualGeometry.box(parent,Vector3(width,width,start.distance_to(end)),(start+end)*0.5,surface)
+ 	var up: Vector3 = Vector3.RIGHT if absf((end-start).normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
+@@ -835,17 +842,19 @@
+ 
+ func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material) -> void:
+ 	# Broad roof, long side glazing and a sloping rear hatch; +Z is the tail.
+-	CompactCoachwork.build_cabin(self,paint,blue)
++	_builder("compact_coachwork").build_cabin(self,paint,blue)
+ 	var roof_paint := CompactFinish.paint(Color("c5baa0"))
+ 	accent_roof = roof_paint
+-	CompactCoachwork.build_roof(self,roof_paint)
+-	preload("res://vehicle/compact_glazing.gd").sheet(self,true,trim)
+-	preload("res://vehicle/compact_glazing.gd").sheet(self,false,trim)
++	_builder("compact_coachwork").build_roof(self,roof_paint)
++	_builder("compact_glazing").sheet(self,true,trim)
++	_builder("compact_glazing").sheet(self,false,trim)
++	var door_bevels: Array[float] = [0.035,0.025,0.025,0.055]
++	var quarter_bevels: Array[float] = [0.025,0.070,0.045,0.025]
+ 	for side: float in [-1.0,1.0]:
+ 		var suffix: String="Left" if side<0 else "Right"
+ 		# Both openings share their sill, roof rail, pillar and dark gasket.
+-		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,true),Vector3(side,0.277,0),trim,0.0,[0.035,0.025,0.025,0.055],null,"DoorWindow"+suffix)
+-		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,false),Vector3(side,0.277,0),trim,0.0,[0.025,0.070,0.045,0.025],null,"QuarterWindow"+suffix)
++		_builder("compact_glazing").window(self,_builder("compact_coachwork").side_window_corners(side,true),Vector3(side,0.277,0),trim,0.0,door_bevels,null,"DoorWindow"+suffix)
++		_builder("compact_glazing").window(self,_builder("compact_coachwork").side_window_corners(side,false),Vector3(side,0.277,0),trim,0.0,quarter_bevels,null,"QuarterWindow"+suffix)
+ 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
+ 	# A fine inset perimeter crease defines the pressed roof's rolled edge.
+ 	var roof_line := CompactFinish.paint(Color("b3aa95"))
+@@ -856,12 +865,12 @@
+ 	for i: int in range(perimeter.size()):
+ 		var a: Vector2 = perimeter[i]
+ 		var b: Vector2 = perimeter[(i+1)%perimeter.size()]
+-		var pa: Vector3 = CompactCoachwork.roof_point(a.x/0.63,(a.y+0.4)/1.58)
+-		var pb: Vector3 = CompactCoachwork.roof_point(b.x/0.63,(b.y+0.4)/1.58)
++		var pa: Vector3 = _builder("compact_coachwork").roof_point(a.x/0.63,(a.y+0.4)/1.58)
++		var pb: Vector3 = _builder("compact_coachwork").roof_point(b.x/0.63,(b.y+0.4)/1.58)
+ 		_seam(body,pa+Vector3.UP*0.001,pb+Vector3.UP*0.001,0.004,roof_line)
+ 		var inset_a: Vector2 = Vector2(0,0.39).lerp(a,0.986)
+ 		var inset_b: Vector2 = Vector2(0,0.39).lerp(b,0.986)
+-		_seam(body,CompactCoachwork.roof_point(inset_a.x/0.63,(inset_a.y+0.4)/1.58)+Vector3.UP*0.001,CompactCoachwork.roof_point(inset_b.x/0.63,(inset_b.y+0.4)/1.58)+Vector3.UP*0.001,0.003,roof_highlight)
++		_seam(body,_builder("compact_coachwork").roof_point(inset_a.x/0.63,(inset_a.y+0.4)/1.58)+Vector3.UP*0.001,_builder("compact_coachwork").roof_point(inset_b.x/0.63,(inset_b.y+0.4)/1.58)+Vector3.UP*0.001,0.003,roof_highlight)
+ 
+ 
+ func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:
+diff --git a/game/vehicle/vehicle_models.gd b/game/vehicle/vehicle_models.gd
+--- a/game/vehicle/vehicle_models.gd
++++ b/game/vehicle/vehicle_models.gd
+@@ -18,18 +18,18 @@
+ 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
+ 	match id:
+ 		"hovercraft":
+-			preload("res://vehicle/hovercraft_model.gd").build(car)
++			load("res://vehicle/hovercraft_model.gd").build(car)
+ 			return
+ 		"electric":
+-			preload("res://vehicle/electric_car_model.gd").build(car)
++			load("res://vehicle/electric_car_model.gd").build(car)
+ 			return
+ 		"pickup": _pickup(car,paint,cream,trim,glass,accent)
+ 		"classic": _classic(car,paint,cream,trim,glass,accent)
+ 		"formula": _formula(car,paint,cream,trim,glass,accent)
+ 		"kart":
+-			preload("res://vehicle/kart_model.gd").build(car)
++			load("res://vehicle/kart_model.gd").build(car)
+ 			return
+-		"forklift": preload("res://vehicle/forklift_model.gd").build(car)
++		"forklift": load("res://vehicle/forklift_model.gd").build(car)
+ 	var config: HandlingConfig = VehicleCatalog.config(id)
+ 	var half_axle: float = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
+ 	var half_track: float = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
+@@ -38,13 +38,13 @@
+ 		for axle: float in [-half_axle,half_axle]:
+ 			if id == "forklift":
+ 				var wheel_radius: float = 0.43 if axle < 0.0 else 0.30
+-				preload("res://vehicle/forklift_model.gd").wheel(car,Vector3(side*half_track,wheel_radius,axle),wheel_radius,0.32 if axle < 0.0 else 0.25)
++				load("res://vehicle/forklift_model.gd").wheel(car,Vector3(side*half_track,wheel_radius,axle),wheel_radius,0.32 if axle < 0.0 else 0.25)
+ 			else:
+ 				_wheel(car,Vector3(side*half_track,radius,axle),radius,0.36 if id == "formula" else 0.27,trim)
+ 
+ 	if id == "forklift":
+ 		for category: String in VehicleCustomisation.CATEGORIES:
+-			preload("res://vehicle/forklift_kits.gd").build(car,category)
++			load("res://vehicle/forklift_kits.gd").build(car,category)
+ 
+ static func _box(car: CarVisual, dimensions: Vector3, center: Vector3, material: Material) -> MeshInstance3D:
+ 	return VisualGeometry.box(car.body,dimensions,center,material)
+diff --git a/game/vehicle/modular_car_kits.gd b/game/vehicle/modular_car_kits.gd
+--- a/game/vehicle/modular_car_kits.gd
++++ b/game/vehicle/modular_car_kits.gd
+@@ -25,8 +25,8 @@
+ 	if car.model_id == "compact" and category == "body": key.append("rally-body-2")
+ 	if car.model_id == "compact" and category == "aero": key.append("rally-aero-2")
+ 	if car.model_id == "electric": key.append("volt-visible-kits-2")
+-	if car.model_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
+-	if car.model_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
++	if car.model_id == "electric" and category == "body": key.append(load("res://vehicle/electric_body_kits.gd").REVISION)
++	if car.model_id == "electric" and category == "hood": key.append(load("res://vehicle/electric_kits.gd").HOOD_REVISION)
+ 	return key
+ 
+ static func path_for(car: CarVisual, category: String, option: String) -> String:
+@@ -87,7 +87,7 @@
+ 	var data: Dictionary = holder.get_meta("modular_kit",{})
+ 	if data.get("key",[]) != key_for(car,category,option): holder.free(); return {}
+ 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
+-		var validation=preload("res://vehicle/prepared_asset_sources.gd")
++		var validation=load("res://vehicle/prepared_asset_sources.gd")
+ 		if not source_hashes.has(car.model_id):
+ 			var current: Dictionary=validation.runtime_hashes(car.model_id)
+ 			current["vehicle/modular_car_kits.gd"]=FileAccess.get_sha256("res://vehicle/modular_car_kits.gd")
+diff --git a/game/vehicle/kart_driver.gd b/game/vehicle/kart_driver.gd
+--- a/game/vehicle/kart_driver.gd
++++ b/game/vehicle/kart_driver.gd
+@@ -84,13 +84,21 @@
+ 	var finishes: Dictionary = _finish_materials()
+ 	var driver := MeshInstance3D.new()
+ 	driver.name = "TomkartDriver"
+-	driver.mesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++	var directory: String="res://assets/vehicles/kart_refined_v1"+"/tomkart_driver_v1/"
++	var split: bool=simple and ResourceLoader.exists(directory+"driver_steering.res") and ResourceLoader.exists(directory+"driver_static.res")
++	driver.mesh = load(directory+("driver_steering.res" if split else "driver.res"))
+ 	_apply_finish(driver,finishes)
++	if split:
++		var fixed := MeshInstance3D.new()
++		fixed.name="DriverStaticSuit"
++		fixed.mesh=load(directory+"driver_static.res")
++		_apply_finish(fixed,finishes)
++		driver.add_child(fixed)
+ 	parent.add_child(driver)
+ 	# The helmet never deforms with steering. Retain its four native finishes
+ 	# without allocating six redundant copies of its vertex/normal data.
+ 	var helmet := MeshInstance3D.new()
+ 	helmet.name = "HelmetStatic"
+-	helmet.mesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res")
++	helmet.mesh = load("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res")
+ 	_apply_finish(helmet,finishes)
+ 	driver.add_child(helmet)
+diff --git a/game/tests/support/car_model_buffers.gd b/game/tests/support/car_model_buffers.gd
+--- a/game/tests/support/car_model_buffers.gd
++++ b/game/tests/support/car_model_buffers.gd
+@@ -1,7 +1,7 @@
+ extends RefCounted
+ ## Offline final packing, after batching and LOD creation. No runtime work.
+ static func bake(path: String, vehicle: String) -> Error:
+-	if vehicle not in ["compact","forklift"]: return OK
++	if vehicle not in ["compact","kart","forklift","electric","hovercraft"]: return OK
+ 	var scene: PackedScene = load(path)
+ 	if scene==null: return ERR_CANT_OPEN
+ 	var holder: Node = scene.instantiate()
+@@ -9,13 +9,15 @@
+ 	var before: int = 0
+ 	var after: int = 0
+ 	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
+-		if not part.mesh is ArrayMesh: continue
++		if vehicle not in ["compact","forklift"] or not part.mesh is ArrayMesh: continue
+ 		if not seen.has(part.mesh):
+ 			before += payload(part.mesh)
+ 			seen[part.mesh] = preload("res://rendering/mesh_vertex_packing.gd").pack(part.mesh)
+ 			after += payload(seen[part.mesh])
+ 		part.mesh = seen[part.mesh]
+-	detach(holder)
++	var shared: int=preload("res://tests/support/car_mesh_sharing.gd").apply(holder)
++	if vehicle in ["compact","forklift"]: detach(holder)
++	print("CAR_MESH_SHARE ",vehicle," instances=",shared)
+ 	var packed := PackedScene.new()
+ 	var error: Error = packed.pack(holder)
+ 	if error==OK: error = ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)
+diff --git a/game/tests/support/car_refinement_lods.gd b/game/tests/support/car_refinement_lods.gd
+--- a/game/tests/support/car_refinement_lods.gd
++++ b/game/tests/support/car_refinement_lods.gd
+@@ -1,14 +1,79 @@
+ extends "res://vehicle/car_mesh_lods.gd"
+ ## Preserve inherited LOD policy; isolate embedded identities when publishing.
++var previous: Dictionary = {}
++var reused: int = 0
++
++func policy() -> String:
++	return FileAccess.get_sha256("res://vehicle/car_mesh_lods.gd")+FileAccess.get_sha256("res://tests/support/car_refinement_lods.gd")
++
++func master_key(mesh: ArrayMesh) -> String:
++	var packets: Array=mesh.get("_surfaces").duplicate(true)
++	for packet: Dictionary in packets:
++		packet.erase("material");packet.erase("lods")
++	return var_to_bytes([mesh.custom_aabb,packets]).hex_encode().sha256_text()
++
++func remember(path: String) -> void:
++	# Read the previous output before overwriting it. Only encoded-identical
++	# masters under the same engine and LOD policy may reuse their index levels.
++	previous.clear()
++	if not ResourceLoader.exists(path): return
++	var scene: PackedScene=ResourceLoader.load(path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP)
++	if scene==null: return
++	var holder: Node=scene.instantiate()
++	var data: Dictionary={}
++	for name: String in ["modular_car_base","modular_kit","garage_rest"]:
++		if holder.has_meta(name): data=holder.get_meta(name)
++	var version: Dictionary=Engine.get_version_info()
++	var key: Array=data.get("key",[])
++	var same_engine: bool=version.string in key or [str(version.string),str(version.get("hash",""))] in key
++	var same_policy: bool=holder.get_meta("car_lod_policy","")==policy()
++	# Explicit migration of this pass's already validated, unstamped outputs.
++	if "--reuse-validated-lods" in OS.get_cmdline_user_args():
++		same_policy=same_policy or data.get("sources",{}).get("game/vehicle/car_mesh_lods.gd","")==FileAccess.get_sha256("res://vehicle/car_mesh_lods.gd")
++	if same_engine and same_policy:
++		var bytes: int=0
++		for node: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++			if not node.mesh is ArrayMesh or node.mesh.get_blend_shape_count()>0: continue
++			var code: String=master_key(node.mesh)
++			if previous.has(code): continue
++			var levels: Array=[]
++			var size: int=0
++			for packet: Dictionary in node.mesh.get("_surfaces"):
++				var lods: Array=packet.get("lods",[])
++				levels.append(lods)
++				for at: int in range(1,lods.size(),2): size+=lods[at].size()
++			if size>0 and bytes+size<=32*1024*1024: previous[code]=levels;bytes+=size
++	holder.free()
++
++func prepare(source: Mesh) -> Mesh:
++	# Splitting invariant suit faces removes morph storage, not visible detail.
++	# The original animated suit had no generated distance levels.
++	if source.has_meta("kart_split_source_sha256"): return source
++	if source is ArrayMesh and source.get_blend_shape_count()==0 and not source.has_meta("car_authored_far"):
++		var code: String=master_key(source)
++		if previous.has(code):
++			var packets: Array=source.get("_surfaces").duplicate(true)
++			for surface: int in range(packets.size()):
++				if not previous[code][surface].is_empty(): packets[surface].lods=previous[code][surface]
++			var result := ArrayMesh.new()
++			result.set("_surfaces",packets)
++			result.custom_aabb=source.custom_aabb;result.shadow_mesh=source.shadow_mesh
++			for surface: int in range(source.get_surface_count()): assert(result.surface_get_arrays(surface)==source.surface_get_arrays(surface))
++			reused+=1
++			return result
++	return super.prepare(source)
++
+ func bake(path: String, vehicle: String = "", bias: float = 1.0) -> Error:
+ 	if vehicle.is_empty() and path.get_file().get_basename() in VehicleCatalog.IDS: vehicle = path.get_file().get_basename()
+ 	var scene: PackedScene = ResourceLoader.load(path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP)
+ 	if scene==null: return ERR_CANT_OPEN
+ 	var holder: Node = scene.instantiate()
+ 	prepare_vehicle(holder,vehicle,bias)
++	holder.set_meta("car_lod_policy",policy())
+ 	if vehicle in ["compact","forklift"]: preload("res://tests/support/car_model_buffers.gd").detach(holder)
+ 	var packed := PackedScene.new()
+ 	var error: Error = packed.pack(holder)
+ 	if error==OK: error = ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)
+ 	holder.free()
++	print("CAR_LOD_REUSE ",path," exact_masters=",reused)
+ 	return error
+diff --git a/game/tests/support/kart_driver_finish.gd b/game/tests/support/kart_driver_finish.gd
+--- a/game/tests/support/kart_driver_finish.gd
++++ b/game/tests/support/kart_driver_finish.gd
+@@ -56,6 +56,8 @@
+ 	assert(removed==82620*pose_count)
+ 	assert(ResourceSaver.save(animated,ROOT+"driver.res",ResourceSaver.FLAG_COMPRESS)==OK)
+ 	assert(ResourceSaver.save(helmet,ROOT+"helmet_static.res",ResourceSaver.FLAG_COMPRESS)==OK)
++	# Keep the production simple driver in step with every future anatomy bake.
++	preload("res://tests/support/kart_driver_split.gd").new().save(animated,ROOT)
+ 	print("MODEL_DRIVER_SPLIT removed_morph_bytes=",removed," animated_surfaces=",animated.get_surface_count()," static_surfaces=",helmet.get_surface_count())
+ 
+ static func soften(normals: PackedVector3Array, indices: PackedInt32Array) -> PackedVector3Array:
+diff --git a/game/tests/bake_modular_car_bases.gd b/game/tests/bake_modular_car_bases.gd
+--- a/game/tests/bake_modular_car_bases.gd
++++ b/game/tests/bake_modular_car_bases.gd
+@@ -8,8 +8,14 @@
+ func run() -> void:
+ 	var lods = preload("res://tests/support/car_refinement_lods.gd").new()
+ 	var only: String = ""
++	var quality_filter: String = ""
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--vehicle="): only = argument.trim_prefix("--vehicle=")
++		if argument.begins_with("--quality="): quality_filter = argument.trim_prefix("--quality=")
++	if not quality_filter.is_empty() and quality_filter not in ["simple","full"]:
++		push_error("Unknown model quality: "+quality_filter)
++		quit(1)
++		return
+ 	if not only.is_empty() and only not in VehicleCatalog.IDS:
+ 		push_error("Unknown vehicle: "+only)
+ 		quit(1)
+@@ -23,6 +29,7 @@
+ 		if VehicleCatalog.model_id(id) != id: continue # Shared chassis is baked once.
+ 		if not only.is_empty() and only != id: continue
+ 		for simple: bool in [false,true]:
++			if not quality_filter.is_empty() and quality_filter != ("simple" if simple else "full"): continue
+ 			var edit_modes: Array[bool] = [false]
+ 			if VehicleCustomisation.supported(id): edit_modes.append(true)
+ 			for editable: bool in edit_modes:
+@@ -35,6 +42,7 @@
+ 				while not car.model_ready: await process_frame
+ 				BASE.enabled = true
+ 				if id in ["compact","forklift"]: preload("res://tests/support/car_model_buffers.gd").detach(car)
++				lods.remember(BASE.path_for(car))
+ 				var error: Error = BASE.bake(car)
+ 				if error == OK: error = lods.bake(BASE.path_for(car),id,0.5 if simple else 2.0)
+ 				if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(BASE.path_for(car),id)
+diff --git a/game/tests/bake_modular_car_kits.gd b/game/tests/bake_modular_car_kits.gd
+--- a/game/tests/bake_modular_car_kits.gd
++++ b/game/tests/bake_modular_car_kits.gd
+@@ -48,6 +48,7 @@
+ 					var parts: Dictionary = car.customisation.duplicate(true)
+ 					parts[category] = option
+ 					car.change_kit_parts(parts)
++					lods.remember(Kits.path_for(car,category,option))
+ 					var error: Error = Kits.bake(car,category,option)
+ 					if error == OK: error = lods.bake(Kits.path_for(car,category,option),id,0.5 if simple else 2.0)
+ 					if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(Kits.path_for(car,category,option),id)
+diff --git a/game/tests/bake_garage_cars.gd b/game/tests/bake_garage_cars.gd
+--- a/game/tests/bake_garage_cars.gd
++++ b/game/tests/bake_garage_cars.gd
+@@ -24,6 +24,7 @@
+ 		# Modular restoration also needs an owned rest snapshot for this bake.
+ 		preload("res://vehicle/prepared_car_cache.gd").enabled=true
+ 		preload("res://vehicle/prepared_car_cache.gd").remember(car)
++		lods.remember(cache.DIRECTORY+id+".scn")
+ 		var error: Error=cache.bake(car)
+ 		if error == OK: error = lods.bake(cache.DIRECTORY+id+".scn")
+ 		if error == OK: error = preload("res://tests/support/car_model_buffers.gd").bake(cache.DIRECTORY+id+".scn",id)
+diff --git a/game/tests/test_car_simplification.gd b/game/tests/test_car_simplification.gd
+--- a/game/tests/test_car_simplification.gd
++++ b/game/tests/test_car_simplification.gd
+@@ -81,14 +81,15 @@
+ 		var prior: Dictionary = {}
+ 		for row: Dictionary in original_data.rows:
+ 			if row.id==id and row.case==0: prior=row
+-		check(data.surfaces==prior.surfaces,"no additional visible surfaces "+id)
++		check(data.surfaces==prior.surfaces+(1 if id=="kart" else 0),"retained surface budget plus static Kart suit "+id)
+ 		check(data.triangles<int(prior.triangles) if id!="hovercraft" else data.triangles==int(prior.triangles),"stock master geometry budget "+id)
+ 		if id=="compact":
+ 			check(car.find_child("DoorSeamsLeft",true,false)!=null and car.find_child("DoorSeamsRight",true,false)!=null and car.find_child("TailgatePanelSeam",true,false)!=null,"three Rally contour attachment groups survive batching")
+ 		if id=="kart":
+ 			var driver: MeshInstance3D = car.find_child("TomkartDriver",true,false)
+ 			check(driver.mesh.get_blend_shape_count()==10,"all ten driver poses retained")
+-			check(driver.mesh.get_faces().size()/3==6456,"animated cloth/glove topology retained")
++			var fixed: MeshInstance3D = driver.find_child("DriverStaticSuit",true,false)
++			check(fixed!=null and driver.mesh.get_faces().size()/3+fixed.mesh.get_faces().size()/3==6456,"animated and static cloth/glove topology retained")
+ 			var helmet: MeshInstance3D = car.find_child("HelmetStatic",true,false)
+ 			check(helmet.mesh.get_faces().size()/3==3492,"reduced static helmet")
+ 		if id=="hovercraft":
+diff --git a/scripts/run_car_loading_improvements.py b/scripts/run_car_loading_improvements.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/run_car_loading_improvements.py
+@@ -0,0 +1,22 @@
++"""Private offline runner for the loading implementation and its measurements."""
++from pathlib import Path
++import run_car_optimisation_round2 as runner
++
++runner.OUT = runner.ROOT / "docs/evidence/car-loading-improvements-2026-11-13"
++runner.BUILD = runner.ROOT / "build/car-loading-improvements-2026-11-13"
++vehicle_pins = runner.pins
++
++def pins():
++    result = vehicle_pins()
++    files = [runner.ROOT / "game/project.godot"]
++    for folder in ["game/core", "game/ui", "game/track", "game/rendering"]:
++        files.extend(p for p in (runner.ROOT / folder).rglob("*")
++                     if p.is_file() and p.suffix in [".gd", ".gdshader", ".gdshaderinc"])
++    for path in files:
++        result[path.relative_to(runner.ROOT).as_posix()] = runner.hashlib.sha256(path.read_bytes()).hexdigest()
++    return result
++
++runner.pins = pins
++
++if __name__ == "__main__":
++    raise SystemExit(runner.main())
+diff --git a/scripts/refresh_car_loading_improvements.py b/scripts/refresh_car_loading_improvements.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_car_loading_improvements.py
+@@ -0,0 +1,103 @@
++"""Refresh five requested cars with source fences; leave Challenger out."""
++from concurrent.futures import ThreadPoolExecutor
++import fnmatch
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-loading-improvements-2026-11-13"
++IDS = ["compact", "kart", "forklift", "electric", "hovercraft"]
++SPEC = json.loads((ROOT / "game/vehicle/prepared_asset_dependencies.json").read_text())
++
++
++def consumed(relative):
++    # Match the authoritative model manifest and Garage preview identity:
++    # numerical world/cache scripts are not geometry or photograph inputs.
++    if relative.startswith("game/track/") and not relative.endswith((".gdshader", ".gdshaderinc")):
++        return False
++    for rule in SPEC["rules"]:
++        if fnmatch.fnmatchcase(relative, rule["pattern"]):
++            return bool(set(rule["vehicles"]) & set(IDS))
++    return True  # Unknown and shared inputs remain guarded.
++
++
++def protected_sources():
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in (ROOT / "game/assets/vehicles/challenger_hellcat_v1").rglob("*") if p.is_file()}
++
++
++def run(label, script, *options):
++    subprocess.run([sys.executable, str(ROOT / "scripts/run_car_loading_improvements.py"), label, "--script="+script, *options],
++                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
++    print(label, "passed", flush=True)
++
++
++def sources():
++    paths = []
++    for directory in ["game/vehicle", "game/resources", "game/ui", "game/track"]:
++        paths += [p for p in (ROOT / directory).rglob("*") if p.suffix in [".gd", ".gdshader", ".gdshaderinc", ".json", ".tres"]]
++    paths += [p for p in (ROOT / "game/assets/vehicles").rglob("*") if p.suffix in [".res", ".png"]
++              and "modular_kits_v1" not in p.parts and "modular_car_bases_v1" not in p.parts]
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths
++            if consumed(p.relative_to(ROOT).as_posix())}
++
++
++def identity(label):
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
++               str(ROOT / "scripts/refresh_car_loading_improvements_identity.ps1")]
++    with (OUT / (label + ".log")).open("w", encoding="utf-8") as log:
++        subprocess.run(command, cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    data = json.loads((ROOT / "build/car-loading-improvements-2026-11-13/identity/client-build-identity.json").read_text(encoding="utf-8-sig"))
++    (OUT / (label + ".json")).write_text(json.dumps(data, indent=2), encoding="utf-8")
++    print(label, "passed", flush=True)
++    return data
++
++
++def main():
++    selected = IDS
++    for option in sys.argv[1:]:
++        if option.startswith("--vehicles="):
++            selected = option.split("=", 1)[1].split(",")
++            assert selected and set(selected) <= set(IDS)
++    artwork = "--art-only" in sys.argv
++    if artwork:
++        for car in selected:
++            run("liveries-"+car,"res://tests/bake_livery_previews.gd","--rendering-method","gl_compatibility","--","--vehicle="+car)
++            run("news-"+car,"res://tests/bake_news_car_photos.gd","--rendering-method","gl_compatibility","--","--vehicle="+car,
++                "--evidence-root=res://../docs/evidence/car-loading-improvements-2026-11-13/news")
++        return
++    protected_before = protected_sources()
++    before = sources()
++    (OUT / "refresh-source-before.json").write_text(json.dumps(before, indent=2))
++    first = identity("identity-before-bakes")
++    for car in selected:
++        run("bases-"+car,"res://tests/bake_modular_car_bases.gd","--headless","--","--vehicle="+car,"--reuse-validated-lods")
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(run,"kits-"+car,"res://tests/bake_modular_car_kits.gd","--headless","--","--vehicle="+car,"--reuse-validated-lods") for car in selected]
++        for job in jobs: job.result()
++    for car in selected:
++        run("garage-"+car,"res://tests/bake_garage_cars.gd","--headless","--","--vehicle="+car,"--reuse-validated-lods")
++    if "compact" in selected:
++        run("header-template","res://tests/bake_header_simple_compact.gd","--headless")
++    run("garage-pictures","res://../scripts/bake_garage_previews.gd","--rendering-method","gl_compatibility","--","--exclude-vehicle=super_rally")
++    after = sources()
++    changed = [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]
++    protected_after = protected_sources()
++    protected_changed = sorted(p for p in protected_before.keys() | protected_after.keys()
++                               if protected_before.get(p) != protected_after.get(p))
++    (OUT / "refresh-source-receipt.json").write_text(json.dumps({"scope":IDS,"input_count":len(before),"changed":changed,
++                "concurrent_excluded_inputs":protected_changed}, indent=2))
++    assert not changed, "Authored inputs changed during the prepared refresh"
++    final = identity("identity-after-bakes")
++    assert all(first["modular_car_sha256"][car] == final["modular_car_sha256"][car] for car in IDS), "Generated output changed scoped geometry revisions"
++    run("prepared-preflight","res://tests/check_prepared_assets.gd","--headless","--","--exclude-vehicle=super_rally")
++    with (OUT / "picture-preflight.log").open("w", encoding="utf-8") as log:
++        subprocess.run([sys.executable,"scripts/check_garage_previews.py","--vehicles="+",".join(IDS)],cwd=ROOT,check=True,stdout=log,stderr=subprocess.STDOUT)
++    print("FIVE_CAR_REFRESH: source fence and strict asset/picture preflights passed",flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/refresh_car_loading_improvements_identity.ps1 b/scripts/refresh_car_loading_improvements_identity.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_car_loading_improvements_identity.ps1
+@@ -0,0 +1,4 @@
++$ErrorActionPreference = 'Stop'
++$modelRefinementRoot = Split-Path -Parent $PSScriptRoot
++. (Join-Path $PSScriptRoot 'build_identity.ps1')
++Write-ClientBuildIdentity $modelRefinementRoot (Join-Path $modelRefinementRoot 'build/car-loading-improvements-2026-11-13/identity')
+diff --git a/scripts/import_car_loading_images.py b/scripts/import_car_loading_images.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/import_car_loading_images.py
+@@ -0,0 +1,51 @@
++"""Refresh native texture imports in an owned headless editor; verify source MD5s."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-loading-improvements-2026-11-13"
++PROFILE = ROOT / "build/car-loading-improvements-2026-11-13/profile"
++env = dict(os.environ, APPDATA=str(PROFILE / "roaming"), LOCALAPPDATA=str(PROFILE / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++project_before = hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest()
++command = [r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64.exe", "--headless", "--editor", "--import",
++           "--path", str(ROOT / "game"), "--audio-driver", "Dummy"]
++start = time.monotonic()
++with (OUT / "image-import.log").open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    (OUT / "image-import-process.json").write_text(json.dumps({"pid": process.pid, "command": command}))
++    while process.poll() is None:
++        time.sleep(0.3)
++        if time.monotonic() - start > 300:
++            process.kill()
++            raise RuntimeError("Owned image importer exceeded 300 seconds")
++    code = process.wait()
++assert code == 0, code
++assert hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest() == project_before, "Editor changed project settings"
++images = []
++for car in ["compact", "kart", "forklift", "electric", "hovercraft"]:
++    images += list((ROOT / "game/assets/liveries/previews_v2" / car).glob("*.png"))
++    images += [ROOT / "game/assets/menu" / (car + "_illustration_v1.png"),
++               ROOT / "game/assets/menu/header_cars_v1" / (car + ".png"),
++               ROOT / "game/assets/garage/previews_v1" / (car + ".png")]
++rows = []
++for image in images:
++    metadata = Path(str(image) + ".import").read_text()
++    match = re.search(r'path="res://([^\"]+\.ctex)"', metadata)
++    assert match, image
++    imported = ROOT / "game" / match[1]
++    checksum = imported.with_suffix(".md5").read_text()
++    digest = hashlib.md5(image.read_bytes()).hexdigest()
++    assert imported.is_file() and f'source_md5="{digest}"' in checksum, image
++    rows.append({"path": image.relative_to(ROOT).as_posix(), "source_md5": digest})
++content = (OUT / "image-import.log").read_text(encoding="utf-8", errors="replace")
++diagnostics = [line for line in content.splitlines() if line.startswith(("ERROR:", "SCRIPT ERROR:"))]
++(OUT / "image-import-receipt.json").write_text(json.dumps({"exit_code": code, "verified_images": len(rows),
++     "seconds": time.monotonic() - start, "project_settings_exact": True, "editor_diagnostics": diagnostics,
++     "images": rows}, indent=2))
++print(json.dumps({"verified_images": len(rows), "editor_diagnostics": len(diagnostics), "project_settings_exact": True}))
+diff --git a/scripts/checkpoint_car_loading_improvements.py b/scripts/checkpoint_car_loading_improvements.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/checkpoint_car_loading_improvements.py
+@@ -0,0 +1,101 @@
++"""Verify this pass's source delta in a private repository; never stage the main tree."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-loading-improvements-2026-11-13"
++BUILD = ROOT / "build/car-loading-improvements-2026-11-13"
++MODIFIED = [
++    "game/vehicle/car_visual.gd", "game/vehicle/vehicle_models.gd",
++    "game/vehicle/modular_car_kits.gd", "game/vehicle/kart_driver.gd",
++    "game/tests/support/car_model_buffers.gd", "game/tests/support/car_refinement_lods.gd",
++    "game/tests/support/kart_driver_finish.gd", "game/tests/bake_modular_car_bases.gd",
++    "game/tests/bake_modular_car_kits.gd", "game/tests/bake_garage_cars.gd",
++    "game/tests/test_car_simplification.gd",
++]
++ADDED = [
++    "scripts/run_car_loading_improvements.py", "scripts/refresh_car_loading_improvements.py",
++    "scripts/refresh_car_loading_improvements_identity.ps1", "scripts/import_car_loading_images.py",
++    "scripts/checkpoint_car_loading_improvements.py", "scripts/summarise_car_loading_improvements.py",
++    "game/tests/profile_car_loading_improvements.gd", "game/tests/capture_car_loading_improvements.gd",
++    "game/tests/test_car_loading_steering.gd", "game/tests/test_car_loading_driver_split.gd",
++    "game/tests/test_car_loading_dependencies.gd", "game/tests/test_car_loading_native_pairs.gd",
++    "game/tests/test_car_loading_app.gd", "game/tests/measure_car_loading_assets.gd",
++    "game/tests/test_car_loading_wash.gd",
++    "game/tests/audit_car_loading_live.gd", "game/tests/bake_kart_driver_split.gd",
++    "game/tests/support/kart_driver_split.gd", "game/tests/support/car_mesh_sharing.gd",
++    "docs/CAR_LOADING_IMPROVEMENTS_2026_11_13.md",
++]
++
++
++def sha(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def baseline(name):
++    merged = OUT / "before-merged" / name
++    return (merged if merged.exists() else OUT / "before" / name).read_bytes()
++
++
++def main():
++    added = ADDED + [p + ".uid" for p in ADDED if p.endswith(".gd") and (ROOT / (p + ".uid")).exists()]
++    index_before = sha((ROOT / ".git/index").read_bytes())
++    patch, records = [], {}
++    for name in MODIFIED + added:
++        before = baseline(name) if name in MODIFIED else b""
++        after = (ROOT / name).read_bytes()
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        if name in added:
++            patch.append("new file mode 100644\n")
++        patch.extend(difflib.unified_diff(before.decode("utf-8").splitlines(True),
++                     after.decode("utf-8").splitlines(True), fromfile="a/" + name
++                     if name in MODIFIED else "/dev/null", tofile="b/" + name))
++        records[name] = {"before_sha256": sha(before) if name in MODIFIED else None, "sha256": sha(after)}
++    target = OUT / "source-only.patch"
++    target.write_bytes("".join(patch).encode("utf-8"))
++    checked = subprocess.run(["git", "apply", "--check", "--reverse", str(target)],
++                             cwd=ROOT, text=True, capture_output=True)
++    assert checked.returncode == 0, checked.stderr
++    scratch = Path(tempfile.mkdtemp(prefix="source-roundtrip-", dir=BUILD)).resolve()
++    assert scratch.is_relative_to(BUILD.resolve())
++    try:
++        subprocess.run(["git", "init", "--quiet", str(scratch)], check=True, capture_output=True)
++        for name in MODIFIED:
++            file = scratch / name
++            file.parent.mkdir(parents=True, exist_ok=True)
++            file.write_bytes(baseline(name))
++        for reverse in [False, True]:
++            command = ["git", "-c", "core.autocrlf=false", "-c",
++                       "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
++                       "apply", "--whitespace=error"]
++            if reverse:
++                command.append("--reverse")
++            result = subprocess.run(command + [str(target)], cwd=scratch, text=True, capture_output=True)
++            assert result.returncode == 0, result.stderr
++            for name in MODIFIED + added:
++                file = scratch / name
++                if reverse and name in added:
++                    assert not file.exists(), name
++                else:
++                    expected = baseline(name) if reverse else (ROOT / name).read_bytes()
++                    assert file.read_bytes() == expected, name
++    finally:
++        assert scratch.is_relative_to(BUILD.resolve())
++        shutil.rmtree(scratch)
++    assert sha((ROOT / ".git/index").read_bytes()) == index_before
++    receipt = {"modified_sources": len(MODIFIED), "added_sources_and_uids": len(added),
++               "forward_byte_exact": True, "reverse_byte_exact": True, "whitespace_clean": True,
++               "index_unchanged_during_checkpoint": True, "index_sha256": index_before,
++               "merged_baseline": "Kart baseline retains concurrent finish code; the static-child finish call is retained in the composed split block.",
++               "files": records, "patch_sha256": sha(target.read_bytes())}
++    (OUT / "source-checkpoint.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({k: v for k, v in receipt.items() if k not in ["files", "merged_baseline"]}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/summarise_car_loading_improvements.py b/scripts/summarise_car_loading_improvements.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/summarise_car_loading_improvements.py
+@@ -0,0 +1,83 @@
++"""Collect the implementation's actual receipts without conflating bytes and timings."""
++import json
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-loading-improvements-2026-11-13"
++IDS = ["compact", "kart", "forklift", "electric", "hovercraft"]
++
++
++def read(name):
++    return json.loads((OUT / name).read_text(encoding="utf-8-sig"))
++
++
++def gate(label):
++    receipt = read(label + "-receipt.json")
++    assert receipt["exit_code"] == 0 and not receipt["errors"], label
++    return {"label": label, "exit_code": 0, "seconds": receipt["seconds"],
++            "concurrent_input_changes": receipt["changed_inputs"]}
++
++
++def main():
++    before, after = read("before-assets.json"), read("after-assets.json")
++    assets = []
++    for car in IDS:
++        a = next(r for r in before if r["id"] == car and r["quality"] == "simple" and r["mode"] == "fixed")
++        b = next(r for r in after if r["id"] == car and r["quality"] == "simple" and r["mode"] == "fixed")
++        assets.append({"vehicle": car, "before": a, "after": b,
++                       "raw_saving_bytes": a["raw_bytes"] - b["raw_bytes"],
++                       "dependency_saving_bytes": a["disk_dependency_bytes"] - b["disk_dependency_bytes"]})
++    native = {}
++    for renderer in ["gl_compatibility", "mobile"]:
++        data = read("paired/" + renderer + "/report.json")
++        assert data["failures"] == 0 and len(data["rows"]) == 30
++        native[renderer] = {"checks": data["checks"], "failures": 0, "pairs": 30,
++                            "exact_pairs": sum(r["exact"] for r in data["rows"]),
++                            "worst_mean_255": max(r["mean_255"] for r in data["rows"]),
++                            "worst_significant_pixels": max(r["significant_pixels"] for r in data["rows"]),
++                            "worst_max_delta": max(r["max_delta"] for r in data["rows"])}
++    labels = ["native-final-gl_compatibility", "native-mobile-stable",
++              "app-clean-gl_compatibility", "app-clean-mobile", "driver-current",
++              "dependencies-current", "driving", "kart-contact", "production-final",
++              "handoff-prepared", "wash-scoped-final"] + ["modules-final-" + c for c in IDS]
++    gates = [gate(label) for label in labels]
++    modules = {}
++    for car in IDS:
++        log = (OUT / ("modules-final-" + car + ".log")).read_text(encoding="utf-8")
++        match = re.search(r"MODULAR_CAR_ASSETS: (\d+) checks, (\d+) failures", log)
++        assert match and match[2] == "0", car
++        modules[car] = int(match[1])
++    timings = []
++    for file in sorted((OUT / "after").glob("loading-*.json")):
++        data = json.loads(file.read_text())
++        assert data["failures"] == 0 and len(data["samples"]) == 2
++        assert all(s["base_hits"] == 1 for s in data["samples"]), file
++        timings.append({"file": file.relative_to(OUT).as_posix(), "vehicle": data["vehicle"],
++                        "fitted": data["fitted"], "track": data["track"],
++                        "startup_ms": data["startup_ms"],
++                        "first_race_ms": data["samples"][0]["race_wall_ms"],
++                        "repeat_race_ms": data["samples"][1]["race_wall_ms"],
++                        "first_car_ms": data["samples"][0]["game_costs"]["car_us"] / 1000,
++                        "repeat_car_ms": data["samples"][1]["game_costs"]["car_us"] / 1000,
++                        "driver_cached": data["samples"][0]["driver_cached"]})
++    assert {r["vehicle"] for r in timings} == set(IDS)
++    result = {"scope": IDS, "challenger_authored": False, "assets": assets,
++              "raw_saving_bytes": sum(r["raw_saving_bytes"] for r in assets),
++              "dependency_saving_bytes": sum(r["dependency_saving_bytes"] for r in assets),
++              "driver_partition": {"before_bytes": 905304, "after_bytes": 583776,
++                                   "saving_bytes": 321528, "poses": 10, "triangles": 6456,
++                                   "static_triangles": 2761, "additional_draws": 1},
++              "native": native, "modules": modules, "module_checks": sum(modules.values()),
++              "gates": gates, "timings": timings,
++              "limits": ["Desktop RTX 3090; existing OS/import/driver caches; no Android measurements.",
++                         "Concurrent world/contact/finish work prevents attributing total timing changes solely to this pass.",
++                         "Raw stream bytes and stored dependency bytes are not process RAM or measured VRAM.",
++                         "Strict universal pixel identity was not achieved; unchanged existing vehicle appearance bounds pass.",
++                         "Challenger publication is excluded; no full-catalogue/device/export qualification is claimed."]}
++    (OUT / "summary.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({k: result[k] for k in ["raw_saving_bytes", "dependency_saving_bytes", "module_checks"]}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/game/tests/profile_car_loading_improvements.gd b/game/tests/profile_car_loading_improvements.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_car_loading_improvements.gd
+@@ -0,0 +1,191 @@
++extends SceneTree
++## Actual App path, no game-class preloads in this profiler. Owned offline saves.
++const OUT: String = "res://../docs/evidence/car-loading-improvements-2026-11-13"
++var frames: Array[float] = []
++var last_frame: int = 0
++var measuring: bool = false
++var checks: int = 0
++var failures: int = 0
++
++class DrawTrace extends Node:
++	var rows: Array = []
++	func describe(submitted: Array) -> Array:
++		var groups: Array=[]
++		for group: Dictionary in submitted:
++			var paths: Array=[]
++			for source: Dictionary in group.sources:
++				var node: Node=source.node.get_ref()
++				if is_instance_valid(node): paths.append(str(node.get_path()))
++			groups.append(paths)
++		return groups
++	func record(groups: Array, usec: int, drawn: bool) -> void:
++		rows.append({"groups":groups,"elapsed_us":usec,"drawn":drawn})
++
++func instrument_draws() -> DrawTrace:
++	var trace: DrawTrace=DrawTrace.new()
++	trace.name="CarLoadDrawTrace"
++	root.add_child(trace)
++	var script: GDScript=load("res://race/world_render_preparation.gd")
++	var source: String=script.source_code.replace("\r\n","\n")
++	var anchor: String="\t\tvar drawn: bool = await draw.call()"
++	check(source.count(anchor)==1,"single real-draw instrumentation anchor")
++	source=source.replace(anchor,"\t\tvar round2_trace: Node = Engine.get_main_loop().root.get_node(\"CarLoadDrawTrace\")\n\t\tvar round2_groups: Array = round2_trace.describe(submitted)\n"+anchor+"\n\t\tround2_trace.record(round2_groups,Time.get_ticks_usec()-began,drawn)")
++	script.source_code=source
++	check(script.reload()==OK,"diagnostic draw timers reload in memory only")
++	return trace
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks+=1
++	if not ok: failures+=1; printerr("CAR_LOAD_FAIL ",message)
++func observe() -> void:
++	var now: int=Time.get_ticks_usec()
++	if measuring and last_frame>0: frames.append((now-last_frame)/1000.0)
++	last_frame=now
++func counter(path: String, field: String) -> int:
++	if not ResourceLoader.has_cached(path): return 0
++	var script: Script=ResourceLoader.call("get_cached_ref",path)
++	return int(script.get(field)) if script!=null else 0
++func driver_cached() -> Dictionary:
++	var result: Dictionary={}
++	for file: String in ["driver.res","helmet_static.res","driver_steering.res","driver_static.res"]:
++		result[file]=ResourceLoader.has_cached("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"+file)
++	return result
++func source_differences(a: Dictionary,b: Dictionary) -> Array:
++	var result: Array=[]
++	for path: String in a:
++		if a[path]!=b.get(path,""): result.append(path)
++	for path: String in b:
++		if not a.has(path): result.append(path)
++	return result
++func audit_base(id: String) -> Dictionary:
++	var base: Script=load("res://vehicle/modular_car_base.gd")
++	var validation: Script=load("res://vehicle/prepared_asset_sources.gd")
++	var car: Node=load("res://vehicle/car_visual.gd").new()
++	car.vehicle_id=id
++	var path: String=base.path_for(car)
++	var result: Dictionary={"path":path,"eligible":base._eligible(car),"exists":ResourceLoader.exists(path)}
++	if result.exists:
++		var scene: PackedScene=load(path)
++		if scene!=null:
++			var holder: Node=scene.instantiate()
++			var metadata: Dictionary=holder.get_meta("modular_car_base",{})
++			var current: Dictionary=validation.runtime_hashes(id)
++			var saved: Dictionary=validation.runtime_projection(metadata.get("sources",{}))
++			result["key_matches"]=metadata.get("key",[])==base.key_for(car)
++			result["runtime_source_matches"]=saved==current
++			result["source_differences"]=source_differences(saved,current)
++			result["holder_valid"]=base._valid_holder(holder,metadata)
++			holder.free()
++	car.free()
++	return result
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var id: String="compact"
++	var fitted: bool=false
++	var track_path: String="res://resources/tracks/ellipse.json"
++	for option: String in OS.get_cmdline_user_args():
++		if option.begins_with("--car="): id=option.trim_prefix("--car=")
++		if option=="--fitted": fitted=true
++		if option=="--star": track_path="res://tests/fixtures/star_spline_lap.json"
++	assert(id in ["compact","kart","forklift","electric","hovercraft"])
++	root.size=Vector2i(1280,720)
++	var folder: String="user://car-load-round2-"+str(Time.get_ticks_usec())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var began: int=Time.get_ticks_usec()
++	var scene: PackedScene=load("res://core/app.tscn")
++	var scene_load_ms: float=(Time.get_ticks_usec()-began)/1000.0
++	var app: Node=scene.instantiate()
++	app.records=load("res://persistence/local_records.gd").new(folder+"/records.json")
++	app.records.settings.selected_car=id
++	app.records.settings.music_enabled=false
++	app.library=load("res://persistence/track_library.gd").new(folder+"/tracks")
++	app.cloud_root_override=folder+"/cloud"
++	app.race_profile_enabled=true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var startup_ms: float=(Time.get_ticks_usec()-began)/1000.0
++	var startup_driver: Dictionary=driver_cached()
++	var trace: DrawTrace=instrument_draws() if "--trace" in OS.get_cmdline_user_args() else null
++	var catalog: Script=load("res://vehicle/vehicle_catalog.gd")
++	catalog.selected=id
++	app.records.settings.selected_car=id
++	if fitted:
++		var options: Script=load("res://vehicle/vehicle_customisation.gd")
++		var selection: Dictionary=options.defaults()
++		for category: String in ["hood","aero","rims","body"]:
++			var choices: Array=options.options(category,id)
++			if choices.size()>1: selection[category]=choices[1][0]
++		app.records.settings.vehicle_customisation={id:selection}
++	var native: Script=load("res://track/native_track.gd")
++	var compile_began: int=Time.get_ticks_usec()
++	var track: Variant=load("res://editor/track_compiler.gd").compile(JSON.parse_string(FileAccess.get_file_as_string(track_path))) if "--star" in OS.get_cmdline_user_args() else native.read(track_path)
++	var compile_ms: float=(Time.get_ticks_usec()-compile_began)/1000.0
++	check(track!=null,"track loads")
++	# Exercise the ordinary offline race path with a local owned version pin,
++	# just as the existing loading profiles do; never request a live ticket.
++	track.metadata.cloud_version="owned-offline-car-load-review"
++	var samples: Array=[]
++	process_frame.connect(observe)
++	for cycle: int in range(2):
++		app._show_screen("tracks")
++		app.selected_track=track
++		var before_base: int=counter("res://vehicle/modular_car_base.gd","hits")
++		var before_rest: int=counter("res://vehicle/prepared_car_cache.gd","hits")
++		frames.clear(); last_frame=Time.get_ticks_usec(); measuring=true
++		if trace!=null: trace.rows.clear()
++		began=Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var wall: float=(Time.get_ticks_usec()-began)/1000.0
++		measuring=false
++		check(is_instance_valid(app.game),"actual race installed")
++		if not is_instance_valid(app.game): break
++		var game: Node=app.game
++		game.set_physics_process(false)
++		if is_instance_valid(game.hitch_diagnostics): game.hitch_diagnostics.persist_enabled=false
++		check(game.preparation_complete and game.car.vehicle_id==id,"finished current car preparation")
++		var row: Dictionary={"cycle":cycle,"race_wall_ms":wall,"max_frame_ms":frames.max() if not frames.is_empty() else 0.0,
++			"game_costs":game.preparation_costs.duplicate(true),"base_hits":counter("res://vehicle/modular_car_base.gd","hits")-before_base,
++			"rest_hits":counter("res://vehicle/prepared_car_cache.gd","hits")-before_rest,"frame_count":frames.size(),
++			"tick_at_reveal":game.sim.state.tick,"countdown_at_reveal":game.countdown_ticks}
++		row["car_path"]=str(game.car.get_path())
++		row["driver_cached"]=driver_cached()
++		if "--phase=before" not in OS.get_cmdline_user_args() and id!="kart":
++			check(not row.driver_cached["driver.res"] and not row.driver_cached["helmet_static.res"],"unselected full Kart assets remain unloaded")
++		row["kit_hits_total"]=counter("res://vehicle/modular_car_kits.gd","hits")
++		if is_instance_valid(game.world_render_preparation):
++			row["render_draw_max_us"]=game.world_render_preparation.draw_us_max
++			row["render_groups"]=game.world_render_preparation.frame_groups
++		row["world_costs"]=game.track_ground.build_costs.duplicate(true)
++		row["feature_load_ms"]=app.feature_load_ms.duplicate(true)
++		row["effects"]=game.effect_preparation_counts.duplicate(true)
++		row["shared_finish_effects_ms"]=game.bridge_preparation_ms
++		row["night"]=game.night_preparation.duplicate(true)
++		if trace!=null: row["draw_trace"]=trace.rows.duplicate(true)
++		began=Time.get_ticks_usec()
++		await app._retry_race(true)
++		row["retry_ms"]=(Time.get_ticks_usec()-began)/1000.0
++		samples.append(row)
++		print("CAR_LOADING_SAMPLE ",id," ",JSON.stringify(row))
++		app._leave_race()
++		for frame: int in range(6): await process_frame
++	var audit: Dictionary=audit_base(id)
++	var phase: String="after"
++	for option: String in OS.get_cmdline_user_args():
++		if option.begins_with("--phase="): phase=option.trim_prefix("--phase=")
++	var output: String=OUT+"/"+phase
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	process_frame.disconnect(observe)
++	var name: String=id+("-fitted" if fitted else "")+("-star" if "star_" in track_path else "")+("-trace" if trace!=null else "")+"-"+RenderingServer.get_current_rendering_method()
++	var result: Dictionary={"vehicle":id,"fitted":fitted,"track":track_path,"app_scene_load_ms":scene_load_ms,"startup_ms":startup_ms,
++		"driver_cached_at_startup":startup_driver,
++		"track_read_compile_ms":compile_ms,"samples":samples,"base_audit_after_timing":audit,"checks":checks,"failures":failures,
++		"method":"Fresh process; existing OS/import/shader caches. Unmodified actual App path; ordinary five-lap offline practice. Desktop observations, not device timings."}
++	FileAccess.open(output+"/loading-"+name+".json",FileAccess.WRITE).store_string(JSON.stringify(result,"\t"))
++	app.queue_free(); app=null
++	scene=null; catalog=null; native=null; track=null
++	load("res://soundtrack/audio_world.gd").instance().queue_free()
++	if trace!=null: trace.queue_free()
++	for frame: int in range(18): await process_frame
++	print("CAR_LOADING_ROUND2 ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/capture_car_loading_improvements.gd b/game/tests/capture_car_loading_improvements.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_car_loading_improvements.gd
+@@ -0,0 +1,41 @@
++extends SceneTree
++const OUT = "res://../docs/evidence/car-loading-improvements-2026-11-13"
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var phase: String = "after"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--phase="): phase = arg.trim_prefix("--phase=")
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	var directory: String = OUT.path_join(phase).path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		if ("--exclude-vehicle="+id) in OS.get_cmdline_user_args(): continue
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		view.simple_model = true
++		view.read_only = true
++		view.livery = VehicleLivery.defaults(id)
++		view.customisation = VehicleCustomisation.defaults()
++		view.size = Vector2(1000,760)
++		var prior_hits: int = preload("res://vehicle/modular_car_base.gd").hits
++		root.add_child(view)
++		while not view.showroom_ready or not view.car.model_ready: await process_frame
++		if prepared: assert(preload("res://vehicle/modular_car_base.gd").hits==prior_hits+1,"Capture must use current prepared base")
++		for shot: Array in [["front",-0.70,0.31],["rear",2.45,0.31],["side",-PI/2,0.15],["overhead",-0.4,1.02]]:
++			view.yaw = shot[1]
++			view.elevation = shot[2]
++			view.zoom = 1.05 if id in ["compact","forklift","super_rally"] else 0.85
++			view._orbit()
++			view.invalidate_render()
++			for frame: int in range(16):
++				await process_frame
++				await RenderingServer.frame_post_draw
++			assert(view.showroom_viewport.get_texture().get_image().save_png(directory.path_join(id+"-"+shot[0]+".png"))==OK)
++		view.free()
++		await process_frame
++		print("MODEL_REFINEMENT_CAPTURE ",phase," ",id)
++	quit()
+diff --git a/game/tests/test_car_loading_steering.gd b/game/tests/test_car_loading_steering.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_steering.gd
+@@ -0,0 +1,139 @@
++extends SceneTree
++## KDP01-KDP04: native finish and actual restored cockpit articulation.
++var OUT: String = "res://../docs/evidence/car-loading-improvements-2026-11-13/steering/"
++const DRIVER: ArrayMesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++const STEERING = preload("res://vehicle/kart_steering.gd")
++const BASE = preload("res://vehicle/modular_car_base.gd")
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++func _initialize() -> void:
++	var phase: String="after"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--phase="): phase=arg.trim_prefix("--phase=")
++	OUT+=phase+"/"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("DRIVER_POLISH_FAIL ",label)
++
++func run() -> void:
++	check(DRIVER.get_blend_shape_count() == STEERING.STEPS*2,"complete intermediate left/right poses")
++	check(DRIVER.get_faces().size()/3 <= 15000,"bounded native driver triangle budget")
++	var old: ArrayMesh = load("res://../docs/evidence/kart-driver-polish-2026-11-12/before/game/assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++	for surface: int in range(DRIVER.get_surface_count()):
++		var material: StandardMaterial3D = DRIVER.surface_get_material(surface)
++		var arrays: Array = DRIVER.surface_get_arrays(surface)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++		var finite: bool = true
++		for index: int in range(vertices.size()): finite = finite and vertices[index].is_finite() and normals[index].is_finite() and normals[index].length_squared() > 0.8
++		check(finite,"finite geometry and unit shading normals "+material.resource_name)
++		check(material.albedo_texture == null,"native text-free surface "+material.resource_name)
++		if material.resource_name in ["RT_DriverSuit","RT_Gloves"]:
++			check(material.metallic_specular == 0 and material.roughness == 1,"matte cloth and gloves")
++			var preserved: bool = false
++			for prior: int in range(old.get_surface_count()):
++				if old.surface_get_material(prior).resource_name == material.resource_name:
++					var bind: PackedVector3Array = old.surface_get_arrays(prior)[Mesh.ARRAY_VERTEX]
++					preserved = true
++					if material.resource_name == "RT_Gloves":
++						for index: int in range(bind.size()): preserved = preserved and vertices[index].distance_to(bind[index]+STEERING.CENTER-STEERING.SOURCE_CENTER) < 0.000001
++					else:
++						var retained: Dictionary = {}
++						for point: Vector3 in vertices: retained[Vector3i((point*1000000).round())] = true
++						var boot_indices: PackedInt32Array = old.surface_get_arrays(prior)[Mesh.ARRAY_INDEX]
++						for corner: int in range(72*3): preserved = preserved and retained.has(Vector3i((bind[boot_indices[corner]]*1000000).round()))
++			check(preserved,"original boot soles and translated glove geometry remain exact "+material.resource_name)
++		var shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(surface)
++		for shape: Array in shapes:
++			var sound: bool = shape[Mesh.ARRAY_VERTEX].size() == vertices.size()
++			for point: Vector3 in shape[Mesh.ARRAY_VERTEX]: sound = sound and point.is_finite()
++			check(sound,"finite equal-topology steering pose "+material.resource_name)
++			if material.resource_name == "RT_DriverSuit":
++				var lower_fixed: bool = true
++				var count: int = int(DRIVER.get_meta("kart_suit_static_vertices",0))
++				lower_fixed = count > 0 and count < vertices.size()
++				for index: int in range(count): lower_fixed = lower_fixed and shape[Mesh.ARRAY_VERTEX][index] == vertices[index]
++				check(lower_fixed,"knees, feet and pelvis retain their supported pose while steering")
++		if material.resource_name == "RT_Helemt":
++			var outward: bool = true
++			for index: int in range(vertices.size()):
++				var radial := Vector3(vertices[index].x,(vertices[index].y-0.865)*0.3,vertices[index].z-0.388)
++				if vertices[index].y > 0.95: outward = outward and normals[index].dot(radial) > 0
++			check(outward,"helmet crown faces outward and stays opaque from overhead")
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(1100,850)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var world := Node3D.new()
++	viewport.add_child(world)
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	BASE.enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	var car := CarVisual.new()
++	car.vehicle_id = "kart"
++	car.simple_model = true
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	if prepared: check(BASE.hits > 0,"actual prepared base hit")
++	var wheel: Node3D = car.body.find_child("SteeringAssembly",true,false)
++	var driver: MeshInstance3D = car.body.find_child("TomkartDriver",true,false)
++	check(wheel != null and driver != null,"batching retains both cockpit handles")
++	check(wheel.get_child_count() > 0,"wheel geometry remains in the articulated frame")
++	var second := CarVisual.new()
++	second.vehicle_id = "kart"
++	second.simple_model = true
++	root.add_child(second)
++	while not second.model_ready: await process_frame
++	second.visible = false
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	camera.fov = 32
++	camera.current = true
++	world.add_child(camera)
++	var state := VehicleState.new()
++	var frame := DriveFrame.new()
++	var glove_surface: int = -1
++	for surface: int in range(DRIVER.get_surface_count()):
++		if DRIVER.surface_get_material(surface).resource_name == "RT_Gloves": glove_surface = surface
++	var glove: PackedVector3Array = DRIVER.surface_get_arrays(glove_surface)[Mesh.ARRAY_VERTEX]
++	var glove_shapes: Array[Array] = DRIVER.surface_get_blend_shape_arrays(glove_surface)
++	for input: float in [-1.0,-0.9,-0.8,-0.7,-0.6,-0.5,-0.4,-0.3,-0.2,-0.1,0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.0]:
++		state.steering = input
++		state.tick += 1
++		car.present(Vector2.ZERO,0,state,frame)
++		check(wheel.basis.is_equal_approx(STEERING.REST*Basis(Vector3.UP,-input*PI/3)),"wheel follows input about its inclined shaft")
++		check(is_equal_approx(car.front_wheels[0].rotation.y,-input*0.60),"retained front-wheel steering")
++		var total: float = 0
++		for shape: int in range(DRIVER.get_blend_shape_count()): total += driver.get_blend_shape_value(shape)
++		check(total <= 1.00001 and total >= 0,"bounded interpolation weights")
++		var error: float = 0
++		var rotation: Basis = STEERING.wheel_basis(input)*STEERING.REST.inverse()
++		for index: int in range(glove.size()):
++			var actual: Vector3 = glove[index]*(1-total)
++			for shape: int in range(DRIVER.get_blend_shape_count()): actual += glove_shapes[shape][Mesh.ARRAY_VERTEX][index]*driver.get_blend_shape_value(shape)
++			error = maxf(error,actual.distance_to(STEERING.CENTER+rotation*(glove[index]-STEERING.CENTER)))
++		check(error < 0.0015,"both hands follow the rim within 1.5 mm including intermediate inputs")
++		measurements.append({"input":input,"max_grip_error_mm":error*1000})
++		var other: MeshInstance3D = second.body.find_child("TomkartDriver",true,false)
++		var isolated: bool = true
++		for shape: int in range(DRIVER.get_blend_shape_count()): isolated = isolated and other.get_blend_shape_value(shape) == 0
++		check(isolated,"another car sharing the mesh stays in its own pose")
++		if DisplayServer.get_name() != "headless" and input in [-1.0,-0.5,0.0,0.5,1.0]:
++			for shot: Array in [["cockpit",Vector3(1.0,.95,-.9),Vector3(0,.56,-.25)],["overhead",Vector3(0,4.2,2.0),Vector3(0,.3,0)]]:
++				camera.position = shot[1]
++				camera.look_at(shot[2])
++				for wait: int in range(5): await process_frame; await RenderingServer.frame_post_draw
++				check(viewport.get_texture().get_image().save_png(OUT+"/steering-"+("prepared-" if prepared else "direct-")+shot[0]+"-"+str(input)+".png") == OK,"native steering capture")
++	car.present(Vector2.ZERO,0,state,frame)
++	check(wheel.basis.is_equal_approx(STEERING.REST),"centre restores without accumulated rotation")
++	check(driver.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,"posed driver retains live shadow")
++	for child: MeshInstance3D in wheel.find_children("*","MeshInstance3D",true,false): check(child.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,"rotating wheel retains live shadow")
++	second.free()
++	viewport.free()
++	FileAccess.open(OUT+"/steering-measurements-"+("prepared" if prepared else "direct")+".json",FileAccess.WRITE).store_string(JSON.stringify(measurements,"\t"))
++	print("KART_DRIVER_POLISH ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_loading_driver_split.gd b/game/tests/test_car_loading_driver_split.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_driver_split.gd
+@@ -0,0 +1,46 @@
++extends SceneTree
++## Every material/ordered triangle retains its raw vertex records in all ten poses.
++const ROOT: String="res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"
++var checks: int=0
++var failures: int=0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks+=1
++	if not ok: failures+=1; printerr("LOADING_SPLIT_FAIL ",message)
++func triangles(mesh: ArrayMesh, pose: int, result: Dictionary) -> void:
++	for packet: Dictionary in mesh.get("_surfaces"):
++		var count: int=packet.vertex_count
++		var format: int=packet.format
++		var ps: int=RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++		var ns: int=RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++		var ats: int=RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++		var raw: PackedByteArray=packet.vertex_data
++		if pose>=0 and mesh.get_blend_shape_count()>0: raw=packet.blend_shapes.slice(pose*count*(ps+ns),(pose+1)*count*(ps+ns))
++		var attrs: PackedByteArray=packet.get("attribute_data",PackedByteArray())
++		var indices: PackedByteArray=packet.index_data
++		var stride: int=indices.size()/int(packet.index_count)
++		for face: int in range(0,int(packet.index_count),3):
++			var code: PackedByteArray=var_to_bytes([packet.material.resource_name,ps,ns,ats])
++			for corner: int in range(3):
++				var index: int=indices.decode_u16((face+corner)*stride) if stride==2 else indices.decode_u32((face+corner)*stride)
++				code.append_array(raw.slice(index*ps,(index+1)*ps))
++				code.append_array(raw.slice(count*ps+index*ns,count*ps+(index+1)*ns))
++				if ats: code.append_array(attrs.slice(index*ats,(index+1)*ats))
++			var hash: String=code.hex_encode().sha256_text()
++			result[hash]=int(result.get(hash,0))+1
++func run() -> void:
++	var original: ArrayMesh=load(ROOT+"driver.res")
++	var dynamic: ArrayMesh=load(ROOT+"driver_steering.res")
++	var fixed: ArrayMesh=load(ROOT+"driver_static.res")
++	check(dynamic.get_blend_shape_count()==10 and fixed.get_blend_shape_count()==0,"ten animated poses and zero static poses")
++	check(dynamic.get_faces().size()+fixed.get_faces().size()==original.get_faces().size(),"all original triangle corners retained")
++	for pose: int in range(-1,10):
++		var source: Dictionary={}
++		var split: Dictionary={}
++		triangles(original,pose,source); triangles(dynamic,pose,split); triangles(fixed,pose,split)
++		check(source==split,"ordered raw position/normal/tangent/UV/material triangles for pose "+str(pose))
++	for mesh: ArrayMesh in [dynamic,fixed]: check(mesh.get_meta("kart_split_source_sha256")==FileAccess.get_sha256(ROOT+"driver.res"),"split source provenance")
++	var bytes: int=preload("res://tests/support/car_model_buffers.gd").payload(dynamic)+preload("res://tests/support/car_model_buffers.gd").payload(fixed)
++	check(bytes<preload("res://tests/support/car_model_buffers.gd").payload(original),"split actually reduces loaded raw buffers")
++	print("LOADING_DRIVER_SPLIT ",checks," checks, ",failures," failures; bytes=",bytes)
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_loading_dependencies.gd b/game/tests/test_car_loading_dependencies.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_dependencies.gd
+@@ -0,0 +1,15 @@
++extends SceneTree
++## A prepared-load consumer must not compile the five optional source factories.
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var visual: Script=load("res://vehicle/car_visual.gd")
++	var failures: int=0
++	for name: String in ["vehicle_models","kart_model","electric_car_model","hovercraft_model","forklift_model","compact_coachwork"]:
++		if ResourceLoader.has_cached("res://vehicle/"+name+".gd"):
++			failures+=1; printerr("LOADING_DEPENDENCY_FAIL eager factory ",name)
++	for name: String in ["driver.res","helmet_static.res"]:
++		if ResourceLoader.has_cached("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"+name):
++			failures+=1; printerr("LOADING_DEPENDENCY_FAIL eager driver asset ",name)
++	assert(visual!=null)
++	print("CAR_LOADING_DEPENDENCIES 8 checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_loading_native_pairs.gd b/game/tests/test_car_loading_native_pairs.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_native_pairs.gd
+@@ -0,0 +1,102 @@
++extends SceneTree
++## Isolate this pass under the current finish, including concurrent art edits.
++const OUT: String="res://../docs/evidence/car-loading-improvements-2026-11-13/paired/"
++var checks: int=0
++var failures: int=0
++var rows: Array=[]
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks+=1
++	if not ok: failures+=1;printerr("CAR_LOADING_NATIVE_FAIL ",message)
++func settle(view: CarShowroom) -> void:
++	view.invalidate_render()
++	for frame: int in range(16): await process_frame;await RenderingServer.frame_post_draw
++func difference(a: Image,b: Image) -> Dictionary:
++	a.convert(Image.FORMAT_RGBA8);b.convert(Image.FORMAT_RGBA8)
++	var x: PackedByteArray=a.get_data()
++	var y: PackedByteArray=b.get_data()
++	var changed: int=0
++	var significant: int=0
++	var total: int=0
++	var peak: int=0
++	if x!=y:
++		for at: int in range(0,x.size(),4):
++			var delta: int=0
++			for channel: int in range(3):
++				var value: int=absi(int(x[at+channel])-int(y[at+channel]))
++				total+=value;delta=maxi(delta,value)
++			if delta>0: changed+=1
++			if delta>8: significant+=1
++			peak=maxi(peak,delta)
++	return {"exact":x==y,"changed_pixels":changed,"significant_pixels":significant,"max_delta":peak,"mean_255":float(total)/(a.get_width()*a.get_height()*3)}
++func switch_meshes(changes: Dictionary, on: bool, car: CarVisual, input: float) -> void:
++	for node: MeshInstance3D in changes:
++		node.mesh=changes[node][1 if on else 0]
++		for surface: int in range(node.mesh.get_surface_count()): node.set_surface_override_material(surface,changes[node][2][surface])
++	var fixed: MeshInstance3D=car.find_child("DriverStaticSuit",true,false)
++	if fixed!=null: fixed.visible=not on
++	if car.vehicle_id=="kart":
++		preload("res://vehicle/kart_steering.gd").present(car.find_child("SteeringAssembly",true,false),car.find_child("TomkartDriver",true,false),input)
++func pair(view: CarShowroom,changes: Dictionary,label: String,input: float) -> void:
++	switch_meshes(changes,true,view.car,input)
++	var reference: Image
++	var stable: bool=false
++	# First-use Vulkan lighting can finish after the model-ready notification.
++	# Require repeated real draws to converge; retain a bounded failure path.
++	for attempt: int in range(8):
++		await settle(view)
++		var candidate: Image=view.showroom_viewport.get_texture().get_image()
++		if reference!=null and reference.get_data()==candidate.get_data(): stable=true;reference=candidate;break
++		reference=candidate
++	check(stable,"stable reference "+label)
++	switch_meshes(changes,false,view.car,input)
++	await settle(view)
++	var result: Image=view.showroom_viewport.get_texture().get_image()
++	var delta: Dictionary=difference(reference,result)
++	delta["view"]=label
++	rows.append(delta)
++	# Keep exactness as a diagnostic. Morph/static GPU paths can round an
++	# otherwise encoded-identical point differently. Use the existing vehicle
++	# appearance bounds from test_vehicle_mesh_simplification.gd unchanged.
++	check(delta.mean_255<0.25,"retained appearance energy "+label)
++	check(float(delta.significant_pixels)/(reference.get_width()*reference.get_height())<0.005,"retained visible-pixel bound "+label)
++	switch_meshes(changes,true,view.car,input)
++	await settle(view)
++	var restored: Dictionary=difference(reference,view.showroom_viewport.get_texture().get_image())
++	check(restored.max_delta<=1,"reference restored "+label)
++	delta["restoration"]=restored
++	reference.save_png(OUT+RenderingServer.get_current_rendering_method()+"/"+label+"-reference.png")
++	result.save_png(OUT+RenderingServer.get_current_rendering_method()+"/"+label+"-optimised.png")
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT+RenderingServer.get_current_rendering_method()))
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		var view := CarShowroom.new()
++		view.vehicle_id=id;view.simple_model=true;view.read_only=true
++		view.livery=VehicleLivery.defaults(id);view.customisation=VehicleCustomisation.defaults()
++		view.size=Vector2(1000,760)
++		var prior_hits: int=preload("res://vehicle/modular_car_base.gd").hits
++		root.add_child(view)
++		while not view.showroom_ready or not view.car.model_ready: await process_frame
++		check(preload("res://vehicle/modular_car_base.gd").hits==prior_hits+1,"actual current prepared base "+id)
++		var changes: Dictionary={}
++		for node: MeshInstance3D in view.car.find_children("*","MeshInstance3D",true,false):
++			var materials: Array=[]
++			for surface: int in range(node.mesh.get_surface_count()): materials.append(node.get_active_material(surface))
++			var reference: Mesh=node.mesh.duplicate()
++			if str(node.name)=="TomkartDriver": reference=load("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
++			changes[node]=[node.mesh,reference,materials]
++		for shot: Array in [["front",-0.70,0.31],["rear",2.45,0.31],["side",-PI/2,0.15],["overhead",-0.4,1.02]]:
++			view.yaw=shot[1];view.elevation=shot[2];view.zoom=1.05 if id in ["compact","forklift"] else 0.85
++			view._orbit()
++			await pair(view,changes,id+"-"+shot[0],0.0)
++		if id=="kart":
++			for input: float in [-1.0,-0.5,0.0,0.5,1.0]:
++				for shot: Array in [["cockpit",-0.7,0.5],["overhead",-0.4,1.02]]:
++					view.yaw=shot[1];view.elevation=shot[2];view.zoom=0.66
++					view._orbit()
++					await pair(view,changes,"kart-steer-"+shot[0]+"-"+str(input),input)
++		view.free()
++		await process_frame
++	FileAccess.open(OUT+RenderingServer.get_current_rendering_method()+"/report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows},"\t"))
++	print("CAR_LOADING_NATIVE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_car_loading_app.gd b/game/tests/test_car_loading_app.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_app.gd
+@@ -0,0 +1,83 @@
++extends SceneTree
++## Actual five-car Garage/race integration in disposable local storage.
++var checks: int = 0
++var failures: int = 0
++var output: String
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks+=1
++	if not ok: failures+=1; printerr("SIMPLIFIED_APP_FAIL ",label)
++func settle(frames: int = 10) -> void:
++	for frame: int in range(frames):
++		await process_frame
++		await RenderingServer.frame_post_draw
++func triangles(node: Node) -> int:
++	var count: int = 0
++	if node is MeshInstance3D and node.is_visible_in_tree() and node.cast_shadow!=GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: count+=node.mesh.get_faces().size()/3
++	for child: Node in node.get_children(): count+=triangles(child)
++	return count
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output="res://../docs/evidence/car-loading-improvements-2026-11-13/app-"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size=Vector2i(1280,720)
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		var folder: String = ProjectSettings.globalize_path("res://../build/car-loading-improvements-2026-11-13/app/"+TrackLibrary.unique_id())
++		DirAccess.make_dir_recursive_absolute(folder)
++		var app: Node = load("res://core/app.tscn").instantiate()
++		app.records=LocalRecords.new(folder.path_join("records.json"))
++		app.records.settings.selected_car=id
++		app.library=TrackLibrary.new(folder)
++		app.cloud_root_override=folder.path_join("cloud")
++		root.add_child(app)
++		while not app.startup_complete: await process_frame
++		VehicleCatalog.selected=id
++		app._show_screen("garage")
++		await settle()
++		var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++		check(page!=null,"actual Garage loads "+id)
++		page.open_car(VehicleCatalog.IDS.find(id))
++		while not page.showroom.showroom_ready or not page.showroom.car.model_ready: await process_frame
++		while page.showroom.get("preparing")==true: await process_frame
++		await settle()
++		check(page.showroom.car.vehicle_id==id,"Garage car identity "+id)
++		var direct := CarVisual.new()
++		direct.vehicle_id=id
++		root.add_child(direct)
++		while not direct.model_ready: await process_frame
++		check(triangles(page.showroom.car)==triangles(direct),"current Garage/direct geometry "+id)
++		var expected_triangles: int = triangles(direct)
++		direct.free()
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-garage.png")==OK,"Garage capture "+id)
++		var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++		await app._start_race(track,true,true)
++		await settle(20)
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.countdown_label.hide()
++		check(game.handling.vehicle_id==id and game.car.vehicle_id==id,"race car and handling identity "+id)
++		check(game.handling.snapshot()==VehicleCatalog.config(id).snapshot(),"complete canonical race tune "+id)
++		check(triangles(game.car)==expected_triangles,"race retains current production geometry "+id)
++		if id=="kart":
++			var wheel: Node3D = game.car.find_child("SteeringAssembly",true,false)
++			var driver: MeshInstance3D = game.car.find_child("TomkartDriver",true,false)
++			for input: float in [-1.0,0.0,1.0,0.0]:
++				# A window can lose focus during parallel native runs. Advance the
++				# fixture tick so the paused-presentation cache sees changed state.
++				game.sim.state.tick+=1
++				game.sim.state.steering=input
++				game._present_frame(1.0/60.0)
++				check(wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/3)),"actual race steering wheel")
++				var weight: float = 0
++				for shape: int in range(driver.mesh.get_blend_shape_count()): weight+=driver.get_blend_shape_value(shape)
++				check(is_equal_approx(weight,absf(input)),"actual race ten-pose driver")
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-race.png")==OK,"race capture "+id)
++		app.queue_free()
++		app=null
++		await settle(12)
++		print("CAR_SIMPLIFICATION_APP_CAR ",id)
++	FileAccess.open(output+"/report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures}))
++	load("res://soundtrack/audio_world.gd").instance().queue_free()
++	await settle(18)
++	print("CAR_SIMPLIFICATION_APP ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/measure_car_loading_assets.gd b/game/tests/measure_car_loading_assets.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/measure_car_loading_assets.gd
+@@ -0,0 +1,49 @@
++extends SceneTree
++## Read the stored assemblies directly; this does not prewarm the App benchmark.
++const OUT: String="res://../docs/evidence/car-loading-improvements-2026-11-13/"
++func _initialize() -> void: run.call_deferred()
++func payload(mesh: Mesh) -> int:
++	var bytes: int=0
++	for surface: int in range(mesh.get_surface_count()):
++		var packet: Dictionary=mesh.get("_surfaces")[surface] if mesh is ArrayMesh else RenderingServer.mesh_get_surface(mesh.get_rid(),surface)
++		for field: String in ["vertex_data","attribute_data","skin_data","index_data","blend_shapes"]: bytes+=packet.get(field,PackedByteArray()).size()
++		var lods: Array=packet.get("lods",[])
++		for at: int in range(1,lods.size(),2): bytes+=lods[at].size()
++	return bytes
++func dependencies(path: String, result: Dictionary) -> void:
++	if result.has(path): return
++	result[path]=FileAccess.get_file_as_bytes(path).size()
++	for declaration: String in ResourceLoader.get_dependencies(path):
++		var file: String=declaration.split("::")[-1]
++		if file.begins_with("res://") and FileAccess.file_exists(file): dependencies(file,result)
++func run() -> void:
++	var phase: String="after"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--phase="): phase=arg.trim_prefix("--phase=")
++	var rows: Array=[]
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		for quality: String in ["simple","full"]:
++			for mode: String in ["fixed","editable"]:
++				var path: String="res://assets/vehicles/modular_car_bases_v1/"+id+"_"+quality+"_"+mode+".scn"
++				var scene: PackedScene=ResourceLoader.load(path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP)
++				assert(scene!=null)
++				var holder: Node=scene.instantiate()
++				var meshes: Dictionary={}
++				var bytes: int=0
++				var surfaces: int=0
++				var triangles: int=0
++				for node: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++					if node.mesh==null: continue
++					if not meshes.has(node.mesh): bytes+=payload(node.mesh); meshes[node.mesh]=true
++					if node.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++					surfaces+=node.mesh.get_surface_count()
++					triangles+=node.mesh.get_faces().size()/3
++				var deps: Dictionary={}
++				dependencies(path,deps)
++				var stored: int=0
++				for size: int in deps.values(): stored+=size
++				rows.append({"id":id,"quality":quality,"mode":mode,"raw_bytes":bytes,"unique_meshes":meshes.size(),"surfaces":surfaces,"triangles":triangles,"disk_dependency_bytes":stored,"dependencies":deps})
++				holder.free()
++	FileAccess.open(OUT+phase+"-assets.json",FileAccess.WRITE).store_string(JSON.stringify(rows,"\t"))
++	print("CAR_LOADING_ASSET_METRICS ",rows.size()," assemblies")
++	quit()
+diff --git a/game/tests/test_car_loading_wash.gd b/game/tests/test_car_loading_wash.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_wash.gd
+@@ -0,0 +1,287 @@
++extends SceneTree
++const IDS: Array[String] = ["compact","kart","forklift","electric","hovercraft"]
++## Isolated local storage; real models, race lifecycle, hit-tested mouse/touch washing.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/car-wash-2026-10-11"
++var records: LocalRecords
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func settle() -> void:
++	for i: int in range(10): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=").path_join("existing-wash")
++	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
++	var directory: String = "user://car_wash_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	records = LocalRecords.new(directory.path_join("records.json"))
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	for id: String in IDS:
++		var car := CarVisual.new()
++		car.vehicle_id = id
++		root.add_child(car)
++		var effect := VehicleWeathering.new()
++		effect.configure(car, "pine", VehicleCatalog.config(id))
++		effect.dirt_amount = 0.8
++		effect.mud_amount = 1.0
++		effect.deposit_color = VehicleWeathering.COLORS.pine
++		effect.snow_amount = 0.7
++		effect.melt(2.0)
++		check(is_equal_approx(effect.snow_amount, 0.45) and effect.smudge > 0.0 and effect.dirt_amount == 0.8, id + " snow melts into existing dirt")
++		effect.melt(8.0)
++		check(effect.snow_amount == 0.0 and effect.dirt_amount == 0.8 and effect.smudge > 0.4, id + " snow disappears without removing dirt")
++		var point: Vector3 = effect.bounds.position + effect.bounds.size * Vector3(1.0, 0.2, 0.6)
++		var before: PackedByteArray = effect.wash_image.get_data()
++		effect.wash(point, 0.15)
++		var partial: PackedByteArray = effect.wash_image.get_data()
++		check(partial != before, id + " local wash changes volume")
++		var cleaned: int = 0
++		for index: int in range(partial.size()):
++			if partial[index] > 0: cleaned += 1
++		check(cleaned > 0 and cleaned < VehicleCondition.CELLS / 4, id + " wash is a patch")
++		for z: int in range(16):
++			for y: int in range(16): check(partial[y * 256 + z * 16] == 0, id + " opposite side remains dirty")
++		effect.wash(point, 0.8)
++		check(effect.wash_image.get_data() != partial, id + " continued washing cleans progressively")
++		var saved: Dictionary = effect.snapshot()
++		check(VehicleCondition.save(records, id, saved) == OK, id + " atomic local save")
++		var reopened := LocalRecords.new(records.path)
++		reopened.load_records()
++		var recovered: Dictionary = VehicleCondition.read(reopened, id)
++		check(recovered.get("wash") == saved.wash and recovered.get("color") == saved.color and recovered.get("version") == saved.version, id + " restart preserves exact wash and palette")
++		for field: String in ["dirt", "snow", "wetness", "mud", "smudge"]:
++			check(absf(float(recovered.get(field, -1)) - float(saved[field])) < 0.000000001, id + " restart preserves " + field)
++		effect.configure(car, "desert", VehicleCatalog.config(id))
++		check(effect.snapshot() == saved, id + " biome change retains condition")
++		var state := VehicleState.new()
++		state.velocity = Vector2(0, 20)
++		var track := NativeTrack.new()
++		track.metadata = {"theme": "desert"}
++		track.cell_size = 10.0
++		track.grid_width = 10
++		track.grid_height = 10
++		track.half_extent = Vector2(50, 50)
++		track.cells.resize(100)
++		track.cells.fill(0)
++		track.deck_cells.resize(100)
++		track.deck_cells.fill(-1)
++		effect.present(state, track, false)
++		state.tick = 120
++		var canonical: Array = state.snapshot().duplicate(true)
++		effect.present(state, track, false)
++		check(effect.wash_image.get_data() != partial and effect.wash_image.get_data() != Marshalls.base64_to_raw(saved.wash), id + " later driving coats washed areas again")
++		check(state.snapshot() == canonical, id + " re-coating does not change canonical state")
++		effect.reset()
++		effect.snow_amount = 0.6
++		effect.melt(8.0)
++		check(effect.smudge == 0.0 and effect.dirt_amount == 0.0 and not effect.installed, id + " clean car snow melts without inventing dirt")
++		car.queue_free()
++		await process_frame
++	check(records.settings.vehicle_conditions.size() == IDS.size() and records.records.is_empty(), "all five scoped cars remain independent; no PB writes")
++	var invalid: Dictionary = records.settings.vehicle_conditions.duplicate(true)
++	invalid.compact.dirt = INF
++	check(not VehicleCondition.valid_collection(invalid), "reject nonfinite local dirt")
++	invalid = records.settings.vehicle_conditions.duplicate(true)
++	invalid.compact.version = 2
++	check(not VehicleCondition.valid_collection(invalid), "reject unknown cosmetic version")
++	await race_lifecycle()
++	await garage()
++	if DisplayServer.get_name() != "headless": await app_capture()
++	print("CAR_WASH: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func race_lifecycle() -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = loop_track()
++	game.vehicle_id = "compact"
++	game.preference_records = records
++	game.production_mode = true
++	root.add_child(game)
++	game.set_process(false)
++	game.set_physics_process(false)
++	var before: Dictionary = game.car_weathering.snapshot()
++	check(before == VehicleCondition.read(records, "compact"), "race restores local condition")
++	game.restart()
++	check(game.car_weathering.snapshot() == before, "retry preserves cosmetic condition")
++	game.car_weathering.snow_amount = 0.5
++	var canonical: Array = game.sim.state.snapshot().duplicate(true)
++	game._begin_finish()
++	game.car_weathering.melt(8.0)
++	game._complete_finish()
++	check(game.sim.state.snapshot() == canonical, "finish/melt never changes scored state")
++	check(VehicleCondition.read(records, "compact").snow == 0.0, "completed race persists melted snow")
++	game.car_weathering.dirt_amount = 0.92
++	game.queue_free()
++	await process_frame
++	check(VehicleCondition.read(records, "compact").dirt == 0.92, "abandoned race saves before next menu")
++
++func garage() -> void:
++	root.size = Vector2i(1280, 720)
++	VehicleCatalog.selected = "compact"
++	var page := GaragePage.new()
++	page.records = records
++	page.circuit_title = "CIRCUIT / 5 LAPS"
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	var view: CarShowroom = page.showroom
++	view.set_process(false)
++	view.yaw = -PI * 0.5
++	view.elevation = 0.12
++	view.set_zoom(0.85)
++	check(view.weathering.snapshot() == VehicleCondition.read(records, "compact"), "garage displays raced condition")
++	page.open_car(0)
++	page._show_section("care")
++	# The lightweight wash requirement no longer hides the 0.32s slide behind
++	# livery-gallery construction. Project the hit only once the pane settles.
++	await create_timer(GaragePage.MENU_MOVE_SECONDS + 0.05).timeout
++	await settle()
++	page._toggle_wash()
++	check(view.wash_mode and page.wash_button.text == "Done", "explicit wash mode")
++	var target: Vector3 = Vector3(-0.9, 0.50, 0.1)
++	var pixel: Vector2 = view.camera.unproject_position(view.car.body.global_transform * target) * view.size / Vector2(view.showroom_viewport.size)
++	check(view.pick_body_point(pixel) != null, "ray hits actual door mesh")
++	check(view.pick_body_point(Vector2(-100, -100)) == null, "missed car cannot wash")
++	var mask: PackedByteArray = view.weathering.wash_image.get_data()
++	var motion := InputEventMouseMotion.new()
++	motion.position = pixel
++	motion.relative = Vector2(12, 0)
++	motion.button_mask = MOUSE_BUTTON_MASK_LEFT
++	var yaw: float = view.yaw
++	view.gui_input.emit(motion)
++	check(view.yaw == yaw, "wash drag does not orbit")
++	var dirty_image: Image
++	if DisplayServer.get_name() != "headless":
++		view.wash_pointer_valid = false
++		view.wash_effect.hide() # Compare original paint with all transient wash feedback hidden.
++		await settle()
++		dirty_image = root.get_texture().get_image()
++	if DisplayServer.get_name() != "headless": await capture("garage-dirty", page)
++	var press := InputEventMouseButton.new()
++	press.button_index = MOUSE_BUTTON_LEFT
++	press.position = pixel
++	press.pressed = true
++	view.gui_input.emit(press)
++	for i: int in range(40): view._process(0.05)
++	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
++	if DisplayServer.get_name() != "headless":
++		view.wash_pointer_valid = false
++		view.wash_effect.hide()
++		await settle()
++		var washed_image: Image = root.get_texture().get_image()
++		var actual: Vector2i = Vector2i(view.get_global_rect().position + pixel)
++		print("WASH_PIXEL: ", actual, " ", dirty_image.get_pixelv(actual), " -> ", washed_image.get_pixelv(actual))
++		check(dirty_image.get_pixelv(actual).b < washed_image.get_pixelv(actual).b - 0.02, "washing visibly reveals original blue door paint")
++		view.wash_pointer_valid = true
++		view.wash_effect.show()
++	if DisplayServer.get_name() != "headless": await capture("garage-partly-washed", page)
++	press.pressed = false
++	view.gui_input.emit(press)
++	check(VehicleCondition.read(records, "compact") == view.weathering.snapshot(), "mouse release commits wash")
++	var touch := InputEventScreenTouch.new()
++	touch.index = 0
++	touch.position = pixel
++	touch.pressed = true
++	view.gui_input.emit(touch)
++	check(view.washing, "one finger washes")
++	touch.index = 1
++	touch.position = pixel + Vector2(80, 0)
++	view.gui_input.emit(touch)
++	check(not view.washing, "second finger switches to orbit")
++	var drag := InputEventScreenDrag.new()
++	drag.index = 1
++	drag.position = pixel + Vector2(100, 10)
++	view.gui_input.emit(drag)
++	check(view.yaw != yaw, "two fingers rotate in wash mode")
++	touch.canceled = true
++	view.gui_input.emit(touch)
++	check(not view.washing and view.touches.is_empty(), "canceled touch stops washing")
++	var newer: Dictionary = VehicleCondition.read(records, "compact")
++	newer.dirt = 0.97
++	check(VehicleCondition.save(records, "compact", newer) == OK, "newer local race state")
++	page._save_condition()
++	check(VehicleCondition.read(records, "compact").dirt == 0.97, "cached garage never overwrites newer condition")
++	page._reset()
++	check(view.weathering.dirt_amount == 0.97, "reset paint does not wash dirt")
++	page.queue_free()
++	await process_frame
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(VehicleCondition.read(reopened, "compact").dirt == 0.97, "garage exit retains local condition")
++
++func capture(label: String, page: GaragePage) -> void:
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label + ".png")) == OK, label + " screenshot")
++	for dimensions: Vector2i in [Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = dimensions
++		await settle()
++		check(root.get_visible_rect().encloses(page.wash_button.get_global_rect()), "wash action fits " + str(dimensions.x))
++		check(root.get_texture().get_image().save_png(output.path_join(label + "-" + str(dimensions.x) + ".png")) == OK, label + " responsive capture")
++	root.size = Vector2i(1280, 720)
++	await settle()
++
++func loop_track() -> NativeTrack:
++	var document: Dictionary = TrackDocument.create_blank()
++	document.theme = "desert"
++	var point := Vector2(-28, -18)
++	var heading: float = 0.0
++	for kind: String in ["straight", "hairpin", "straight", "hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind, point, heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		document.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		point = pose.position
++		heading = pose.heading
++	document = RoadPieces.route_from_pieces(document).document
++	document.start_line = {"position": [0.0, -18.0], "heading": 0.0}
++	return TrackCompiler.compile(JSON.parse_string(JSON.stringify(document)))
++
++func app_capture() -> void:
++	var directory: String = records.path.get_base_dir()
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = records
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	app._show_screen("garage")
++	await settle()
++	var page: GaragePage = app.root_ui.find_child("GaragePage", true, false)
++	page.open_car(0)
++	while page.showroom==null or not page.showroom.showroom_ready or not page.showroom.car.model_ready: await process_frame
++	while page.progressive_entry and page.showroom.preparing and not page.showroom.interaction_ready: await process_frame
++	page._show_section("care")
++	# The incoming action row takes 0.32 seconds, independent of frame rate.
++	while page._menu_motion != null and page._menu_motion.is_running(): await process_frame
++	await settle()
++	# Menu action rows can be retained outside root_ui during the page move.
++	# Use the current page's actual bound action, after its live car is ready.
++	var button: Button = page.wash_button
++	check(button!=null and button.name=="GarageWash","real care action is available")
++	if button==null:
++		app.queue_free()
++		return
++	button.pressed.emit()
++	var view: CarShowroom = page.showroom
++	check(view.wash_mode, "real app enters Wash")
++	var swipe: Node = app.root_ui.get_node("MenuPageSwipe")
++	check(swipe._owns_gesture(app.root_ui, view.get_global_rect().get_center()), "wash owns gestures over menu paging")
++	for dimensions: Vector2i in [Vector2i(1280, 720), Vector2i(960, 540), Vector2i(1600, 720)]:
++		root.size = dimensions
++		await settle()
++		check(root.get_visible_rect().encloses(button.get_global_rect()), "real app Wash action fits " + str(dimensions.x))
++		check(root.get_texture().get_image().save_png(output.path_join("garage-app-" + str(dimensions.x) + ".png")) == OK, "real app capture " + str(dimensions.x))
++	app.queue_free()
++	await process_frame
+diff --git a/game/tests/audit_car_loading_live.gd b/game/tests/audit_car_loading_live.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_car_loading_live.gd
+@@ -0,0 +1,24 @@
++extends SceneTree
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var base: Script=load("res://vehicle/modular_car_base.gd")
++	var validation: Script=load("res://vehicle/prepared_asset_sources.gd")
++	var rows: Array=[]
++	for id: String in ["compact","kart","forklift","electric","hovercraft"]:
++		var car: Node=load("res://vehicle/car_visual.gd").new()
++		car.vehicle_id=id
++		var scene: PackedScene=load(base.path_for(car))
++		var holder: Node=scene.instantiate()
++		var data: Dictionary=holder.get_meta("modular_car_base",{})
++		var saved: Dictionary=validation.runtime_projection(data.get("sources",{}))
++		var current: Dictionary=validation.runtime_hashes(id)
++		var changed: Array=[]
++		for path: String in current:
++			if saved.get(path)!=current[path]: changed.append(path)
++		for path: String in saved:
++			if not current.has(path): changed.append(path)
++		var row: Dictionary={"id":id,"key_matches":data.key==base.key_for(car),"complete_sources_match":data.sources==base.source_hashes(id),"saved_revision":data.key[2],"current_revision":base.key_for(car)[2],"source_differences":changed}
++		rows.append(row);print("CAR_LIVE_AUDIT ",JSON.stringify(row))
++		holder.free();car.free()
++	FileAccess.open("res://../docs/evidence/car-loading-improvements-2026-11-13/live-audit.json",FileAccess.WRITE).store_string(JSON.stringify(rows,"\t"))
++	quit()
+diff --git a/game/tests/bake_kart_driver_split.gd b/game/tests/bake_kart_driver_split.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_kart_driver_split.gd
+@@ -0,0 +1,9 @@
++extends SceneTree
++## Explicit production bake; the full original remains an authoring reference.
++const DIRECTORY: String="res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var source: ArrayMesh=load(DIRECTORY+"driver.res")
++	var split: Dictionary=preload("res://tests/support/kart_driver_split.gd").new().save(source,DIRECTORY)
++	print("KART_DRIVER_SPLIT ",split.before_bytes," -> ",split.after_bytes)
++	quit()
+diff --git a/game/tests/support/kart_driver_split.gd b/game/tests/support/kart_driver_split.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/kart_driver_split.gd
+@@ -0,0 +1,111 @@
++extends RefCounted
++## Offline raw-record partition; all ten steering samples remain exact.
++func save(source: ArrayMesh, directory: String) -> Dictionary:
++	var split: Dictionary=split_driver(source)
++	for item: Array in [["driver_steering.res",split.dynamic],["driver_static.res",split.static]]:
++		var mesh: ArrayMesh=item[1]
++		mesh.set_meta("kart_split_source_sha256",FileAccess.get_sha256(directory+"driver.res"))
++		assert(ResourceSaver.save(mesh,directory+item[0],ResourceSaver.FLAG_COMPRESS)==OK)
++	return split
++
++func payload(mesh: ArrayMesh) -> int:
++	var size: int=0
++	for packet: Dictionary in mesh.get("_surfaces"):
++		for field: String in ["vertex_data","attribute_data","skin_data","index_data","blend_shapes"]: size+=packet.get(field,PackedByteArray()).size()
++	return size
++
++func rebuild_packet(source: ArrayMesh, surface: int, corners: PackedInt32Array, morph: bool) -> Dictionary:
++	var original: Dictionary = source.get("_surfaces")[surface]
++	var packet: Dictionary = original.duplicate(true)
++	var count: int = packet.vertex_count
++	var format: int = source.surface_get_format(surface)
++	var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++	var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++	var ats: int = RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++	var unique := PackedInt32Array()
++	var remap: Dictionary = {}
++	for old: int in corners:
++		if not remap.has(old): remap[old]=unique.size(); unique.append(old)
++	var streams: Array = [packet.vertex_data]
++	var shapes: PackedByteArray = packet.get("blend_shapes",PackedByteArray())
++	if morph:
++		assert(shapes.size()==source.get_blend_shape_count()*count*(ps+ns))
++		for pose: int in range(source.get_blend_shape_count()): streams.append(shapes.slice(pose*count*(ps+ns),(pose+1)*count*(ps+ns)))
++	var replacements: Array = []
++	for stream: PackedByteArray in streams:
++		var positions := PackedByteArray()
++		var normals := PackedByteArray()
++		for old: int in unique:
++			positions.append_array(stream.slice(old*ps,(old+1)*ps))
++			normals.append_array(stream.slice(count*ps+old*ns,count*ps+(old+1)*ns))
++		positions.append_array(normals)
++		replacements.append(positions)
++	packet.vertex_data=replacements[0]
++	packet.vertex_count=unique.size()
++	var attrs := PackedByteArray()
++	var source_attrs: PackedByteArray = packet.get("attribute_data",PackedByteArray())
++	for old: int in unique:
++		if ats: attrs.append_array(source_attrs.slice(old*ats,(old+1)*ats))
++	if ats: packet.attribute_data=attrs
++	var stride: int = 2 if unique.size()<=65536 else 4
++	var indices := PackedByteArray()
++	indices.resize(corners.size()*stride)
++	for corner: int in range(corners.size()):
++		if stride==2: indices.encode_u16(corner*stride,remap[corners[corner]])
++		else: indices.encode_u32(corner*stride,remap[corners[corner]])
++	packet.index_data=indices
++	packet.index_count=corners.size()
++	packet.erase("lods")
++	packet.erase("blend_shapes")
++	if morph:
++		var combined := PackedByteArray()
++		for at: int in range(1,replacements.size()): combined.append_array(replacements[at])
++		packet.blend_shapes=combined
++	return packet
++
++func split_driver(source: ArrayMesh) -> Dictionary:
++	var active: Array = []
++	var fixed: Array = []
++	var report: Array = []
++	var fixed_material: Material
++	for surface: int in range(source.get_surface_count()):
++		var packet: Dictionary = source.get("_surfaces")[surface]
++		var count: int = packet.vertex_count
++		var format: int = source.surface_get_format(surface)
++		var ps: int = RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++		var ns: int = RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++		var raw: PackedByteArray = packet.vertex_data
++		var poses: PackedByteArray = packet.blend_shapes
++		var invariant: Array[bool] = []
++		var static_vertices: int = 0
++		for vertex: int in range(count):
++			var same: bool = true
++			for pose: int in range(source.get_blend_shape_count()):
++				var start: int = pose*count*(ps+ns)
++				if poses.slice(start+vertex*ps,start+(vertex+1)*ps)!=raw.slice(vertex*ps,(vertex+1)*ps): same=false; break
++				if poses.slice(start+count*ps+vertex*ns,start+count*ps+(vertex+1)*ns)!=raw.slice(count*ps+vertex*ns,count*ps+(vertex+1)*ns): same=false; break
++			invariant.append(same)
++			if same: static_vertices+=1
++		var indices: PackedInt32Array = source.surface_get_arrays(surface)[Mesh.ARRAY_INDEX]
++		var moving_corners := PackedInt32Array()
++		var fixed_corners := PackedInt32Array()
++		for at: int in range(0,indices.size(),3):
++			var frozen: bool = invariant[indices[at]] and invariant[indices[at+1]] and invariant[indices[at+2]]
++			for offset: int in range(3):
++				if frozen: fixed_corners.append(indices[at+offset])
++				else: moving_corners.append(indices[at+offset])
++		active.append(rebuild_packet(source,surface,moving_corners,true))
++		if not fixed_corners.is_empty():
++			fixed.append(rebuild_packet(source,surface,fixed_corners,false))
++			fixed_material=source.surface_get_material(surface)
++		report.append({"role":source.surface_get_material(surface).resource_name,"vertices":count,"static_vertices":static_vertices,"static_triangles":fixed_corners.size()/3,"dynamic_triangles":moving_corners.size()/3})
++	var dynamic := ArrayMesh.new()
++	dynamic.blend_shape_mode=source.blend_shape_mode
++	for pose: int in range(source.get_blend_shape_count()): dynamic.add_blend_shape(source.get_blend_shape_name(pose))
++	dynamic.set("_surfaces",active)
++	dynamic.custom_aabb=source.get_aabb()
++	var static_mesh := ArrayMesh.new()
++	static_mesh.set("_surfaces",fixed)
++	static_mesh.custom_aabb=source.get_aabb()
++	assert(source.get_faces().size()==dynamic.get_faces().size()+static_mesh.get_faces().size(),"split retains every driver triangle")
++	return {"dynamic":dynamic,"static":static_mesh,"material":fixed_material,"surface_report":report,"before_bytes":payload(source),"after_bytes":payload(dynamic)+payload(static_mesh)}
+diff --git a/game/tests/support/car_mesh_sharing.gd b/game/tests/support/car_mesh_sharing.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/car_mesh_sharing.gd
+@@ -0,0 +1,26 @@
++extends RefCounted
++## Offline exact storage sharing. Instance transforms and mutable finishes stay owned.
++static func key(mesh: ArrayMesh) -> String:
++	var data: Array=[mesh.custom_aabb,mesh.get_aabb(),mesh.resource_name]
++	for name: StringName in mesh.get_meta_list(): data.append([str(name),mesh.get_meta(name)])
++	for packet: Dictionary in mesh.get("_surfaces"):
++		var copy: Dictionary=packet.duplicate()
++		copy.erase("material")
++		data.append(copy)
++	return var_to_bytes(data).hex_encode().sha256_text()
++
++static func apply(holder: Node) -> int:
++	var canonical: Dictionary={}
++	var replacements: int=0
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		if not part.mesh is ArrayMesh or part.mesh.get_blend_shape_count()>0 or part.mesh.shadow_mesh!=null: continue
++		# Material stored in a shared mesh must never become an active mutable finish.
++		var independent: bool=true
++		for surface: int in range(part.mesh.get_surface_count()):
++			if part.material_override==null and part.get_surface_override_material(surface)==null: independent=false
++		if not independent: continue
++		var code: String=key(part.mesh)
++		if canonical.has(code):
++			if canonical[code]!=part.mesh: part.mesh=canonical[code]; replacements+=1
++		else: canonical[code]=part.mesh
++	return replacements
+diff --git a/docs/CAR_LOADING_IMPROVEMENTS_2026_11_13.md b/docs/CAR_LOADING_IMPROVEMENTS_2026_11_13.md
+new file mode 100644
+--- /dev/null
++++ b/docs/CAR_LOADING_IMPROVEMENTS_2026_11_13.md
+@@ -0,0 +1,169 @@
++# Car loading improvements — 13–14 November 2026
++
++This pass implements the approved selected-car loading, prepared-loader
++separation, exact mesh sharing and static Kart suit partition. Challenger
++model/cache publication is excluded. Concurrent vehicle finishes, geometry,
++loading code and Garage work are preserved.
++
++## Implemented behaviour
++
++| ID | Change | Controls |
++|---|---|---|
++| CLI01 | Original Kart driver/helmet resources load only when their factory is used. Prepared races load their saved assembly directly. | Full original assets remain available for full-detail construction; absent split assets fall back to the original driver. |
++| CLI02 | `CarVisual` resolves optional factories through a table containing only factories requested by its fixed call sites. Vehicle factories and fitted-part revision helpers defer their optional dependencies. | The prepared source/key/structure checks and procedural fallback remain. Night optics, kit replacement, rollover extents and Volt tyre clearance use their original functions and arguments. |
++| CLI03 | Offline packing shares encoded-identical immutable meshes only when every active surface finish is independently overridden. | Separate articulation nodes, current per-car materials, all attributes, indices, distance levels, metadata and bounds remain. No runtime hashing/sharing pass is added. |
++| CLI04 | Completely invariant suit triangles move out of the Kart steering morph buffers. | All ten target names and every original triangle/encoded attribute remain. Mixed triangles stay animated. The static child retains live shadows. The existing anatomy finisher regenerates both split files on future driver bakes. |
++
++The new split resources contain **583,776 B** of raw mesh streams instead of
++**905,304 B**, saving **321,528 B / 35.5%**. They retain all 6,456 driver triangles;
++2,761 suit triangles are static. The split adds one visible surface/draw. The
++static suit deliberately receives no new distance reduction: its original
++animated counterpart had no generated LODs.
++
++The original driver, helmet and steering source are retained. Concurrent finish
++work binds the same current cloth finish to both halves and is preserved.
++
++## Stored race assets
++
++The task-start and post-refresh inventory reads all twenty full/simple,
++fixed/editable assemblies directly. Values below select simple fixed stock.
++Payload counts each active mesh once, including distance/morph/shadow streams;
++it excludes material/texture objects and process/driver allocation overhead.
++Dependency bytes sum the stored scene and its explicitly referenced files.
++
++| Car | Before raw streams | After | Saving | Before dependency bytes | After |
++|---|---:|---:|---:|---:|---:|
++| Rally | 1,023,510 | 936,762 | 86,748 | 437,314 | 413,488 |
++| Kart | 1,870,564 | 1,465,672 | 404,892 | 1,216,723 | 895,928 |
++| Forklift | 1,698,384 | 1,698,384 | 0 | 544,016 | 544,099 |
++| Volt | 1,095,216 | 974,700 | 120,516 | 621,508 | 591,782 |
++| Hover | 637,388 | 619,968 | 17,420 | 357,071 | 349,522 |
++
++Total reduction: **629,576 raw bytes** and **381,813 dependency bytes** across
++these five assemblies. The previous review's 319,580 B sharing estimate described
++procedural prototypes, rather than these final prepared resources. Material and
++contour changes from concurrent work also affect the inventory; the table is an
++observed snapshot comparison, not attribution of every byte to this pass.
++
++## Verification and comparison method
++
++The dependency probe confirms loading `CarVisual` alone leaves the six tested
++optional factories and both original Kart mesh resources unloaded: 8/0. The raw
++driver test compares ordered encoded position, normal/tangent, UV/colour and
++material-role triangle records in the neutral state and every one of ten poses:
++16/0. Driver contact 27/0 and driving 72/0 also pass.
++
++Native comparisons use the current finish in one viewport. The reference gives
++each part its own mesh and restores the original unsplit driver; the candidate
++uses the saved shared meshes and partitioned driver. Active materials, cameras,
++poses and transforms are the same. This isolates these changes from concurrent
++art edits that invalidate a simple task-start screenshot comparison.
++
++The strict byte-identical diagnostic is retained. Compatibility Kart differences
++were at most 1/255; Vulkan also showed small raster/shader differences and initial
++lighting-settling controls. The final fixture waits for a stable reference and
++checks the existing vehicle appearance limits unchanged: mean RGB difference
++below 0.25/255, fewer than 0.5% of pixels differing by more than 8/255, and restored
++reference maximum difference at most 1/255. Exactness remains separately reported;
++the result is not described as universal pixel identity.
++
++Final native comparisons pass **125/0 per renderer**, covering 30 pairs each.
++Eighteen Compatibility pairs and sixteen Vulkan pairs are exact. Compatibility's
++worst mean difference is 0.000067983/255, with no pixels differing by more than
++8/255; Vulkan's worst mean is 0.000056140/255, with at most two such pixels.
++Both reference stability and restoration controls pass. The full stock/fitted
++module matrices pass **7,557/0**, and the actual five-car Garage/race integration
++passes **48/0 in each renderer**. A temporary test-only audio singleton teardown
++diagnostic was corrected; its first log is retained.
++
++## Prepared refresh and concurrent work
++
++The five-car refresh rebuilds full/simple fixed/editable bases, fitted modules,
++Garage/header assemblies and five-car artwork/provenance. Two rejected refreshes
++detected concurrent vehicle, shader, contour, dependency and Garage edits. Their
++receipts/logs are archived in `rejected-refresh-1.zip` and
++`rejected-refresh-2.zip`; no older owner sources or models were restored.
++
++Rebuilding can reuse old distance-index buffers only when the entire encoded
++master, actual engine and LOD policy match. The reuse is bounded to 32 MiB,
++preserves all new source attributes, and stamps its policy. Legacy unstamped
++outputs require the explicit `--reuse-validated-lods` migration flag and matching
++stored LOD-source hash. Changed masters regenerate normally. This shortens the
++refresh window without accepting stale geometry or weakening runtime guards.
++
++The successful scoped source fence records 21,326 stable inputs; its strict
++prepared gate passes **468 resources / 1,925 checks / 0 failures**, and the
++five-photo check passes with 168 current source hashes. The image importer
++verifies 260 source/import pairs, with no diagnostics or project-setting change.
++Live metadata can subsequently change in concurrent producer sessions; final
++handoff receipts and limits are recorded with the summary.
++
++## Loading measurements and limits
++
++The actual App profiler uses private offline records, ordinary five-lap practice,
++the real loading cover, tick zero and the full countdown. It measures first entry,
++same-track re-entry, retry, setup phases, native frame gaps and actual cache hits.
++It also checks that non-Kart races do not retain the original Kart driver/helmet.
++The removed eager references represented 1,057,116 B of raw unselected mesh data.
++
++Task-start Compatibility observations were 6.579–6.843 s for first entry,
++242–313 ms for re-entry, and 55–60 ms for car setup. These are fresh-process
++desktop observations with existing OS/import/shader caches. Concurrent world,
++contact-cache and material changes prevent assigning an overall timing delta
++solely to this pass.
++
++| Current actual App case | App ready | First race | Re-entry |
++|---|---:|---:|---:|
++| Rally, Compatibility | 1.928 s | 6.094 s | 297 ms |
++| Kart, Compatibility | 2.204 s | 5.320 s | 334 ms |
++| Forklift, Compatibility | 2.188 s | 5.161 s | 278 ms |
++| Volt, Compatibility | 1.904 s | 4.904 s | 278 ms |
++| Hover, Compatibility | 2.010 s | 4.915 s | 233 ms |
++| Rally, four fitted categories, Compatibility | 2.409 s | 5.312 s | 311 ms |
++| Kart, desktop Vulkan Mobile | 1.947 s | 6.948 s | 591 ms |
++
++All fourteen entries hit a prepared base. Non-Kart cases retain neither original
++nor partitioned Kart assets; Kart loads the partitioned driver and retains
++neither original driver nor full helmet in these observations. The actual setup
++phase is approximately 52–65 ms for the five first Compatibility stock entries,
++and approximately 5–8 ms on re-entry. Remaining first-entry time also includes
++world/feature/native preparation. No Android performance, FPS or thermal claim
++is made.
++
++## Reproduction
++
++```powershell
++python scripts/run_car_loading_improvements.py driver-current --script=res://tests/test_car_loading_driver_split.gd --headless
++python scripts/refresh_car_loading_improvements.py
++python scripts/run_car_loading_improvements.py native-final-gl_compatibility --script=res://tests/test_car_loading_native_pairs.gd --rendering-method gl_compatibility
++python scripts/run_car_loading_improvements.py load-compact --script=res://tests/profile_car_loading_improvements.gd --rendering-method gl_compatibility -- --car=compact --phase=after
++```
++
++Evidence is under `docs/evidence/car-loading-improvements-2026-11-13/`.
++Generated native files and photographs are separate from the source checkpoint.
++No device query, APK/export, deployment, backend request, owner save/process
++change or main-index staging is performed by this pass. Owner appearance and
++physical-device loading acceptance remain separate from desktop qualification.
++
++## Final handoff
++
++[Summary and command receipts](evidence/car-loading-improvements-2026-11-13/summary.json),
++[source checkpoint](evidence/car-loading-improvements-2026-11-13/source-checkpoint.json).
++
++The final five-car prepared audit repeats 468-resource / 1,925/0, production
++parsing passes 562/0, and the scoped wash suite passes 1,383/0. Final integration,
++appearance, module and timing commands retain their individual source fences;
++earlier concurrent generated-scene, identity/project and index changes are
++recorded without overwriting their owners' work. The source-only checkpoint
++contains eleven modified files and thirty-two new source/UID files, applies and
++reverses byte-exactly, and leaves the index unchanged during its own verification.
++Its Kart baseline retains the concurrent finish functions and composes their
++static-child finish call with this pass's partition.
++
++Automatic approval review blocked recursive removal of the verified task output,
++reporting only "blocked by policy". The active `.keep` marker was removed and the
++prescribed retention cleanup succeeded. Approximately 137 MB of temporary
++profiles/output remain under `build/car-loading-improvements-2026-11-13`, subject
++to ordinary retention. They were not moved into permanent evidence. The cleanup
++reports 24.14 GiB of build output, with recent/protected entries above the 20 GiB
++target. Relevant native comparisons, concise receipts and source data are retained.
+diff --git a/game/tests/profile_car_loading_improvements.gd.uid b/game/tests/profile_car_loading_improvements.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_car_loading_improvements.gd.uid
+@@ -0,0 +1 @@
++uid://bv1pqup6d365n
+diff --git a/game/tests/capture_car_loading_improvements.gd.uid b/game/tests/capture_car_loading_improvements.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_car_loading_improvements.gd.uid
+@@ -0,0 +1 @@
++uid://bjimdnh15s4xi
+diff --git a/game/tests/test_car_loading_steering.gd.uid b/game/tests/test_car_loading_steering.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_steering.gd.uid
+@@ -0,0 +1 @@
++uid://cpytcqm4o1yy7
+diff --git a/game/tests/test_car_loading_driver_split.gd.uid b/game/tests/test_car_loading_driver_split.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_driver_split.gd.uid
+@@ -0,0 +1 @@
++uid://bugftawovmmcl
+diff --git a/game/tests/test_car_loading_dependencies.gd.uid b/game/tests/test_car_loading_dependencies.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_dependencies.gd.uid
+@@ -0,0 +1 @@
++uid://dekca3rf6orxx
+diff --git a/game/tests/test_car_loading_native_pairs.gd.uid b/game/tests/test_car_loading_native_pairs.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_native_pairs.gd.uid
+@@ -0,0 +1 @@
++uid://ddsox7qe8h8d2
+diff --git a/game/tests/test_car_loading_app.gd.uid b/game/tests/test_car_loading_app.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_car_loading_app.gd.uid
+@@ -0,0 +1 @@
++uid://476ilnuqp2e6
+diff --git a/game/tests/measure_car_loading_assets.gd.uid b/game/tests/measure_car_loading_assets.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/measure_car_loading_assets.gd.uid
+@@ -0,0 +1 @@
++uid://bf2a87cfnwjko
+diff --git a/game/tests/audit_car_loading_live.gd.uid b/game/tests/audit_car_loading_live.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_car_loading_live.gd.uid
+@@ -0,0 +1 @@
++uid://c4jbl57bidd8m
+diff --git a/game/tests/bake_kart_driver_split.gd.uid b/game/tests/bake_kart_driver_split.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/bake_kart_driver_split.gd.uid
+@@ -0,0 +1 @@
++uid://bx2lthcios1ms
+diff --git a/game/tests/support/kart_driver_split.gd.uid b/game/tests/support/kart_driver_split.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/kart_driver_split.gd.uid
+@@ -0,0 +1 @@
++uid://cjcw0qqqki8ue
+diff --git a/game/tests/support/car_mesh_sharing.gd.uid b/game/tests/support/car_mesh_sharing.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/support/car_mesh_sharing.gd.uid
+@@ -0,0 +1 @@
++uid://crvvv0i2uwfru

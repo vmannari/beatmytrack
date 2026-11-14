@@ -1,0 +1,2654 @@
+diff --git a/game/vehicle/compact_finish.gd b/game/vehicle/compact_finish.gd
+--- a/game/vehicle/compact_finish.gd
++++ b/game/vehicle/compact_finish.gd
+@@ -4,24 +4,53 @@
+ static func paint(color: Color) -> StandardMaterial3D:
+ 	var result := StandardMaterial3D.new()
+ 	result.albedo_color = color
+-	result.roughness = 0.38
+-	result.metallic = 0.12
+-	result.metallic_specular = 0.35
++	result.roughness = 0.43
++	result.metallic = 0.06
++	result.metallic_specular = 0.38
+ 	result.clearcoat_enabled = true
+-	result.clearcoat = 0.22
+-	result.clearcoat_roughness = 0.3
++	result.clearcoat = 0.20
++	result.clearcoat_roughness = 0.32
+ 	return result
+ 
+ static func rubber(color: Color) -> StandardMaterial3D:
+ 	var result := StandardMaterial3D.new()
+ 	result.albedo_color = color
+ 	result.roughness = 0.82
+-	result.metallic_specular = 0.18
++	result.metallic_specular = 0.24
+ 	return result
+ 
+ static func alloy(color: Color) -> StandardMaterial3D:
+ 	var result := StandardMaterial3D.new()
+ 	result.albedo_color = color
+-	result.metallic = 0.75
+-	result.roughness = 0.34
++	result.metallic = 0.85
++	result.roughness = 0.30
+ 	return result
++
++static func glass(color: Color) -> StandardMaterial3D:
++	# Opaque reflective glazing. Starting with the generic toon material would
++	# disable specular response even when roughness/clearcoat were then set.
++	var result := StandardMaterial3D.new()
++	result.albedo_color = Color(color, 1.0)
++	result.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
++	result.cull_mode = BaseMaterial3D.CULL_DISABLED
++	result.roughness = 0.22
++	result.metallic_specular = 0.62
++	result.clearcoat_enabled = true
++	result.clearcoat = 0.18
++	result.clearcoat_roughness = 0.25
++	return result
++
++static func industrial_paint(color: Color) -> StandardMaterial3D:
++	var result := paint(color)
++	result.roughness = 0.52
++	result.metallic = 0.02
++	result.clearcoat = 0.08
++	result.clearcoat_roughness = 0.48
++	return result
++
++static func polymer(color: Color) -> StandardMaterial3D:
++	var result := StandardMaterial3D.new()
++	result.albedo_color = color
++	result.roughness = 0.72
++	result.metallic_specular = 0.28
++	return result
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -121,20 +121,16 @@
+ 
+ static func _paint(color: Color) -> StandardMaterial3D:
+ 	var result: StandardMaterial3D = CompactFinish.paint(color)
+-	result.roughness = 0.35
+-	result.metallic = 0.10
+-	result.metallic_specular = 0.34
+-	result.clearcoat = 0.40
+-	result.clearcoat_roughness = 0.24
++	result.roughness = 0.40
++	result.metallic = 0.06
++	result.metallic_specular = 0.38
++	result.clearcoat = 0.24
++	result.clearcoat_roughness = 0.32
+ 	return result
+ 
+ static func _materials(car: CarVisual) -> Dictionary:
+ 	if car.has_meta("hellcat_materials"): return car.get_meta("hellcat_materials")
+-	var glass := VisualGeometry.material(Color("101b20"))
+-	glass.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+-	glass.cull_mode = BaseMaterial3D.CULL_DISABLED # Opaque from both sides of every source pane.
+-	glass.roughness = 0.15; glass.metallic = 0.0; glass.metallic_specular = 0.65
+-	glass.clearcoat_enabled = true; glass.clearcoat = 0.45; glass.clearcoat_roughness = 0.14
++	var glass := CompactFinish.glass(Color("101b20"))
+ 	var contour := VisualGeometry.material(Color("303b40"))
+ 	contour.roughness = 0.85; contour.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 	var led := VisualGeometry.material(Color("a3b7bf"))
+@@ -159,6 +155,9 @@
+ 		if not assets.has(path): assets[path] = load(path)
+ 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
+ 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
++		if item.role == "contour":
++			part.mesh = preload("res://vehicle/challenger_panel_contours.gd").mesh(part.mesh,car.simple_model)
++			part.material_override = preload("res://vehicle/panel_contour.gd").material(part.material_override)
+ 		if item.role in ["contour","led","red","white","reverse","lens_red","vent_metal","glass"] or (group == "hood" and item.role == "dark"): part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		parent.add_child(part)
+ 		if group.begins_with("tail_"): car.brake_lights.append(part)
+diff --git a/game/vehicle/electric_glass.gdshader b/game/vehicle/electric_glass.gdshader
+--- a/game/vehicle/electric_glass.gdshader
++++ b/game/vehicle/electric_glass.gdshader
+@@ -8,6 +8,11 @@
+ uniform bool mirror_surface = false;
+ uniform bool show_frit = true;
+ uniform vec3 glass_tint_srgb = vec3(0.045, 0.074, 0.090);
++varying vec3 reflection_point;
++
++void vertex() {
++	reflection_point = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++}
+ 
+ vec3 linear_from_display(vec3 value) {
+ 	return mix(value/12.92,pow((value+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),value));
+@@ -23,9 +28,14 @@
+ 	float cloud = smoothstep(0.75,0.96,dot(direction,normalize(vec3(-0.55,0.78,0.30))));
+ 	environment = mix(environment,vec3(0.78,0.83,0.83),cloud*0.55);
+ 	if (studio_mode) {
+-		float key = pow(max(0.0,dot(direction,normalize(vec3(-0.65,0.8,-0.35)))),6.0);
+-		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),12.0);
+-		environment = vec3(0.07,0.11,0.14)+vec3(0.42,0.48,0.52)*key+vec3(0.17,0.21,0.24)*fill;
++		// A nearby studio reflection varies across even a nearly planar pane.
++		// Position supplies bounded parallax; lights stay fixed as the car turns.
++		vec3 studio_ray = normalize(direction + reflection_point * 0.45);
++		float key = pow(max(0.0,dot(studio_ray,normalize(vec3(-0.65,0.8,-0.35)))),4.0);
++		float fill = pow(max(0.0,dot(studio_ray,normalize(vec3(0.8,0.35,0.5)))),6.0);
++		float ceiling = smoothstep(0.05,0.65,studio_ray.y);
++		environment = mix(vec3(0.055,0.075,0.09),vec3(0.19,0.23,0.27),ceiling);
++		environment += vec3(0.36,0.40,0.43)*key + vec3(0.20,0.24,0.28)*fill;
+ 	} else if (night_mode) {
+ 		// Moonlit glass retains its curved reflection without reflecting a
+ 		// daytime sky as a pale panel against the dark body and road.
+diff --git a/game/vehicle/window_reflection.gdshader b/game/vehicle/window_reflection.gdshader
+--- a/game/vehicle/window_reflection.gdshader
++++ b/game/vehicle/window_reflection.gdshader
+@@ -7,6 +7,11 @@
+ uniform vec4 sky_tint : source_color = vec4(0.40, 0.55, 0.63, 1.0);
+ uniform vec4 cloud_tint : source_color = vec4(0.79, 0.81, 0.76, 1.0);
+ uniform bool studio_mode = false;
++varying vec3 reflection_point;
++
++void vertex() {
++	reflection_point = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++}
+ 
+ void fragment() {
+ 	vec3 n = normalize(NORMAL);
+@@ -34,9 +39,12 @@
+ 	EMISSION = environment * strength * mix(0.09, 0.4, side_pane);
+ 	ROUGHNESS = 0.65;
+ 	if (studio_mode) {
+-		float softbox = pow(max(0.0,dot(direction,normalize(vec3(-0.6,0.9,-0.4)))),24.0);
+-		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),14.0);
+-		vec3 studio = vec3(0.10,0.15,0.20) + vec3(0.75,0.79,0.83)*softbox + vec3(0.19,0.27,0.38)*fill;
++		vec3 studio_ray = normalize(direction + reflection_point * 0.45);
++		float softbox = pow(max(0.0,dot(studio_ray,normalize(vec3(-0.6,0.9,-0.4)))),5.0);
++		float fill = pow(max(0.0,dot(studio_ray,normalize(vec3(0.8,0.35,0.5)))),7.0);
++		float ceiling = smoothstep(0.05,0.65,studio_ray.y);
++		vec3 studio = mix(vec3(0.07,0.10,0.13),vec3(0.15,0.20,0.25),ceiling);
++		studio += vec3(0.48,0.51,0.54)*softbox + vec3(0.20,0.25,0.32)*fill;
+ 		ALBEDO = mix(vec3(0.055,0.085,0.105),studio,0.35+fresnel*0.55);
+ 		EMISSION = studio*(0.06+0.18*fresnel);
+ 		ROUGHNESS = 0.2;
+diff --git a/game/vehicle/forklift_model.gd b/game/vehicle/forklift_model.gd
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -5,14 +5,14 @@
+ const TRANSPORT_LIFT: float = 0.60 # Raised carriage; model metres, before shared body scale.
+ 
+ static func build(car: CarVisual) -> void:
+-	var paint := CompactFinish.paint(Color("d5a62d"))
+-	var accent := CompactFinish.paint(Color("e0d5b5"))
++	var paint := CompactFinish.industrial_paint(Color("d5a62d"))
++	var accent := CompactFinish.industrial_paint(Color("e0d5b5"))
+ 	var steel := CompactFinish.alloy(Color("687576"))
+ 	var bright := CompactFinish.alloy(Color("bac5c1"))
+ 	var dark := CompactFinish.paint(Color("273439"))
+ 	dark.roughness = 0.54
+ 	var rubber := CompactFinish.rubber(Color("172024"))
+-	var seat := CompactFinish.rubber(Color("343d3e"))
++	var seat := CompactFinish.polymer(Color("343d3e"))
+ 	var amber := CompactFinish.paint(Color("c58025"))
+ 	car.brake_material = CompactFinish.paint(Color("802d2b"))
+ 	car.paint_materials = {"body":paint,"accent":accent}
+diff --git a/game/vehicle/electric_car_model.gd b/game/vehicle/electric_car_model.gd
+--- a/game/vehicle/electric_car_model.gd
++++ b/game/vehicle/electric_car_model.gd
+@@ -9,9 +9,9 @@
+ static func build(car: CarVisual) -> void:
+ 	car.body.name = "ElectricFastback"
+ 	var paint := CompactFinish.paint(Color("b8bbb9"))
+-	paint.roughness = 0.30
+-	paint.metallic = 0.26
+-	paint.clearcoat = 0.30
++	paint.roughness = 0.36
++	paint.metallic = 0.18
++	paint.clearcoat = 0.26
+ 	var accent := CompactFinish.paint(Color("272f33"))
+ 	var alloy := CompactFinish.alloy(Color("9ba8ab"))
+ 	var bright := CompactFinish.alloy(Color("bac6c6"))
+diff --git a/game/vehicle/prepared_asset_dependencies.json b/game/vehicle/prepared_asset_dependencies.json
+--- a/game/vehicle/prepared_asset_dependencies.json
++++ b/game/vehicle/prepared_asset_dependencies.json
+@@ -17,6 +17,10 @@
+     "game/assets/vehicles/racing_simple_v1/manifest.json"
+   ],
+   "rules": [
++    {"pattern":"game/vehicle/challenger_panel_contours.gd","vehicles":["super_rally"]},
++    {"pattern":"game/vehicle/panel_contour.gd","vehicles":["electric","super_rally"]},
++    {"pattern":"game/vehicle/panel_contour.gdshader","vehicles":["electric","super_rally"]},
++    {"pattern":"game/vehicle/kart_driver_cloth.gdshader","vehicles":["kart"]},
+     {"pattern":"game/assets/vehicles/car_reduced_v1/compact_*","vehicles":["compact"]},
+     {"pattern":"game/assets/vehicles/car_reduced_v1/kart_*","vehicles":["kart"]},
+     {"pattern":"game/assets/vehicles/car_reduced_v1/electric_*","vehicles":["electric"]},
+diff --git a/game/vehicle/kart_driver.gd b/game/vehicle/kart_driver.gd
+--- a/game/vehicle/kart_driver.gd
++++ b/game/vehicle/kart_driver.gd
+@@ -2,6 +2,29 @@
+ ## Tomkart's CC-BY-4.0 driver, posed offline; original thin open bucket.
+ ## Credits and modification notes: legal/kart_driver_notices.txt.
+ const G = preload("res://vehicle/kart_geometry.gd")
++const CLOTH: Shader = preload("res://vehicle/kart_driver_cloth.gdshader")
++
++static func _finish_materials() -> Dictionary:
++	# Per-car bindings preserve the immutable imported meshes and all steering
++	# poses. The fixed and moving suit use one identical garment finish.
++	var suit := ShaderMaterial.new()
++	suit.resource_name = "RT_DriverSuit"
++	suit.shader = CLOTH
++	var glove := StandardMaterial3D.new()
++	glove.resource_name = "RT_Gloves"
++	glove.albedo_color = Color("202c31")
++	glove.roughness = 0.76
++	glove.metallic_specular = 0.20
++	var visor := CompactFinish.glass(Color("263c47"))
++	visor.resource_name = "HelmetVisor"
++	visor.roughness = 0.20
++	return {"RT_DriverSuit":suit,"RT_Gloves":glove,"HelmetVisor":visor}
++
++static func _apply_finish(node: MeshInstance3D, materials: Dictionary) -> void:
++	for surface: int in range(node.mesh.get_surface_count()):
++		var source: Material = node.mesh.surface_get_material(surface)
++		if source != null and materials.has(source.resource_name):
++			node.set_surface_override_material(surface,materials[source.resource_name])
+ 
+ static func seat_point(u: float, v: float) -> Vector3:
+ 	# Centreline runs from the front lip, under the hips, then up the back.
+@@ -58,15 +81,18 @@
+ 
+ static func build(parent: Node3D, trim: Material, simple: bool) -> void:
+ 	_seat(parent,trim,CompactFinish.rubber(Color("30383b")),simple)
++	var finishes: Dictionary = _finish_materials()
+ 	var driver := MeshInstance3D.new()
+ 	driver.name = "TomkartDriver"
+ 	var directory: String="res://assets/vehicles/kart_refined_v1"+"/tomkart_driver_v1/"
+ 	var split: bool=simple and ResourceLoader.exists(directory+"driver_steering.res") and ResourceLoader.exists(directory+"driver_static.res")
+ 	driver.mesh = load(directory+("driver_steering.res" if split else "driver.res"))
++	_apply_finish(driver,finishes)
+ 	if split:
+ 		var fixed := MeshInstance3D.new()
+ 		fixed.name="DriverStaticSuit"
+ 		fixed.mesh=load(directory+"driver_static.res")
++		_apply_finish(fixed,finishes)
+ 		driver.add_child(fixed)
+ 	parent.add_child(driver)
+ 	# The helmet never deforms with steering. Retain its four native finishes
+@@ -74,4 +100,5 @@
+ 	var helmet := MeshInstance3D.new()
+ 	helmet.name = "HelmetStatic"
+ 	helmet.mesh = load("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res")
++	_apply_finish(helmet,finishes)
+ 	driver.add_child(helmet)
+diff --git a/game/vehicle/electric_reference_mesh.gd b/game/vehicle/electric_reference_mesh.gd
+--- a/game/vehicle/electric_reference_mesh.gd
++++ b/game/vehicle/electric_reference_mesh.gd
+@@ -62,7 +62,7 @@
+ static func fitted_line(parent: Node3D,label: String,skin: MeshInstance3D,sample: Callable,count: int,width: float,material: Material,outward: Vector3,simple: bool) -> void:
+ 	# Thin flush strips follow the triangles actually rendered, including the
+ 	# lower-density exterior. An analytical offset can sink below those chords.
+-	var key: String = label+"_fitted_v1"+("_simple" if simple else "")
++	var key: String = label+"_fitted_v2"+("_simple" if simple else "")
+ 	var path: String = ASSET_ROOT.path_join(key.sha256_text().left(24)+".res")
+ 	if use_baked and not meshes.has(key) and ResourceLoader.exists(path): meshes[key] = load(path)
+ 	if not meshes.has(key):
+@@ -71,36 +71,67 @@
+ 		var stations: Array = []
+ 		for index: int in range(count+1):
+ 			var t: float = index/float(count)
+-			var center: Vector3 = sample.call(t)
+-			var tangent: Vector3 = sample.call(minf(1,t+0.0001))-sample.call(maxf(0,t-0.0001))
+-			var across: Vector3 = tangent.cross(outward).normalized()*width*0.5
+-			var row: Array = []
+-			for edge: float in [-1.0,1.0]:
+-				var hit: Dictionary = tree.intersect_ray(center+across*edge+outward*0.20,-outward)
+-				row.append(hit.position+outward*0.0008 if not hit.is_empty() else null)
+-			stations.append(row)
++			stations.append({"t":t,"row":_fitted_station(tree,sample,t,width,outward)})
++		# The two ends can lie above a panel while their joining chord crosses
++		# a crease. Refine only those intervals, keeping the same flush offset.
++		for pass_index: int in range(8):
++			var refined: Array = []
++			var changed: bool = false
++			for index: int in range(stations.size()-1):
++				refined.append(stations[index])
++				if _fitted_chord_clear(tree,stations[index].row,stations[index+1].row,outward): continue
++				var t: float = (float(stations[index].t)+float(stations[index+1].t))*0.5
++				refined.append({"t":t,"row":_fitted_station(tree,sample,t,width,outward)})
++				changed = true
++			refined.append(stations[-1])
++			stations = refined
++			if not changed: break
+ 		var tool := SurfaceTool.new()
+ 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-		for index: int in range(count):
+-			if null in stations[index] or null in stations[index+1]: continue
+-			var points: Array = [stations[index][0],stations[index][1],stations[index+1][1],stations[index+1][0]]
++		for index: int in range(stations.size()-1):
++			var a: Array = stations[index].row; var b: Array = stations[index+1].row
++			if null in a or null in b: continue
++			var points: Array = [a[0],a[1],b[1],b[0]]
+ 			for triangle: Array in [[0,1,2],[0,2,3]]:
+ 				var cross: Vector3 = (points[triangle[1]]-points[triangle[0]]).cross(points[triangle[2]]-points[triangle[0]])
+ 				if cross.length_squared()<1e-20: continue
+ 				var order: Array = triangle.duplicate()
+ 				if cross.dot(outward)>0: order.reverse()
+ 				for corner: int in order:
++					var other: int = [1,0,3,2][corner]
++					var half: Vector3 = (points[corner]-points[other])*0.5
+ 					tool.set_normal(outward)
+-					tool.set_uv(Vector2(0,0))
++					tool.set_uv(Vector2(-1.0 if corner in [0,3] else 1.0,half.length()))
++					tool.set_tangent(Plane(half.normalized(),1.0))
+ 					tool.add_vertex(points[corner])
+ 		tool.index()
+ 		meshes[key] = tool.commit()
++		meshes[key].set_meta("pixel_integrated_contour",true)
+ 	var node := MeshInstance3D.new()
+ 	node.name = label
+ 	node.mesh = meshes[key]
+-	node.material_override = material
++	node.material_override = preload("res://vehicle/panel_contour.gd").material(material)
+ 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	parent.add_child(node)
++
++static func _fitted_station(tree: TriangleMesh,sample: Callable,t: float,width: float,outward: Vector3) -> Array:
++	var center: Vector3 = sample.call(t)
++	var tangent: Vector3 = sample.call(minf(1,t+0.0001))-sample.call(maxf(0,t-0.0001))
++	var across: Vector3 = tangent.cross(outward).normalized()*width*0.5
++	var row: Array = []
++	for edge: float in [-1.0,1.0]:
++		var hit: Dictionary = tree.intersect_ray(center+across*edge+outward*0.20,-outward)
++		row.append(hit.position+outward*0.0008 if not hit.is_empty() else null)
++	return row
++
++static func _fitted_chord_clear(tree: TriangleMesh,a: Array,b: Array,outward: Vector3) -> bool:
++	if null in a or null in b: return true
++	for along: float in [0.25,0.5,0.75]:
++		for across: float in [0.0,0.5,1.0]:
++			var p: Vector3 = (a[0] as Vector3).lerp(a[1],across).lerp((b[0] as Vector3).lerp(b[1],across),along)
++			var hit: Dictionary = tree.intersect_ray(p+outward*0.10,-outward)
++			if not hit.is_empty() and (p-hit.position).dot(outward)<0.00035: return false
++	return true
+ 
+ static func rounded(parent: Node3D,label: String,size: Vector3,center: Vector3,radius: float,material: Material) -> void:
+ 	var half: Vector3=size*0.5
+diff --git a/game/tests/test_challenger_hellcat.gd b/game/tests/test_challenger_hellcat.gd
+--- a/game/tests/test_challenger_hellcat.gd
++++ b/game/tests/test_challenger_hellcat.gd
+@@ -40,7 +40,8 @@
+ 		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+ 			if part.mesh != null: triangles += part.mesh.get_faces().size()/3
+ 			var material: StandardMaterial3D = part.get_active_material(0) as StandardMaterial3D
+-			if material != null and material.albedo_color == Color("303b40"):
++			var marking: ShaderMaterial = part.get_active_material(0) as ShaderMaterial
++			if marking != null and marking.shader == preload("res://vehicle/panel_contour.gdshader") and marking.get_shader_parameter("contour_color") == Color("303b40"):
+ 				contours += 1
+ 				contours_unshadowed = contours_unshadowed and part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 			if material != null and material.albedo_color == Color("101b20"):
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-219-packed-assets"
++const VERSION: String = "track-kit-220-finite-join-caps"
+ const VERTEX_PACKING = preload("res://rendering/mesh_vertex_packing.gd")
+ var scenery_lods: bool = true # False is an offline full-detail comparison control.
+ var piece_road_materials: bool = false
+@@ -875,7 +875,10 @@
+ 
+ func _road_border_samples(border_contours: Array[PackedVector2Array], cuts: Array[Dictionary], swept: bool, pieces: Array, index: int, outlines: Array[Dictionary], topology: Dictionary) -> PackedVector2Array:
+ 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+-	if native != null and not _menu_slices:
++	# Native road kernel v1 matches infinite cap planes. Returning hairpins
++	# can put both mouths on one plane; keep their finite-cap correction here
++	# until every installed native library includes it. Other edges stay native.
++	if native != null and not _menu_slices and (swept or not _coincident_join_planes(cuts)):
+ 		var joined: Array = []
+ 		for endpoint: int in range(2):
+ 			var matches: Array = RoadPieces._matches(topology,index,endpoint)
+@@ -1307,11 +1310,20 @@
+ 	if not _on_join_cut(before,point,cuts) and not _on_join_cut(point,after,cuts):
+ 		return RoadEdges._edge_miter(polygon,index)
+ 	for cut: Dictionary in cuts:
+-		if absf((point-Vector2(cut.point)).dot(cut.normal)) < 0.001:
++		var delta: Vector2 = point-Vector2(cut.point)
++		if absf(delta.dot(cut.normal)) < 0.001 and absf(delta.dot(Vector2(cut.normal).orthogonal())) <= float(cut.span)*0.5+0.001:
+ 			var normal: Vector2 = Vector2(cut.normal).orthogonal()
+-			if normal.dot(point-Vector2(cut.point)) < 0: normal = -normal
++			if normal.dot(delta) < 0: normal = -normal
+ 			return normal
+ 	return RoadEdges._roadside_miter(polygon,index,cuts)
++
++
++static func _coincident_join_planes(cuts: Array[Dictionary]) -> bool:
++	for i: int in range(cuts.size()):
++		for j: int in range(i+1,cuts.size()):
++			if absf(Vector2(cuts[i].normal).dot(cuts[j].normal)) > 0.99999 and absf((Vector2(cuts[i].point)-Vector2(cuts[j].point)).dot(cuts[i].normal)) < 0.001:
++				return true
++	return false
+ 
+ 
+ func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:
+diff --git a/native/track_geometry/road_geometry.hpp b/native/track_geometry/road_geometry.hpp
+--- a/native/track_geometry/road_geometry.hpp
++++ b/native/track_geometry/road_geometry.hpp
+@@ -345,8 +345,9 @@
+             return area<0?-normal:normal;
+         }
+     } else if (on_cut(before,point,cuts) || on_cut(point,after,cuts)) {
+-        // Preserve NativeTrackVisual's original non-swept join-plane miter.
+-        for (const auto &cut:cuts) if (std::abs((point-cut.point).dot(cut.normal))<0.001) {
++        // Match a finite mouth, not another hairpin cap on the same plane.
++        for (const auto &cut:cuts) if (std::abs((point-cut.point).dot(cut.normal))<0.001 &&
++                std::abs((point-cut.point).dot(cut.normal.orthogonal()))<=cut.span*0.5+0.001) {
+             Vector2 normal=cut.normal.orthogonal();
+             if (normal.dot(point-cut.point)<0) normal=-normal;
+             return normal;
+diff --git a/game/vehicle/kart_driver_cloth.gdshader b/game/vehicle/kart_driver_cloth.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/kart_driver_cloth.gdshader
+@@ -0,0 +1,53 @@
++shader_type spatial;
++render_mode diffuse_burley, specular_schlick_ggx;
++
++// Imported garment colours and UVs remain attached to every steering pose.
++// Fine weave fades before becoming subpixel; there is no animated noise,
++// displacement, extra draw pass or texture allocation.
++varying vec3 garment_position;
++
++vec3 display_to_linear(vec3 colour) {
++	return mix(colour / 12.92, pow((colour + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), colour));
++}
++
++void vertex() {
++	garment_position = VERTEX;
++}
++
++void fragment() {
++	vec3 source = COLOR.rgb;
++	vec3 pigment = clamp(vec3(0.29, 0.35, 0.38) + (source - vec3(0.2745, 0.3451, 0.3804)) * 1.50, vec3(0.05), vec3(0.70));
++	float front = smoothstep(0.055, 0.115, garment_position.z)
++		* (1.0 - smoothstep(0.34, 0.40, garment_position.z));
++	// Broad tailored torso insert. The mask stays within the fixed chest, away
++	// from the moving sleeves and their existing cuff/elbow colour panels.
++	float chest = (1.0 - smoothstep(0.12, 0.17, abs(garment_position.x)))
++		* smoothstep(0.52, 0.60, garment_position.y)
++		* (1.0 - smoothstep(0.74, 0.79, garment_position.y))
++		* front;
++	pigment = mix(pigment, pigment * 1.16, chest);
++	float yoke = smoothstep(0.705, 0.725, garment_position.y)
++		* (1.0 - smoothstep(0.785, 0.805, garment_position.y))
++		* (1.0 - smoothstep(0.17, 0.22, abs(garment_position.x))) * front;
++	pigment = mix(pigment, vec3(0.46, 0.50, 0.50), yoke * 0.82);
++	// Sewn torso panel edges are a few millimetres wide and softly filtered.
++	float edge_width = max(fwidth(garment_position.x), 0.0015);
++	float edge = 1.0 - smoothstep(0.002, 0.0035 + edge_width, abs(abs(garment_position.x) - 0.123));
++	edge *= smoothstep(0.53, 0.58, garment_position.y)
++		* (1.0 - smoothstep(0.70, 0.74, garment_position.y)) * front;
++	pigment = mix(pigment, vec3(0.45, 0.49, 0.50), edge * 0.48);
++	// The lower boot is part of the original suit surface. Separate its rubber
++	// and leather response without splitting, moving or rebuilding that mesh.
++	float boot = (1.0 - smoothstep(0.28, 0.34, garment_position.y))
++		* (1.0 - smoothstep(-0.64, -0.54, garment_position.z));
++	pigment = mix(pigment, vec3(0.105, 0.14, 0.155), boot);
++	vec2 weave_uv = UV * 220.0;
++	vec2 footprint = fwidth(weave_uv);
++	float resolved = 1.0 - smoothstep(0.18, 0.50, max(footprint.x, footprint.y));
++	float weave = sin(weave_uv.x * 6.2831853) * sin(weave_uv.y * 6.2831853);
++	pigment *= 1.0 + weave * 0.035 * resolved * (1.0 - boot);
++	ALBEDO = OUTPUT_IS_SRGB ? pigment : display_to_linear(pigment);
++	METALLIC = 0.0;
++	ROUGHNESS = mix(0.93, 0.72, boot);
++	SPECULAR = mix(0.14, 0.22, boot);
++}
+diff --git a/game/vehicle/panel_contour.gd b/game/vehicle/panel_contour.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/panel_contour.gd
+@@ -0,0 +1,102 @@
++extends RefCounted
++## Pixel-integrated flush contours. Positions and centre lines remain exact.
++const SHADER = preload("res://vehicle/panel_contour.gdshader")
++static var meshes: Dictionary = {}
++static var materials: Dictionary = {}
++
++static func material(source: StandardMaterial3D) -> ShaderMaterial:
++	var color: Color = source.albedo_color
++	if not materials.has(color):
++		if materials.size() >= 16: materials.clear()
++		var result := ShaderMaterial.new()
++		result.shader = SHADER
++		result.set_shader_parameter("contour_color", color)
++		materials[color] = result
++	return materials[color]
++
++static func mesh(source: ArrayMesh) -> ArrayMesh:
++	if source.has_meta("pixel_integrated_contour"): return source
++	if meshes.has(source): return meshes[source]
++	if meshes.size() >= 128: meshes.clear()
++	var result := ArrayMesh.new()
++	for surface: int in range(source.get_surface_count()):
++		var arrays: Array = source.surface_get_arrays(surface)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++		if indices.is_empty():
++			indices.resize(vertices.size())
++			for i: int in range(vertices.size()): indices[i] = i
++		# Imported strips can duplicate a position for corner normals. Weld only
++		# the topology lookup; the actual render buffers keep those normals.
++		var canonical := PackedInt32Array()
++		canonical.resize(vertices.size())
++		var positions: Dictionary = {}
++		for i: int in range(vertices.size()):
++			var p: Vector3 = vertices[i].snapped(Vector3.ONE*0.000001)
++			if not positions.has(p): positions[p] = i
++			canonical[i] = positions[p]
++		var edge_counts: Dictionary = {}
++		for offset: int in range(0,indices.size(),3):
++			for corner: int in range(3):
++				var a: int = canonical[indices[offset+corner]]
++				var b: int = canonical[indices[offset+(corner+1)%3]]
++				var edge := Vector2i(mini(a,b),maxi(a,b))
++				edge_counts[edge] = int(edge_counts.get(edge,0))+1
++		var partner := PackedInt32Array()
++		partner.resize(vertices.size()); partner.fill(-1)
++		var distance := PackedFloat64Array()
++		distance.resize(vertices.size()); distance.fill(INF)
++		for edge: Vector2i in edge_counts:
++			# In a closed ribbon the one-face edges run along its boundaries.
++			# Paired edges and diagonals are internal; the pair is the shorter.
++			if int(edge_counts[edge]) != 2: continue
++			var a: int = edge.x; var b: int = edge.y
++			var squared: float = vertices[a].distance_squared_to(vertices[b])
++			if squared < 1e-14: continue
++			if squared < distance[a]: distance[a] = squared; partner[a] = b
++			if squared < distance[b]: distance[b] = squared; partner[b] = a
++		var pairs: Dictionary = {}
++		var member := PackedInt32Array()
++		member.resize(vertices.size()); member.fill(-1)
++		for a: int in range(vertices.size()):
++			var original: int = canonical[a]
++			var b: int = partner[original]
++			assert(b >= 0 and partner[b] == original, "Contour topology requires paired ribbon edges")
++			var key: int = mini(original, b)
++			member[a] = key
++			if not pairs.has(key): pairs[key] = {"a":key,"b":maxi(original,b),"neighbors":[],"sign":0.0}
++		for offset: int in range(0, indices.size(), 3):
++			for corner: int in range(3):
++				var a: int = member[indices[offset + corner]]
++				var b: int = member[indices[offset + (corner + 1) % 3]]
++				if a != b and b not in pairs[a].neighbors: pairs[a].neighbors.append(b)
++		for start: int in pairs:
++			if pairs[start].sign != 0.0: continue
++			pairs[start].sign = 1.0
++			var queue: Array[int] = [start]
++			var cursor: int = 0
++			while cursor < queue.size():
++				var a: Dictionary = pairs[queue[cursor]]; cursor += 1
++				var direction: Vector3 = (vertices[a.b] - vertices[a.a]) * float(a.sign)
++				for next: int in a.neighbors:
++					var b: Dictionary = pairs[next]
++					if b.sign != 0.0: continue
++					b.sign = 1.0 if direction.dot(vertices[b.b] - vertices[b.a]) >= 0.0 else -1.0
++					queue.append(next)
++		var uv := PackedVector2Array()
++		uv.resize(vertices.size())
++		var tangents := PackedFloat32Array()
++		tangents.resize(vertices.size() * 4)
++		for i: int in range(vertices.size()):
++			var half: Vector3 = (vertices[i] - vertices[partner[canonical[i]]]) * 0.5
++			var direction: Vector3 = half.normalized()
++			var pair: Dictionary = pairs[member[i]]
++			uv[i] = Vector2(float(pair.sign) * (-1.0 if canonical[i] == pair.a else 1.0), half.length())
++			for axis: int in range(3): tangents[i * 4 + axis] = direction[axis]
++			tangents[i * 4 + 3] = 1.0
++		arrays[Mesh.ARRAY_TEX_UV] = uv
++		arrays[Mesh.ARRAY_TANGENT] = tangents
++		result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
++	result.set_meta("pixel_integrated_contour", true)
++	meshes[source] = result
++	return result
+diff --git a/game/vehicle/panel_contour.gdshader b/game/vehicle/panel_contour.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/panel_contour.gdshader
+@@ -0,0 +1,30 @@
++shader_type spatial;
++render_mode blend_mix, depth_draw_never, cull_disabled;
++
++// The original ribbon width is integrated over a pixel rather than sampled
++// as alternating covered/uncovered pixels. The support is presentation-only.
++uniform vec4 contour_color : source_color = vec4(0.08, 0.11, 0.13, 1.0);
++varying float across_pixels;
++varying float half_width_pixels;
++
++void vertex() {
++	vec4 edge = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
++	vec3 center_position = VERTEX - TANGENT.xyz * UV.y;
++	vec4 center = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(center_position, 1.0);
++	vec2 delta_pixels = (edge.xy / edge.w - center.xy / center.w) * VIEWPORT_SIZE * 0.5;
++	float original_half = length(delta_pixels);
++	float support_half = max(original_half + 0.65, 1.0);
++	vec2 direction = delta_pixels / max(original_half, 0.00001);
++	edge.xy += direction * (support_half - original_half) * 2.0 / VIEWPORT_SIZE * edge.w;
++	POSITION = edge;
++	across_pixels = UV.x * support_half;
++	half_width_pixels = original_half;
++}
++
++void fragment() {
++	float coverage = clamp(half_width_pixels + 0.5 - abs(across_pixels), 0.0, min(1.0, half_width_pixels * 2.0));
++	ALBEDO = contour_color.rgb;
++	ROUGHNESS = 0.9;
++	SPECULAR = 0.0;
++	ALPHA = contour_color.a * coverage;
++}
+diff --git a/game/vehicle/challenger_panel_contours.gd b/game/vehicle/challenger_panel_contours.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/challenger_panel_contours.gd
+@@ -0,0 +1,61 @@
++extends RefCounted
++## Flush marking over the native bonnet gap; original exterior stays immutable.
++const CONTOUR = preload("res://vehicle/panel_contour.gd")
++const OUTLINE = preload("res://assets/vehicles/challenger_hellcat_v1/bonnet_contour.json")
++static var meshes: Dictionary = {}
++
++static func mesh(source: ArrayMesh,simple: bool) -> ArrayMesh:
++	if meshes.has(source): return meshes[source]
++	if meshes.size() >= 4: meshes.clear()
++	var base: ArrayMesh = CONTOUR.mesh(source)
++	var arrays: Array = base.surface_get_arrays(0)
++	var p: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	var n: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++	var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
++	var tangent: PackedFloat32Array = arrays[Mesh.ARRAY_TANGENT]
++	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	var first: int = p.size()
++	var outline: Array = OUTLINE.data.points
++	var count: int = outline.size()
++	var tier: String = "simple" if simple else "full"
++	var hood: TriangleMesh = (load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_hood_paint.res") as ArrayMesh).generate_triangle_mesh()
++	var body: TriangleMesh = (load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_body_paint.res") as ArrayMesh).generate_triangle_mesh()
++	for i: int in range(count):
++		var previous: Array = outline[posmod(i-1,count)]
++		var current: Array = outline[i]
++		var next: Array = outline[(i+1)%count]
++		var direction := Vector3(next[0]-previous[0],next[1]-previous[1],next[2]-previous[2])
++		var across: Vector3 = direction.cross(Vector3.UP).normalized()
++		var center := Vector3(current[0],current[1],current[2])
++		var row: Array[Vector3] = []
++		for side: float in [-1.0,1.0]:
++			var point: Vector3 = center+across*side*0.00125
++			# Border returns and bonnet are separate native skins. Fit to the
++			# outer one at each edge, retaining their existing physical join.
++			for skin: TriangleMesh in [hood,body]:
++				var hit: Dictionary = skin.intersect_ray(point+Vector3.UP*0.03,Vector3.DOWN)
++				if not hit.is_empty(): point.y=maxf(point.y,hit.position.y)
++			point.y+=0.0018
++			row.append(point)
++		var half: Vector3 = (row[1]-row[0])*0.5
++		for index: int in range(2):
++			var side: float = -1.0 if index == 0 else 1.0
++			p.append(row[index])
++			n.append(Vector3.UP)
++			uv.append(Vector2(side,half.length()))
++			var t: Vector3 = half.normalized()*side
++			tangent.append_array(PackedFloat32Array([t.x,t.y,t.z,1.0]))
++		var a: int = first+i*2
++		var b: int = first+((i+1)%count)*2
++		indices.append_array(PackedInt32Array([a,b+1,a+1,a,b,b+1]))
++	arrays[Mesh.ARRAY_VERTEX]=p; arrays[Mesh.ARRAY_NORMAL]=n
++	arrays[Mesh.ARRAY_TEX_UV]=uv; arrays[Mesh.ARRAY_TANGENT]=tangent
++	arrays[Mesh.ARRAY_INDEX]=indices
++	arrays[Mesh.ARRAY_COLOR]=null; arrays[Mesh.ARRAY_TEX_UV2]=null
++	var result := ArrayMesh.new()
++	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	result.set_meta("pixel_integrated_contour",true)
++	result.set_meta("original_contour_vertices",first)
++	result.set_meta("bonnet_segments",count)
++	meshes[source]=result
++	return result
+diff --git a/game/assets/vehicles/challenger_hellcat_v1/bonnet_contour.json b/game/assets/vehicles/challenger_hellcat_v1/bonnet_contour.json
+new file mode 100644
+--- /dev/null
++++ b/game/assets/vehicles/challenger_hellcat_v1/bonnet_contour.json
+@@ -0,0 +1,510 @@
++{
++  "source_mesh": "simple_hood_paint.res",
++  "source_sha256": "36165efac2398f9b9796f8173b285a51b670f5fd399e34f0ad65c43cec8b9405",
++  "method": "Outer star-shaped projection of native bonnet boundary; 3D Douglas-Peucker reduction",
++  "maximum_boundary_error_metres": 0.000873736,
++  "physical_width_metres": 0.0025,
++  "normal_offset_metres": 0.0018,
++  "points": [
++    [
++      -0.741842,
++      0.914196,
++      -1.4057800000000003
++    ],
++    [
++      -0.740189,
++      0.906526,
++      -1.5009310000000002
++    ],
++    [
++      -0.737595,
++      0.900147,
++      -1.5596540000000003
++    ],
++    [
++      -0.730044,
++      0.894712,
++      -1.598503
++    ],
++    [
++      -0.706771,
++      0.880638,
++      -1.674187
++    ],
++    [
++      -0.700253,
++      0.872382,
++      -1.7113009999999997
++    ],
++    [
++      -0.698279,
++      0.868048,
++      -1.739292
++    ],
++    [
++      -0.695134,
++      0.86362,
++      -1.7929599999999999
++    ],
++    [
++      -0.683842,
++      0.854655,
++      -1.92
++    ],
++    [
++      -0.670208,
++      0.84213,
++      -2.05974
++    ],
++    [
++      -0.665044,
++      0.832683,
++      -2.134739
++    ],
++    [
++      -0.6629549999999998,
++      0.8255619999999998,
++      -2.15926
++    ],
++    [
++      -0.6586859999999998,
++      0.828003,
++      -2.160031
++    ],
++    [
++      -0.6072739999999998,
++      0.832229,
++      -2.165792
++    ],
++    [
++      -0.5781939999999998,
++      0.834168,
++      -2.165621
++    ],
++    [
++      -0.5600609999999999,
++      0.835284,
++      -2.164057
++    ],
++    [
++      -0.5163839999999997,
++      0.837771,
++      -2.156455
++    ],
++    [
++      -0.436327,
++      0.841832,
++      -2.138722
++    ],
++    [
++      -0.4069249999999998,
++      0.843188,
++      -2.134717
++    ],
++    [
++      -0.37667499999999987,
++      0.844503,
++      -2.133197
++    ],
++    [
++      -0.34587299999999976,
++      0.845758,
++      -2.134182
++    ],
++    [
++      -0.09854200000000007,
++      0.85371,
++      -2.152836
++    ],
++    [
++      -0.04742800000000007,
++      0.855146,
++      -2.155577
++    ],
++    [
++      0.005041000000000064,
++      0.855903,
++      -2.156733
++    ],
++    [
++      0.089871,
++      0.854259,
++      -2.153949
++    ],
++    [
++      0.35593099999999994,
++      0.845758,
++      -2.134439
++    ],
++    [
++      0.3867559999999999,
++      0.844503,
++      -2.134182
++    ],
++    [
++      0.4169840000000001,
++      0.843188,
++      -2.136538
++    ],
++    [
++      0.44636200000000004,
++      0.841832,
++      -2.141228
++    ],
++    [
++      0.5264420000000001,
++      0.837771,
++      -2.159239
++    ],
++    [
++      0.570143,
++      0.835284,
++      -2.165857
++    ],
++    [
++      0.5882519999999999,
++      0.834168,
++      -2.166906
++    ],
++    [
++      0.617332,
++      0.832229,
++      -2.166263
++    ],
++    [
++      0.668768,
++      0.828003,
++      -2.160031
++    ],
++    [
++      0.673037,
++      0.825562,
++      -2.15926
++    ],
++    [
++      0.675125,
++      0.832683,
++      -2.134739
++    ],
++    [
++      0.68029,
++      0.84213,
++      -2.05974
++    ],
++    [
++      0.693923,
++      0.854655,
++      -1.92
++    ],
++    [
++      0.705215,
++      0.86362,
++      -1.79296
++    ],
++    [
++      0.70836,
++      0.868048,
++      -1.739292
++    ],
++    [
++      0.710334,
++      0.872382,
++      -1.711301
++    ],
++    [
++      0.716852,
++      0.880638,
++      -1.674187
++    ],
++    [
++      0.740125,
++      0.894712,
++      -1.598503
++    ],
++    [
++      0.744716,
++      0.897568,
++      -1.579143
++    ],
++    [
++      0.7491,
++      0.902484,
++      -1.54008
++    ],
++    [
++      0.751097,
++      0.909906,
++      -1.462189
++    ],
++    [
++      0.752657,
++      0.921735,
++      -1.315511
++    ],
++    [
++      0.756077,
++      0.931948,
++      -1.171788
++    ],
++    [
++      0.757133,
++      0.93576,
++      -1.09756
++    ],
++    [
++      0.755297,
++      0.940498,
++      -0.9946349999999999
++    ],
++    [
++      0.7482373361270519,
++      0.9486825105353613,
++      -0.8722661678175521
++    ],
++    [
++      0.744922,
++      0.953199,
++      -0.8299879999999998
++    ],
++    [
++      0.742926,
++      0.956888,
++      -0.8097499999999999
++    ],
++    [
++      0.740562,
++      0.962556,
++      -0.795872
++    ],
++    [
++      0.737256,
++      0.968957,
++      -0.788484
++    ],
++    [
++      0.732919,
++      0.97283,
++      -0.777947
++    ],
++    [
++      0.728948,
++      0.971803,
++      -0.76604
++    ],
++    [
++      0.7284659999999998,
++      0.9699009999999999,
++      -0.764519
++    ],
++    [
++      0.724862,
++      0.9645520000000001,
++      -0.763405
++    ],
++    [
++      0.6351708057468652,
++      0.9792088433248679,
++      -0.8403713322814675
++    ],
++    [
++      0.629405,
++      0.979666,
++      -0.843694
++    ],
++    [
++      0.6306900000000001,
++      0.978185,
++      -0.842495
++    ],
++    [
++      0.5528600000000002,
++      0.98442,
++      -0.8829279999999999
++    ],
++    [
++      0.55403,
++      0.982549,
++      -0.881815
++    ],
++    [
++      0.49570899999999984,
++      0.987064,
++      -0.9087350000000001
++    ],
++    [
++      0.496467,
++      0.984914,
++      -0.907771
++    ],
++    [
++      0.439133,
++      0.988968,
++      -0.931371
++    ],
++    [
++      0.4393620000000001,
++      0.986598,
++      -0.930579
++    ],
++    [
++      0.365342,
++      0.990784,
++      -0.955786
++    ],
++    [
++      0.296279,
++      0.993609,
++      -0.973882
++    ],
++    [
++      0.2613920000000001,
++      0.99471,
++      -0.9811
++    ],
++    [
++      0.23878399999999994,
++      0.995197,
++      -0.98337
++    ],
++    [
++      0.12471300000000002,
++      0.997007,
++      -0.989216
++    ],
++    [
++      0.03616400000000001,
++      0.997761,
++      -0.991615
++    ],
++    [
++      -0.08639999999999998,
++      0.997329,
++      -0.990244
++    ],
++    [
++      -0.22870299999999993,
++      0.995197,
++      -0.98337
++    ],
++    [
++      -0.2513110000000002,
++      0.99471,
++      -0.9811
++    ],
++    [
++      -0.2746990000000001,
++      0.993989,
++      -0.976431
++    ],
++    [
++      -0.35525999999999985,
++      0.990784,
++      -0.9557860000000001
++    ],
++    [
++      -0.429281,
++      0.986598,
++      -0.930579
++    ],
++    [
++      -0.4290509999999999,
++      0.988968,
++      -0.931371
++    ],
++    [
++      -0.486385,
++      0.984914,
++      -0.907771
++    ],
++    [
++      -0.4856280000000004,
++      0.987064,
++      -0.9087349999999998
++    ],
++    [
++      -0.5439489999999993,
++      0.982549,
++      -0.8818150000000003
++    ],
++    [
++      -0.5427789999999997,
++      0.98442,
++      -0.8829280000000003
++    ],
++    [
++      -0.6206090000000004,
++      0.978185,
++      -0.8424949999999998
++    ],
++    [
++      -0.6193240000000007,
++      0.9796659999999999,
++      -0.8436939999999996
++    ],
++    [
++      -0.6280269124494796,
++      0.9789759672978867,
++      -0.838678762317249
++    ],
++    [
++      -0.7144830000000002,
++      0.9643900000000001,
++      -0.7635549999999998
++    ],
++    [
++      -0.718385,
++      0.9699010000000001,
++      -0.7645190000000001
++    ],
++    [
++      -0.719601,
++      0.972487,
++      -0.7683530000000001
++    ],
++    [
++      -0.723962,
++      0.972143,
++      -0.7807520000000001
++    ],
++    [
++      -0.7271749999999999,
++      0.9689570000000001,
++      -0.7884839999999997
++    ],
++    [
++      -0.731192,
++      0.960802,
++      -0.7989560000000001
++    ],
++    [
++      -0.733763,
++      0.955042,
++      -0.8184660000000001
++    ],
++    [
++      -0.737412,
++      0.949589,
++      -0.8620049999999998
++    ],
++    [
++      -0.743035,
++      0.943118,
++      -0.9485259999999998
++    ],
++    [
++      -0.746524,
++      0.938392,
++      -1.0378739999999997
++    ],
++    [
++      -0.746914,
++      0.934901,
++      -1.1164919999999998
++    ],
++    [
++      -0.742576,
++      0.921735,
++      -1.3155109999999999
++    ]
++  ]
++}
+diff --git a/game/tests/test_kart_material_finish.gd b/game/tests/test_kart_material_finish.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_kart_material_finish.gd
+@@ -0,0 +1,96 @@
++extends SceneTree
++## VQR03: native driver material bindings preserve mesh/morph data and isolation.
++const DRIVER = preload("res://vehicle/kart_driver.gd")
++const STEERING = preload("res://vehicle/kart_steering.gd")
++const ROOT: String = "res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("KART_FINISH_FAIL ",message)
++
++func geometry(mesh: ArrayMesh) -> PackedByteArray:
++	var arrays: Array = []
++	for surface: int in range(mesh.get_surface_count()):
++		arrays.append(mesh.surface_get_arrays(surface))
++		arrays.append(mesh.surface_get_blend_shape_arrays(surface))
++	return var_to_bytes(arrays)
++
++func suit_parts(driver: MeshInstance3D) -> Array[MeshInstance3D]:
++	var result: Array[MeshInstance3D] = [driver]
++	var fixed := driver.get_node_or_null("DriverStaticSuit") as MeshInstance3D
++	if fixed != null: result.append(fixed)
++	return result
++
++func own(node: Node, owner: Node) -> void:
++	for child: Node in node.get_children():
++		child.owner = owner
++		own(child,owner)
++
++func run() -> void:
++	var hashes: Dictionary = {}
++	var original: Dictionary = {}
++	for file: String in ["driver.res","driver_steering.res","driver_static.res","helmet_static.res"]:
++		hashes[file] = FileAccess.get_sha256(ROOT+file)
++		original[file] = geometry(load(ROOT+file))
++	var containers: Array[Node3D] = []
++	var materials: Array[Material] = []
++	for simple: bool in [false,true]:
++		var body := Node3D.new()
++		root.add_child(body)
++		containers.append(body)
++		DRIVER.build(body,CompactFinish.rubber(Color("20272a")),simple)
++		var driver := body.get_node("TomkartDriver") as MeshInstance3D
++		check(driver.mesh == load(ROOT+("driver_steering.res" if simple else "driver.res")),"original native driver resource retained")
++		check(driver.mesh.get_blend_shape_count() == STEERING.STEPS*2,"all steering samples retained")
++		var suit: Material
++		for part: MeshInstance3D in suit_parts(driver):
++			for surface: int in range(part.mesh.get_surface_count()):
++				var source: Material = part.mesh.surface_get_material(surface)
++				var active: Material = part.get_active_material(surface)
++				check(active != source,"finish uses instance binding")
++				check(source is StandardMaterial3D,"imported native material remains unchanged")
++				check(active.resource_name == source.resource_name,"material role preserved")
++				if source.resource_name == "RT_DriverSuit":
++					check(active is ShaderMaterial and active.shader == DRIVER.CLOTH,"garment finish used")
++					check(suit == null or suit == active,"static and moving panels share finish")
++					suit = active
++				elif source.resource_name == "RT_Gloves":
++					check(active is StandardMaterial3D and active.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED,"glove remains opaque")
++		materials.append(suit)
++		var helmet := driver.get_node("HelmetStatic") as MeshInstance3D
++		check(helmet.mesh == load(ROOT+"helmet_static.res"),"helmet native resource retained")
++		for surface: int in range(helmet.mesh.get_surface_count()):
++			var source: Material = helmet.mesh.surface_get_material(surface)
++			if source.resource_name == "HelmetVisor":
++				var visor := helmet.get_active_material(surface) as StandardMaterial3D
++				check(visor != null and visor != source,"visor uses instance finish")
++				check(visor.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and is_equal_approx(visor.albedo_color.a,1.0),"visor stays opaque")
++			else:
++				check(helmet.get_active_material(surface) == source,"shell, hardware and seals preserve original finish")
++		for input: float in [-1.0,-0.65,0.0,0.65,1.0]:
++			STEERING.present(null,driver,input)
++			check(driver.get_active_material(1) == suit,"material binding remains during steering")
++		# Prepared bases serialize these exact per-surface bindings.
++		own(body,body)
++		var packed := PackedScene.new()
++		check(packed.pack(body) == OK,"finished driver packs")
++		var restored := packed.instantiate()
++		var restored_driver := restored.get_node("TomkartDriver") as MeshInstance3D
++		check(restored_driver.get_active_material(1) is ShaderMaterial,"garment finish survives prepared scene roundtrip")
++		var restored_helmet := restored_driver.get_node("HelmetStatic") as MeshInstance3D
++		check(restored_helmet.get_surface_override_material(2) != null,"visor finish survives prepared scene roundtrip")
++		restored.free()
++	check(materials[0] != materials[1],"separate cars do not share mutable finish instances")
++	for file: String in hashes:
++		check(FileAccess.get_sha256(ROOT+file) == hashes[file],"native mesh file is byte exact "+file)
++		check(geometry(load(ROOT+file)) == original[file],"positions, normals, UVs, colours, topology and all morph arrays unchanged "+file)
++	for body: Node3D in containers: body.free()
++	await process_frame
++	print("KART_MATERIAL_FINISH: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_vehicle_material_finish.gd b/game/tests/test_vehicle_material_finish.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_vehicle_material_finish.gd
+@@ -0,0 +1,142 @@
++extends SceneTree
++## VQR03: real material bindings, saved pigment and per-view glass isolation.
++const FINISH = preload("res://vehicle/compact_finish.gd")
++const ELECTRIC_GLASS = preload("res://vehicle/electric_glass.gdshader")
++const WINDOW_GLASS = preload("res://vehicle/window_reflection.gdshader")
++const RACE_GLASS = preload("res://race/electric_glass_lighting.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("MATERIAL_FINISH_FAIL ",label)
++
++func finite_response(material: StandardMaterial3D) -> bool:
++	for value: float in [material.roughness,material.metallic,material.metallic_specular,material.clearcoat,material.clearcoat_roughness]:
++		if not is_finite(value) or value < 0.0 or value > 1.0: return false
++	return true
++
++func opaque(material: StandardMaterial3D) -> bool:
++	return material.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and is_equal_approx(material.albedo_color.a,1.0)
++
++func glass_bindings(car: CarVisual) -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	for mesh: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if mesh.mesh == null: continue
++		for surface: int in range(mesh.mesh.get_surface_count()):
++			var material := mesh.get_active_material(surface) as ShaderMaterial
++			if material != null and material.shader in [ELECTRIC_GLASS,WINDOW_GLASS]:
++				result.append({"mesh":mesh,"surface":surface,"material":material})
++	return result
++
++func is_bound(car: CarVisual, material: Material) -> bool:
++	for mesh: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if mesh.mesh == null: continue
++		for surface: int in range(mesh.mesh.get_surface_count()):
++			if mesh.get_active_material(surface) == material: return true
++	return false
++
++func configuration_hashes() -> Dictionary:
++	var result: Dictionary = {}
++	for file: String in DirAccess.get_files_at("res://resources/cars"):
++		if file.ends_with(".tres"):
++			var path: String = "res://resources/cars/"+file
++			result[path] = FileAccess.get_sha256(path)
++	for path: String in HandlingSelection.PROFILE_PATHS:
++		result[path] = FileAccess.get_sha256(path)
++	return result
++
++func create_car(id: String, livery: Dictionary) -> CarVisual:
++	var car := CarVisual.new()
++	car.vehicle_id = id
++	car.livery = livery.duplicate(true)
++	car.cache_rest_pose = false
++	root.add_child(car)
++	while not car.model_ready: await process_frame
++	return car
++
++func run() -> void:
++	# This gate checks current source, independent of pending prepared refreshes.
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
++	preload("res://vehicle/modular_car_base.gd").enabled = false
++	preload("res://vehicle/modular_car_kits.gd").enabled = false
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	var config_before: Dictionary = configuration_hashes()
++	var pigment := Color("9a3e50")
++	var finishes: Dictionary = {"paint":FINISH.paint(pigment),"rubber":FINISH.rubber(pigment),
++		"alloy":FINISH.alloy(pigment),"glass":FINISH.glass(pigment),
++		"industrial":FINISH.industrial_paint(pigment),"polymer":FINISH.polymer(pigment)}
++	for role: String in finishes:
++		var material: StandardMaterial3D = finishes[role]
++		check(opaque(material),role+" opaque")
++		check(finite_response(material),role+" finite physical response")
++		check(material.albedo_color == pigment,role+" preserves caller pigment")
++		check(material.specular_mode == BaseMaterial3D.SPECULAR_SCHLICK_GGX,role+" enables GGX specular")
++	check(finishes.glass.roughness < finishes.paint.roughness and finishes.paint.roughness < finishes.rubber.roughness,"glass/paint/rubber roughness separates surfaces")
++	check(finishes.polymer.roughness > finishes.industrial.roughness and finishes.industrial.clearcoat < finishes.paint.clearcoat,"seat polymer and industrial paint separate")
++	check(finishes.alloy.metallic > finishes.paint.metallic and finishes.rubber.metallic == 0.0,"metal versus dielectric response")
++	check(finishes.glass.cull_mode == BaseMaterial3D.CULL_DISABLED,"opaque glazing remains double sided")
++	check(FINISH.glass(Color(pigment,0.2)).albedo_color == pigment,"glass rejects accidental transparency without changing RGB")
++	var alpha_write := RegEx.new()
++	alpha_write.compile("\\bALPHA\\s*=")
++	for shader: Shader in [WINDOW_GLASS,ELECTRIC_GLASS]:
++		check(alpha_write.search(shader.code) == null,"analytic glass does not enter transparent pipeline "+shader.resource_path)
++	var cars: Dictionary = {}
++	for id: String in VehicleCatalog.IDS:
++		var user_livery: Dictionary = VehicleLivery.defaults(id)
++		user_livery.colors = {"body":"9a3e50","accent":"e4b74c","detail":"507794"}
++		var saved: PackedByteArray = var_to_bytes(user_livery)
++		var car: CarVisual = await create_car(id,user_livery)
++		cars[id] = car
++		check(var_to_bytes(user_livery) == saved and var_to_bytes(car.livery) == saved,id+" saved pigment unchanged during construction")
++		for role: String in car.paint_materials:
++			var material: StandardMaterial3D = car.paint_materials[role]
++			check(material.albedo_color == Color(str(user_livery.colors[role])) and opaque(material),id+" opaque exact user pigment "+role)
++			check(finite_response(material),id+" finite finish "+role)
++		check(car.paint_materials.body != car.paint_materials.accent,id+" body/accent materials separated")
++		var bindings: Array[Dictionary] = glass_bindings(car)
++		if id in ["compact","electric","hovercraft"]:
++			check(not bindings.is_empty(),id+" native analytic glass is bound")
++			ShowroomStudio._studio_glass(car,{})
++			for binding: Dictionary in bindings:
++				var active: ShaderMaterial = binding.mesh.get_active_material(binding.surface)
++				check(active != binding.material and active.get_shader_parameter("studio_mode") == true,id+" showroom owns glass copy")
++				check(binding.material.get_shader_parameter("studio_mode") != true,id+" showroom preserves source/race glass")
++		if id == "super_rally":
++			var materials: Dictionary = SuperRallyModel._materials(car)
++			check(is_bound(car,materials.glass),"Challenger opaque glass is actually bound")
++			check(opaque(materials.glass) and materials.glass.specular_mode == BaseMaterial3D.SPECULAR_SCHLICK_GGX,"Challenger glass opacity and active specular")
++			check(materials.glass != materials.paint and materials.rubber != materials.paint and materials.chrome != materials.paint,"Challenger material roles separated")
++		if id == "forklift":
++			check(is_equal_approx(car.paint_materials.body.roughness,finishes.industrial.roughness),"Forklift uses industrial finish")
++			check(is_equal_approx(car.paint_materials.body.clearcoat,finishes.industrial.clearcoat),"Forklift retains restrained coating")
++	# A fresh race car must remain independent of an already styled showroom.
++	var race: CarVisual = await create_car("electric",VehicleLivery.defaults("electric"))
++	var race_bindings: Array[Dictionary] = glass_bindings(race)
++	check(not race_bindings.is_empty(),"fresh race has electric glass")
++	check(race.paint_materials.body != cars.electric.paint_materials.body,"per-car user paint isolation")
++	var showroom_color: Color = cars.electric.paint_materials.body.albedo_color
++	var race_livery: Dictionary = VehicleLivery.defaults("electric")
++	race_livery.colors.body = "164b86"
++	race.apply_livery(race_livery)
++	check(cars.electric.paint_materials.body.albedo_color == showroom_color,"race repaint preserves showroom pigment")
++	var lighting = RACE_GLASS.new()
++	lighting.configure(race,"night_city")
++	for binding: Dictionary in race_bindings:
++		var active: ShaderMaterial = binding.mesh.get_active_material(binding.surface)
++		check(active != binding.material and active.get_shader_parameter("night_mode") == true,"night glass owns copy")
++		check(active.get_shader_parameter("studio_mode") != true,"race uses world reflection instead of studio")
++		check(binding.material.get_shader_parameter("night_mode") != true and binding.material.get_shader_parameter("studio_mode") != true,"night/studio leave shared source untouched")
++	lighting.reset()
++	for binding: Dictionary in race_bindings:
++		check(binding.mesh.get_active_material(binding.surface) == binding.material,"day reset restores original glass binding")
++	check(configuration_hashes() == config_before,"all car and Compact profile files unchanged by model/material operations")
++	race.free()
++	for car: CarVisual in cars.values(): car.free()
++	await process_frame
++	print("VEHICLE_MATERIAL_FINISH: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_panel_contours.gd b/game/tests/test_panel_contours.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_panel_contours.gd
+@@ -0,0 +1,93 @@
++extends SceneTree
++## Verify actual flush backing and pixel coverage attributes at both detail tiers.
++const CONTOUR = preload("res://vehicle/panel_contour.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func run() -> void:
++	preload("res://vehicle/modular_car_base.gd").enabled=false
++	preload("res://vehicle/modular_car_kits.gd").enabled=false
++	preload("res://vehicle/prepared_car_cache.gd").enabled=false
++	preload("res://vehicle/electric_reference_mesh.gd").use_baked=false
++	for reduced: bool in [false,true]:
++		for id: String in ["electric","super_rally"]:
++			var car:=CarVisual.new()
++			car.vehicle_id=id;car.simple_model=reduced;car.batch_parts=false
++			root.add_child(car)
++			while not car.model_ready:await process_frame
++			var marked: int=0
++			for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++				var material: Material=part.material_override
++				if not material is ShaderMaterial or material.shader!=CONTOUR.SHADER:continue
++				marked+=1
++				var label: String=id+" "+str(part.name)+" reduced="+str(reduced)
++				check(part.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,label+" markings do not cast artificial shadows")
++				var arrays: Array=part.mesh.surface_get_arrays(0)
++				var p: PackedVector3Array=arrays[Mesh.ARRAY_VERTEX]
++				var uv: PackedVector2Array=arrays[Mesh.ARRAY_TEX_UV]
++				var tangent: PackedFloat32Array=arrays[Mesh.ARRAY_TANGENT]
++				check(uv.size()==p.size() and tangent.size()==p.size()*4,label+" every contour vertex has coverage data")
++				var valid: bool=true
++				for i: int in range(p.size()):
++					valid=valid and absf(uv[i].x)==1.0 and uv[i].y>0.0 and uv[i].y<0.006
++				check(valid,label+" physical ribbon width stays below12mm with paired sides")
++				if id=="super_rally":
++					var source: ArrayMesh=load("res://assets/vehicles/challenger_hellcat_v1/"+("simple" if reduced else "full")+"_body_contour.res")
++					var original: Array=source.surface_get_arrays(0)
++					var original_p: PackedVector3Array=original[Mesh.ARRAY_VERTEX]
++					var original_indices: PackedInt32Array=original[Mesh.ARRAY_INDEX]
++					check(p.slice(0,original_p.size())==original_p and arrays[Mesh.ARRAY_INDEX].slice(0,original_indices.size())==original_indices,label+" original marking geometry remains exact")
++					check(p.size()-original_p.size()==200 and arrays[Mesh.ARRAY_INDEX].size()-original_indices.size()==600,label+" bonnet adds exactly100segments/200triangles")
++					check_bonnet(part,source,reduced,label)
++					continue
++				var skin: MeshInstance3D=car.find_child("ReferenceHood" if "Bonnet" in str(part.name) else "ReferenceSide-1_0" if "-1_0" in str(part.name) else "ReferenceSide1_0",true,false)
++				check(skin!=null,label+" matching backing exists")
++				if skin==null:continue
++				var tree: TriangleMesh=skin.mesh.generate_triangle_mesh()
++				var faces: PackedVector3Array=part.mesh.get_faces()
++				var buried: int=0;var minimum: float=INF
++				for offset: int in range(0,faces.size(),3):
++					var point: Vector3=(faces[offset]+faces[offset+1]+faces[offset+2])/3.0
++					var outward:=Vector3.UP if "Bonnet" in str(part.name) else Vector3(signf(point.x),0,0)
++					var hit: Dictionary=tree.intersect_ray(point+outward*0.1,-outward)
++					if hit.is_empty():continue
++					var gap: float=(point-hit.position).dot(outward)
++					minimum=minf(minimum,gap)
++					if gap<0.0:buried+=1
++				check(buried==0,label+" no contour triangle centroid sinks below the exterior; min_mm="+str(minimum*1000.0))
++			check(marked==(15 if id=="electric" else 1),id+" expected independent unbatched contour surfaces")
++			car.free();await process_frame
++	print("PANEL_CONTOURS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func check_bonnet(part: MeshInstance3D,source: ArrayMesh,reduced: bool,label: String) -> void:
++	var outline: Dictionary=preload("res://assets/vehicles/challenger_hellcat_v1/bonnet_contour.json").data
++	var source_path: String="res://assets/vehicles/challenger_hellcat_v1/"+str(outline.source_mesh)
++	check(FileAccess.get_sha256(source_path)==outline.source_sha256,label+" outline provenance matches immutable native bonnet")
++	check(outline.points.size()==100 and float(outline.maximum_boundary_error_metres)<0.000875,label+" measured boundary fit stays below0.875mm")
++	var arrays: Array=part.mesh.surface_get_arrays(0)
++	var p: PackedVector3Array=arrays[Mesh.ARRAY_VERTEX]
++	var first: int=source.surface_get_arrays(0)[Mesh.ARRAY_VERTEX].size()
++	var fit: bool=true
++	for i: int in range(100):
++		var center: Vector3=(p[first+i*2]+p[first+i*2+1])*0.5
++		var target: Array=outline.points[i]
++		fit=fit and Vector2(center.x,center.z).distance_to(Vector2(target[0],target[2]))<0.000001
++	check(fit,label+" fitted marking retains measured bonnet boundary in plan")
++	var tier: String="simple" if reduced else "full"
++	var hood: TriangleMesh=(load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_hood_paint.res") as ArrayMesh).generate_triangle_mesh()
++	var body: TriangleMesh=(load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_body_paint.res") as ArrayMesh).generate_triangle_mesh()
++	var faces: PackedVector3Array=part.mesh.get_faces()
++	var original_faces: int=source.get_faces().size()
++	var buried: int=0;var minimum: float=INF
++	for offset: int in range(original_faces,faces.size(),3):
++		var center: Vector3=(faces[offset]+faces[offset+1]+faces[offset+2])/3.0
++		for skin: TriangleMesh in [hood,body]:
++			var hit: Dictionary=skin.intersect_ray(center+Vector3.UP*0.03,Vector3.DOWN)
++			if hit.is_empty():continue
++			minimum=minf(minimum,center.y-hit.position.y)
++			if center.y<hit.position.y:buried+=1
++	check(buried==0,label+" bonnet marking stays above both existing skins; minimum_mm="+str(minimum*1000.0))
+diff --git a/game/tests/test_join_cap_miters.gd b/game/tests/test_join_cap_miters.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_join_cap_miters.gd
+@@ -0,0 +1,61 @@
++extends SceneTree
++## Returning hairpins must extrude away from each finite mouth, even when
++## their two join planes coincide. Exercise actual accelerated dispatch too.
++const ACCEL = preload("res://track/geometry_acceleration.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func run() -> void:
++	var visual := NativeTrackVisual.new()
++	if "--before" in OS.get_cmdline_user_args():
++		var original := GDScript.new()
++		var before: String = FileAccess.get_file_as_string("res://../build/visual-fixes-2026-11-13/median/before/game/track/native_track_visual.gd").replace("\r\n","\n")
++		original.source_code = "extends NativeTrackVisual\n"
++		for method: String in ["_road_border_samples", "_roadside_miter"]:
++			var first: int = before.find("\nfunc "+method+"(")
++			var last: int = before.find("\nfunc ",first+1)
++			original.source_code += before.substr(first,last-first)+"\n"
++		var loaded: bool = original.reload() == OK
++		check(loaded,"task-start script loads")
++		if not loaded: visual.free(); quit(1); return
++		visual.set_script(original)
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++	var canonical: PackedByteArray = var_to_bytes([track.metadata,track.content_hash,track.cells,track.deck_cells,track.route,track.kerbs.triangles])
++	var pieces: Array = track.metadata.creator_document.pieces
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	var outlines: Array[Dictionary] = []
++	for index: int in range(pieces.size()):
++		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index,0.0,topology)
++		var bounds := Rect2(polygon[0],Vector2.ZERO)
++		for point: Vector2 in polygon: bounds = bounds.expand(point)
++		outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":false})
++	check(ACCEL.roads() != null,"installed native road kernel available")
++	for index: int in range(pieces.size()):
++		var shape: Dictionary = VisualRoadJoin.build(pieces,index,-0.20,topology)
++		check(NativeTrackVisual._coincident_join_planes(shape.cuts),"Ellipse finite-cap dispatch required "+str(index))
++		ACCEL.roads_enabled = true
++		var automatic: PackedVector2Array = await visual._road_border_samples(shape.contours,shape.cuts,shape.swept,pieces,index,outlines,topology)
++		ACCEL.roads_enabled = false
++		var scalar: PackedVector2Array = await visual._road_border_samples(shape.contours,shape.cuts,shape.swept,pieces,index,outlines,topology)
++		check(automatic == scalar,"installed native dispatch uses finite-cap fallback "+str(index))
++		for offset: int in range(0,automatic.size(),4):
++			for endpoint: int in range(2):
++				var point: Vector2 = automatic[offset+endpoint]
++				if absf(point.x-14.5)>1.0 or point.y<4.0 or point.y>15.0: continue
++				var normal: Vector2 = automatic[offset+endpoint+2]
++				var toward_median := Vector2(0,1 if point.y<9.5 else -1)
++				check(normal.dot(toward_median)>0.99,"continuous outward verge at "+str(point))
++	ACCEL.roads_enabled = true
++	# Parallel mouths at different positions remain on the native path.
++	var straight_cuts: Array[Dictionary] = [{"point":Vector2(-10,0),"normal":Vector2.RIGHT,"span":10.0},{"point":Vector2(10,0),"normal":Vector2.LEFT,"span":10.0}]
++	check(not NativeTrackVisual._coincident_join_planes(straight_cuts),"ordinary straight remains accelerated")
++	check(canonical == var_to_bytes([track.metadata,track.content_hash,track.cells,track.deck_cells,track.route,track.kerbs.triangles]),"canonical track data stays byte exact")
++	visual.free()
++	print("JOIN_CAP_MITERS: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/capture_vehicle_finish.gd b/game/tests/capture_vehicle_finish.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_vehicle_finish.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Identical studio/native Garage material comparison, without player state.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	var phase: String = "before"
++	var vehicle: String = ""
++	var body_color: String = ""
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--phase="): phase = argument.trim_prefix("--phase=")
++		if argument.begins_with("--vehicle="): vehicle = argument.trim_prefix("--vehicle=")
++		if argument.begins_with("--body-color="): body_color = argument.trim_prefix("--body-color=")
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	var directory: String = "res://../docs/evidence/visual-fixes-2026-11-13/materials/" + phase + "/" + RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
++	for id: String in ["compact", "electric", "super_rally", "forklift", "hovercraft", "kart"]:
++		if not vehicle.is_empty() and id != vehicle: continue
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		view.simple_model = true
++		view.read_only = true
++		view.livery = VehicleLivery.defaults(id)
++		if not body_color.is_empty(): view.livery.colors.body = body_color
++		view.customisation = VehicleCustomisation.defaults()
++		view.size = Vector2(1000, 760)
++		root.add_child(view)
++		var deadline: int = Time.get_ticks_msec() + 90000
++		while (not view.showroom_ready or not view.car.model_ready) and Time.get_ticks_msec() < deadline:
++			await process_frame
++		assert(view.showroom_ready and view.car.model_ready, "vehicle ready " + id)
++		view.finish_car_transition()
++		view.finish_paint_transition()
++		view.finish_kit_transition()
++		for shot: Array in [["front", -0.70, 0.31], ["side", -PI/2, 0.15]]:
++			view.yaw = shot[1]
++			view.elevation = shot[2]
++			view.zoom = 1.05 if id in ["compact", "forklift", "super_rally"] else 0.85
++			view._orbit()
++			view.invalidate_render()
++			for frame: int in range(12):
++				await process_frame
++				await RenderingServer.frame_post_draw
++			assert(view.showroom_viewport.get_texture().get_image().save_png(directory.path_join(id+"-"+shot[0]+".png")) == OK)
++		view.free()
++		await process_frame
++		print("VEHICLE_FINISH_CAPTURE ", phase, " ", id)
++	quit()
+diff --git a/scripts/run_visual_finish.py b/scripts/run_visual_finish.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/run_visual_finish.py
+@@ -0,0 +1,52 @@
++"""Bounded pinned-engine runner with isolated, offline review data."""
++from pathlib import Path
++import json
++import os
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / 'docs/evidence/visual-fixes-2026-11-13'
++
++
++def main():
++    label, script, *options = sys.argv[1:]
++    assert label and all(c.isalnum() or c in '-_' for c in label)
++    OUT.mkdir(parents=True, exist_ok=True)
++    profile = ROOT / 'build/visual-fixes-2026-11-13/profiles' / label
++    for name in ['roaming', 'local']:
++        (profile / name).mkdir(parents=True, exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / 'roaming'), LOCALAPPDATA=str(profile / 'local'),
++               BMT_API_URL='', BMT_DEV_AUTH_KEY='')
++    engine = r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
++    version = subprocess.check_output([engine, '--version'], text=True).strip()
++    assert version == (ROOT / 'godot-version.txt').read_text().strip(), version
++    command = [engine, '--path', str(ROOT / 'game'), '--audio-driver', 'Dummy',
++               '--position', '10000,10000', '--script', script] + options
++    path = OUT / (label + '.log')
++    started = time.monotonic()
++    with path.open('w', encoding='utf-8') as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
++                                   creationflags=subprocess.CREATE_NO_WINDOW)
++        reason = None
++        while process.poll() is None:
++            time.sleep(0.2)
++            contents = path.read_text(encoding='utf-8', errors='replace')
++            if 'SCRIPT ERROR:' in contents or time.monotonic() - started > 600:
++                reason = 'script error' if 'SCRIPT ERROR:' in contents else '600s timeout'
++                process.kill()
++                break
++        code = process.wait()
++    contents = path.read_text(encoding='utf-8', errors='replace')
++    receipt = dict(engine=version, command=command, exit_code=code, stop_reason=reason,
++                   seconds=time.monotonic()-started,
++                   errors=[line for line in contents.splitlines() if line.startswith(('ERROR:', 'SCRIPT ERROR:'))])
++    (OUT / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++    print(json.dumps(receipt, indent=2))
++    print(contents[-2500:])
++    return int(code != 0 or bool(reason))
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/scripts/refresh_visual_finish.py b/scripts/refresh_visual_finish.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_visual_finish.py
+@@ -0,0 +1,144 @@
++"""Refresh the six current vehicles using existing native bakers and source fences."""
++from concurrent.futures import ThreadPoolExecutor
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / 'docs/evidence/visual-fixes-2026-11-13'
++WORK = ROOT / 'build/visual-fixes-2026-11-13'
++IDS = ['compact', 'kart', 'forklift', 'electric', 'hovercraft', 'super_rally']
++
++
++def run(label, script, *options, extra_env=None):
++    env = dict(os.environ, **(extra_env or {}))
++    subprocess.run([sys.executable, str(ROOT / 'scripts/run_visual_finish.py'), label, script, *options],
++                   cwd=ROOT, env=env, check=True, stdout=subprocess.DEVNULL)
++    print(label, 'passed', flush=True)
++
++
++def sources():
++    paths = []
++    for directory in ['game/vehicle', 'game/resources', 'game/ui', 'game/track', 'game/rendering']:
++        paths += [p for p in (ROOT / directory).rglob('*')
++                  if p.suffix in ['.gd', '.gdshader', '.gdshaderinc', '.json', '.tres']]
++    paths += [p for p in (ROOT / 'game/assets/vehicles').rglob('*')
++              if p.suffix in ['.res', '.png', '.json']
++              and 'modular_kits_v1' not in p.parts and 'modular_car_bases_v1' not in p.parts]
++    for directory in ['game/assets/liveries', 'game/assets/fonts']:
++        paths += [p for p in (ROOT / directory).rglob('*') if p.is_file() and p.suffix != '.uid']
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
++
++
++def identity(label):
++    with (OUT / (label + '.log')).open('w', encoding='utf-8') as log:
++        subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
++                        str(ROOT / 'scripts/refresh_visual_finish_identity.ps1')],
++                       cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    data = json.loads((WORK / 'identity/client-build-identity.json').read_text(encoding='utf-8-sig'))
++    (OUT / (label + '.json')).write_text(json.dumps(data, indent=2), encoding='utf-8')
++    print(label, 'passed', flush=True)
++    return data
++
++
++def fence(before, label, excluded=()):
++    after = sources()
++    changed = sorted(p for p in before.keys() | after.keys() if p not in excluded and before.get(p) != after.get(p))
++    reviewed = {p: {'before': before.get(p), 'after': after.get(p)} for p in excluded}
++    (OUT / (label + '.json')).write_text(json.dumps({'inputs': len(before), 'changed': changed,
++                                                   'reviewed_non_vehicle_inputs': reviewed}, indent=2))
++    assert not changed, 'Authored inputs changed: ' + ', '.join(changed)
++
++
++def rivalry(label):
++    # This baker uses a native filesystem path rather than a resource URI.
++    run(label, 'res://tests/bake_rivalry_car_previews.gd', '--rendering-method', 'gl_compatibility',
++        extra_env={'BMT_REAL_CAR_EVIDENCE': str(OUT / 'rivalry-art'), 'BMT_REAL_CAR_ONLY': ''})
++
++
++def art_fence(before):
++    outputs = [p for p in before if p.startswith('game/assets/liveries/previews_v2/') and p.endswith('.png')]
++    fence(before, 'art-source-fence', outputs)
++
++
++def main():
++    OUT.mkdir(parents=True, exist_ok=True)
++    WORK.mkdir(parents=True, exist_ok=True)
++    if '--finish-prepared' in sys.argv:
++        # The broad fence caught a concurrent world-disk-cache edit. It is not
++        # a declared vehicle dependency; keep its rejected receipt and require
++        # unchanged vehicle revisions plus full native source metadata below.
++        before = json.loads((OUT / 'prepared-source-before.json').read_text())
++        first = json.loads((OUT / 'identity-before-bakes.json').read_text())
++        excluded = ['game/track/prepared_world_disk_cache.gd']
++        fence(before, 'prepared-reviewed-source-fence', excluded)
++        finish_prepared(before, first, excluded)
++        return
++    if '--verify-models' in sys.argv:
++        before = sources()
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            jobs = [pool.submit(run, 'modular-' + car, 'res://tests/test_modular_car_assets.gd',
++                                '--headless', '--', '--vehicle=' + car, '--all-kits') for car in IDS]
++            for job in jobs:
++                job.result()
++        fence(before, 'model-equivalence-source-fence')
++        return
++    if '--rivalry-only' in sys.argv:
++        before = json.loads((OUT / 'art-source-before.json').read_text())
++        rivalry('rivalry-art-retry')
++        art_fence(before)
++        return
++    if '--static' in sys.argv:
++        # Only redirect the existing baker's evidence. Preserve its reduction algorithm.
++        source = (ROOT / 'game/tests/bake_car_static_reductions.gd').read_text(encoding='utf-8')
++        source = source.replace('docs/evidence/car-simplification-2026-11-13',
++                                'docs/evidence/visual-fixes-2026-11-13')
++        (WORK / 'bake_static.gd').write_text(source, encoding='utf-8')
++        run('static-reductions', 'res://../build/visual-fixes-2026-11-13/bake_static.gd', '--headless')
++        return
++    before = sources()
++    phase = 'art' if '--art-only' in sys.argv else 'prepared'
++    (OUT / (phase + '-source-before.json')).write_text(json.dumps(before, indent=2))
++    if phase == 'art':
++        run('profile-art', 'res://tests/bake_model_refinement_art.gd', '--rendering-method', 'gl_compatibility')
++        run('super-profile-art', 'res://tests/bake_super_rally_art.gd', '--rendering-method', 'gl_compatibility')
++        for car in IDS:
++            run('liveries-' + car, 'res://tests/bake_livery_previews.gd', '--rendering-method', 'gl_compatibility',
++                '--', '--vehicle=' + car)
++            run('news-' + car, 'res://tests/bake_news_car_photos.gd', '--rendering-method', 'gl_compatibility',
++                '--', '--vehicle=' + car, '--evidence-root=res://../docs/evidence/visual-fixes-2026-11-13/news/' + car)
++        rivalry('rivalry-art')
++        art_fence(before)
++        return
++    first = identity('identity-before-bakes')
++    for car in IDS:
++        run('bases-' + car, 'res://tests/bake_modular_car_bases.gd', '--headless', '--', '--vehicle=' + car)
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(run, 'kits-' + car, 'res://tests/bake_modular_car_kits.gd',
++                            '--headless', '--', '--vehicle=' + car) for car in IDS]
++        for job in jobs:
++            job.result()
++    for car in IDS:
++        run('garage-' + car, 'res://tests/bake_garage_cars.gd', '--headless', '--', '--vehicle=' + car)
++    run('header-template', 'res://tests/bake_header_simple_compact.gd', '--headless')
++    fence(before, 'prepared-source-fence')
++    finish_prepared(before, first)
++
++
++def finish_prepared(before, first, excluded=()):
++    final = identity('identity-after-bakes')
++    assert first['modular_car_sha256'] == final['modular_car_sha256'], 'Geometry revision changed during refresh'
++    run('garage-pictures', 'res://../scripts/bake_garage_previews.gd', '--rendering-method', 'gl_compatibility')
++    run('prepared-preflight', 'res://tests/check_prepared_assets.gd', '--headless')
++    with (OUT / 'picture-preflight.log').open('w', encoding='utf-8') as log:
++        subprocess.run([sys.executable, 'scripts/check_garage_previews.py'], cwd=ROOT, check=True,
++                       stdout=log, stderr=subprocess.STDOUT)
++    fence(before, 'prepared-final-fence', excluded)
++    print('SIX_CAR_REFRESH: source fence and strict prepared/picture checks passed', flush=True)
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/refresh_visual_finish_identity.ps1 b/scripts/refresh_visual_finish_identity.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/refresh_visual_finish_identity.ps1
+@@ -0,0 +1,4 @@
++$ErrorActionPreference = 'Stop'
++$visualFinishRoot = Split-Path -Parent $PSScriptRoot
++. (Join-Path $PSScriptRoot 'build_identity.ps1')
++Write-ClientBuildIdentity $visualFinishRoot (Join-Path $visualFinishRoot 'build/visual-fixes-2026-11-13/identity')
+diff --git a/scripts/import_visual_finish_images.py b/scripts/import_visual_finish_images.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/import_visual_finish_images.py
+@@ -0,0 +1,65 @@
++"""Import refreshed native vehicle pictures and verify each imported source digest."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / 'docs/evidence/visual-fixes-2026-11-13'
++PROFILE = ROOT / 'build/visual-fixes-2026-11-13/import-profile'
++for name in ['roaming', 'local']:
++    (PROFILE / name).mkdir(parents=True, exist_ok=True)
++env = dict(os.environ, APPDATA=str(PROFILE / 'roaming'), LOCALAPPDATA=str(PROFILE / 'local'),
++           BMT_API_URL='', BMT_DEV_AUTH_KEY='')
++project = ROOT / 'game/project.godot'
++project_before = hashlib.sha256(project.read_bytes()).hexdigest()
++engine = r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
++assert subprocess.check_output([engine, '--version'], text=True).strip() == (ROOT / 'godot-version.txt').read_text().strip()
++command = [engine, '--headless', '--editor', '--import', '--path', str(ROOT / 'game'), '--audio-driver', 'Dummy']
++started = time.monotonic()
++with (OUT / 'image-import.log').open('w', encoding='utf-8') as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
++                               creationflags=subprocess.CREATE_NO_WINDOW)
++    (OUT / 'image-import-process.json').write_text(json.dumps({'pid': process.pid, 'command': command}))
++    try:
++        code = process.wait(timeout=300)
++    except subprocess.TimeoutExpired:
++        process.kill()
++        process.wait()
++        raise
++assert code == 0, code
++assert hashlib.sha256(project.read_bytes()).hexdigest() == project_before, 'Editor changed project settings'
++images = []
++for car in ['compact', 'kart', 'forklift', 'electric', 'hovercraft', 'super_rally']:
++    images += list((ROOT / 'game/assets/liveries/previews_v2' / car).glob('*.png'))
++    images += [ROOT / 'game/assets/menu' / (car + '_illustration_v1.png'),
++               ROOT / 'game/assets/menu/header_cars_v1' / (car + '.png'),
++               ROOT / 'game/assets/news/vehicles' / (car + '.png'),
++               ROOT / 'game/assets/garage/previews_v1' / (car + '.png')]
++rows = []
++for picture in images:
++    metadata = Path(str(picture) + '.import').read_text()
++    match = re.search(r'path="res://([^\"]+\.ctex)"', metadata)
++    assert match, picture
++    imported = ROOT / 'game' / match[1]
++    checksum = imported.with_suffix('.md5').read_text()
++    digest = hashlib.md5(picture.read_bytes()).hexdigest()
++    assert imported.is_file() and f'source_md5="{digest}"' in checksum, picture
++    rows.append({'path': picture.relative_to(ROOT).as_posix(), 'source_md5': digest})
++content = (OUT / 'image-import.log').read_text(encoding='utf-8', errors='replace')
++diagnostics = [line for line in content.splitlines() if line.startswith(('ERROR:', 'SCRIPT ERROR:'))]
++rivalry = json.loads((OUT / 'rivalry-art/bake.json').read_text())
++rivalry_rows = []
++for car, record in rivalry['cars'].items():
++    for role, digest in record['hashes'].items():
++        texture = ROOT / 'game/assets/menu/rivalry_cars_v2' / (car + '_' + role + '.res')
++        assert hashlib.sha256(texture.read_bytes()).hexdigest() == digest, texture
++        rivalry_rows.append({'path': texture.relative_to(ROOT).as_posix(), 'sha256': digest})
++receipt = {'exit_code': code, 'verified_images': len(rows), 'seconds': time.monotonic() - started,
++           'verified_rivalry_textures': len(rivalry_rows), 'rivalry_textures': rivalry_rows,
++           'project_settings_exact': True, 'editor_diagnostics': diagnostics, 'images': rows}
++(OUT / 'image-import-receipt.json').write_text(json.dumps(receipt, indent=2))
++print(json.dumps({k: v for k, v in receipt.items() if k not in ['images', 'rivalry_textures']}, indent=2))
+diff --git a/scripts/checkpoint_visual_finish.py b/scripts/checkpoint_visual_finish.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/checkpoint_visual_finish.py
+@@ -0,0 +1,275 @@
++"""Verify the owned source patch in a disposable repository, without staging.
++
++Run only after the visual-finish sources and final report have settled:
++    python scripts/checkpoint_visual_finish.py --verify
++Baselines are retained exact task-start bytes, not the shared repository HEAD.
++"""
++from __future__ import annotations
++
++import argparse
++import difflib
++import hashlib
++import json
++from pathlib import Path, PurePosixPath
++import shutil
++import subprocess
++import tempfile
++import uuid
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/visual-fixes-2026-11-13"
++BASELINES = OUT / "source-baselines"
++BUILD = ROOT / "build/visual-fixes-2026-11-13"
++
++# Every entry was confirmed by its owning agent. Shared Super Rally changes use
++# the identical root/contour task-start snapshot, once, rather than two patches.
++MODIFIED = [
++    "game/vehicle/compact_finish.gd",
++    "game/vehicle/super_rally_model.gd",
++    "game/vehicle/electric_glass.gdshader",
++    "game/vehicle/window_reflection.gdshader",
++    "game/vehicle/forklift_model.gd",
++    "game/vehicle/electric_car_model.gd",
++    "game/vehicle/prepared_asset_dependencies.json",
++    "game/vehicle/kart_driver.gd",
++    "game/vehicle/electric_reference_mesh.gd",
++    "game/tests/test_challenger_hellcat.gd",
++    "game/track/native_track_visual.gd",
++    "native/track_geometry/road_geometry.hpp",
++]
++ADDED = [
++    "game/vehicle/kart_driver_cloth.gdshader",
++    "game/vehicle/panel_contour.gd",
++    "game/vehicle/panel_contour.gdshader",
++    "game/vehicle/challenger_panel_contours.gd",
++    "game/assets/vehicles/challenger_hellcat_v1/bonnet_contour.json",
++    "game/tests/test_kart_material_finish.gd",
++    "game/tests/test_vehicle_material_finish.gd",
++    "game/tests/test_panel_contours.gd",
++    "game/tests/test_join_cap_miters.gd",
++    "game/tests/capture_vehicle_finish.gd",
++    "scripts/run_visual_finish.py",
++    "scripts/refresh_visual_finish.py",
++    "scripts/refresh_visual_finish_identity.ps1",
++    "scripts/import_visual_finish_images.py",
++    "scripts/checkpoint_visual_finish.py",
++    "docs/VISUAL_FIXES_3_4_2026_11_13.md",
++    "docs/evidence/visual-fixes-2026-11-13/tooling/test_app.gd",
++    "docs/evidence/visual-fixes-2026-11-13/tooling/parse_production.gd",
++    "docs/evidence/visual-fixes-2026-11-13/tooling/bake_static.gd",
++    "docs/evidence/visual-fixes-2026-11-13/tooling/audit_closeout.py",
++]
++
++
++def sha(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def preserve_concurrent_world_cache(name: str, original: bytes, current: bytes):
++    if name != "game/track/native_track_visual.gd":
++        return original, []
++    old = original.decode("utf-8").splitlines(keepends=True)
++    new = current.decode("utf-8").splitlines(keepends=True)
++    normalized, changes = [], []
++    for kind, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
++        if kind != "equal" and 100 <= a < 250:
++            text = "".join(old[a:b] + new[c:d])
++            if "world" not in text or not any(token in text for token in ["world_key", "world_options", "_world_disk_id"]):
++                raise RuntimeError("Unreviewed concurrent early track change")
++            normalized.extend(new[c:d])
++            changes.append({"original_line": a + 1, "before_sha256": sha("".join(old[a:b]).encode()),
++                            "after_sha256": sha("".join(new[c:d]).encode())})
++        else:
++            normalized.extend(old[a:b])
++    if len(changes) != 3:
++        raise RuntimeError("Concurrent world-cache scope changed; review it before checkpointing")
++    return "".join(normalized).encode("utf-8"), changes
++
++
++def repo_path(base: Path, name: str) -> Path:
++    relative = PurePosixPath(name)
++    if relative.is_absolute() or ".." in relative.parts or "\\" in name:
++        raise RuntimeError(f"Unsafe source path: {name}")
++    path = (base / name).resolve()
++    if not path.is_relative_to(base.resolve()):
++        raise RuntimeError(f"Source path leaves expected directory: {name}")
++    return path
++
++
++def git(command: list[str], cwd: Path) -> str:
++    result = subprocess.run(
++        ["git", "-c", f"safe.directory={cwd}", "-c", "core.autocrlf=false",
++         "-c", "core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol",
++         *command], cwd=cwd, capture_output=True, text=True, timeout=60,
++    )
++    if result.returncode:
++        raise RuntimeError(f"git {' '.join(command)} failed:\n{result.stdout}{result.stderr}")
++    return result.stdout.strip()
++
++
++def main_index_hash() -> str | None:
++    # rev-parse reads metadata and does not refresh or rewrite the shared index.
++    path = Path(git(["rev-parse", "--git-path", "index"], ROOT))
++    if not path.is_absolute():
++        path = ROOT / path
++    return sha(path.read_bytes()) if path.exists() else None
++
++
++def make_patch(before: dict[str, bytes], after: dict[str, bytes]) -> bytes:
++    chunks: list[str] = []
++    for name, current in after.items():
++        original = before.get(name, b"")
++        if name in before and original == current:
++            continue
++        chunks.append(f"diff --git a/{name} b/{name}\n")
++        if name not in before:
++            chunks.append("new file mode 100644\n")
++        for line in difflib.unified_diff(
++            original.decode("utf-8").splitlines(keepends=True),
++            current.decode("utf-8").splitlines(keepends=True),
++            fromfile="a/" + name if name in before else "/dev/null",
++            tofile="b/" + name,
++        ):
++            chunks.append(line)
++            if not line.endswith("\n"):
++                chunks.append("\n\\ No newline at end of file\n")
++    return "".join(chunks).encode("utf-8")
++
++
++def check_scratch(scratch: Path, owner: str) -> None:
++    resolved = scratch.resolve()
++    if (resolved.parent != BUILD.resolve()
++            or not resolved.is_relative_to(ROOT.resolve())
++            or not resolved.name.startswith("visual-source-roundtrip-")
++            or scratch.is_symlink()
++            or (resolved / ".checkpoint-owner").read_text(encoding="utf-8") != owner):
++        raise RuntimeError(f"Refusing cleanup outside the owned scratch directory: {resolved}")
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--verify", action="store_true", help="Run after final sources and report are ready")
++    args = parser.parse_args()
++    if not args.verify:
++        parser.error("--verify is required; finish all source edits and the report first")
++
++    start_bytes = (OUT / "materials/start.json").read_bytes()
++    start = json.loads(start_bytes)
++    manifest_bytes = (BASELINES / "manifest.json").read_bytes()
++    manifest = json.loads(manifest_bytes)
++    expected_index = start["controls"].get(".git\\index", start["controls"].get(".git/index"))
++    if expected_index is None:
++        raise RuntimeError("Task-start index hash is missing; baseline is ambiguous")
++    index_before = main_index_hash()
++    added = list(ADDED)
++    # Godot may create identities during the final import. Only identities for
++    # the explicitly new source files belong to this source-only checkpoint.
++    added.extend(name + ".uid" for name in ADDED
++                 if Path(name).suffix in {".gd", ".gdshader"}
++                 and repo_path(ROOT, name + ".uid").is_file())
++    if len(set(MODIFIED + added)) != len(MODIFIED + added):
++        raise RuntimeError("Duplicate or conflicting source ownership")
++
++    before: dict[str, bytes] = {}
++    raw_before: dict[str, bytes] = {}
++    after: dict[str, bytes] = {}
++    records = {}
++    concurrent = {}
++    for name in MODIFIED + added:
++        current = repo_path(ROOT, name).read_bytes()
++        after[name] = current
++        if name in MODIFIED:
++            baseline = manifest["files"].get(name)
++            if baseline is None:
++                raise RuntimeError(f"Missing independent task-start baseline: {name}")
++            original = repo_path(BASELINES, name).read_bytes()
++            if sha(original) != baseline["sha256"]:
++                raise RuntimeError(f"Changed task-start baseline: {name}")
++            if name in start["owned_sources"] and sha(original) != start["owned_sources"][name]:
++                raise RuntimeError(f"Root/agent task-start baselines disagree: {name}")
++            raw_before[name] = original
++            before[name], preserved = preserve_concurrent_world_cache(name, original, current)
++            if preserved:
++                concurrent[name] = {"task_start_sha256": sha(original), "preserved_changes": preserved}
++        records[name] = {
++            "before_sha256": sha(before[name]) if name in before else None,
++            "sha256": sha(current),
++            "changed": name not in before or before[name] != current,
++        }
++    patch = make_patch(before, after)
++    if not patch:
++        raise RuntimeError("Source checkpoint is empty")
++
++    BUILD.mkdir(parents=True, exist_ok=True)
++    if not BUILD.resolve().is_relative_to(ROOT.resolve()):
++        raise RuntimeError("Scratch parent is outside the workspace")
++    scratch = Path(tempfile.mkdtemp(prefix="visual-source-roundtrip-", dir=BUILD)).resolve()
++    owner = uuid.uuid4().hex
++    (scratch / ".checkpoint-owner").write_text(owner, encoding="utf-8")
++    try:
++        git(["init", "--quiet", str(scratch)], scratch)
++        patch_path = scratch / "source-only.patch"
++        patch_path.write_bytes(patch)
++        for name, data in before.items():
++            target = repo_path(scratch, name)
++            target.parent.mkdir(parents=True, exist_ok=True)
++            target.write_bytes(data)
++        for reverse in [False, True]:
++            options = ["--reverse"] if reverse else []
++            git(["apply", "--check", "--whitespace=error", *options, str(patch_path)], scratch)
++            git(["apply", "--whitespace=error", *options, str(patch_path)], scratch)
++            for name, current in after.items():
++                target = repo_path(scratch, name)
++                if reverse and name not in before:
++                    if target.exists():
++                        raise RuntimeError(f"Reverse left added file behind: {name}")
++                elif target.read_bytes() != (before[name] if reverse else current):
++                    raise RuntimeError(f"Byte mismatch after {'reverse' if reverse else 'forward'} apply: {name}")
++    finally:
++        check_scratch(scratch, owner)
++        shutil.rmtree(scratch)
++
++    # Fail on source races; index races are recorded, because other authorized
++    # work may update the index and this tool never writes it.
++    for name, current in after.items():
++        if repo_path(ROOT, name).read_bytes() != current:
++            raise RuntimeError(f"Concurrent source change; checkpoint not published: {name}")
++    for name, original in raw_before.items():
++        if repo_path(BASELINES, name).read_bytes() != original:
++            raise RuntimeError(f"Baseline changed during verification: {name}")
++    if (BASELINES / "manifest.json").read_bytes() != manifest_bytes or (OUT / "materials/start.json").read_bytes() != start_bytes:
++        raise RuntimeError("Baseline manifest changed during verification")
++    index_after = main_index_hash()
++    receipt = {
++        "modified_files_with_independent_baselines": len(before),
++        "added_source_and_uid_files": len(added),
++        "forward_byte_exact": True,
++        "reverse_byte_exact": True,
++        "whitespace_check": "passed",
++        "source_fence": "unchanged through verification",
++        "concurrent_changes_preserved_in_both_directions": concurrent,
++        "main_index": {"task_start_sha256": expected_index, "before_sha256": index_before,
++                       "after_sha256": index_after, "matches_task_start": index_after == expected_index,
++                       "unchanged_during_check": index_before == index_after,
++                       "writes_by_checkpoint": False},
++        "patch_sha256": sha(patch),
++        "baseline_manifest_sha256": sha(manifest_bytes),
++        "files": records,
++        "scope": "Owned source, derived bonnet outline JSON, tests, scripts and report only. Native mesh binaries, textures, previews, platform binaries, owner state and unrelated concurrent edits excluded.",
++    }
++    # Publish only the fully checked patch, then its receipt. The previous
++    # accepted checkpoint is preserved if any validation above rejects.
++    patch_tmp = OUT / "source-only.patch.tmp"
++    receipt_tmp = OUT / "source-checkpoint.json.tmp"
++    patch_tmp.write_bytes(patch)
++    receipt_tmp.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++    patch_tmp.replace(OUT / "source-only.patch")
++    receipt_tmp.replace(OUT / "source-checkpoint.json")
++    print(json.dumps({key: receipt[key] for key in [
++        "modified_files_with_independent_baselines", "added_source_and_uid_files",
++        "forward_byte_exact", "reverse_byte_exact", "main_index"]}, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/VISUAL_FIXES_3_4_2026_11_13.md b/docs/VISUAL_FIXES_3_4_2026_11_13.md
+new file mode 100644
+--- /dev/null
++++ b/docs/VISUAL_FIXES_3_4_2026_11_13.md
+@@ -0,0 +1,74 @@
++# Visual review fixes 3 and 4
++
++13 November 2026. The owner requested priorities 3 (material separation) and 4 (visible discontinuities) from [the visual review](VISUAL_QUALITY_REVIEW_2026_11_13.md). This pass preserves the accepted overhead camera, handling, vehicle silhouettes and opaque windows. It does not certify AAA quality or physical-device performance.
++
++## Material finish — VQR03
++
++Shared automotive paint has broader, quieter highlights; alloy, tyre rubber, industrial paint and seat polymer have distinct responses. The Forklift uses the industrial finish on its painted structure and a separate polymer seat. Volt and Challenger paint retain their own identities and all saved pigments.
++
++Challenger glazing now starts from an opaque reflective material. The previous generic material disabled specular reflection before later glass settings were applied. Compact and Volt/Hover studio glazing use broad analytic reflections with nearby positional variation. Their existing racing day/night branches remain unchanged. These shaders do not capture another scene or read screen textures.
++
++The Kart driver uses restrained suit panels, softly filtered stitching and fabric weave, darker boots, separate gloves and an opaque reflective visor. Per-instance material overrides retain the imported mesh buffers and all ten steering poses. Static and moving portions share the same suit material.
++
++Native references:
++
++- [Compact before](evidence/visual-fixes-2026-11-13/materials/before/gl_compatibility/compact-front.png) and [updated studio glass](evidence/visual-fixes-2026-11-13/materials/nearby-glass/gl_compatibility/compact-front.png).
++- [Kart final Compatibility](evidence/visual-fixes-2026-11-13/kart/final/gl_compatibility/front.png) and [Mobile](evidence/visual-fixes-2026-11-13/kart/final/mobile/front.png).
++
++## Surface discontinuities — VQR04
++
++The Ellipse median defect was not a grass texture or lighting defect. Its two hairpin mouths share an infinite join plane. The road-edge code selected the first matching plane and applied that mouth's outward direction at the other mouth, leaving two hard shoulder wedges and pinched markings. Matching the finite cap span corrects this. A narrow scalar fallback covers coincident caps in the installed native-v1 library; ordinary and swept edges retain the native path. The matching C++ source is corrected for subsequent builds, but no platform binary was rebuilt. The visual-cache version changed so old road/world geometry is invalidated.
++
++[Ellipse before](evidence/visual-fixes-2026-11-13/median/before.png), [fixed Compatibility](evidence/visual-fixes-2026-11-13/median/fixed-gl_compatibility.png), [fixed Mobile](evidence/visual-fixes-2026-11-13/median/fixed-mobile.png). The [median receipt](evidence/visual-fixes-2026-11-13/median/median-result.json) records the isolation probes, native controls and source hashes.
++
++Volt contours had two causes: thin ribbons sampled as alternating pixels, and a few door segments whose chords crossed beneath the body at a crease. Adaptive subdivision retains the original 0.8 mm fitting offset while clearing those chords. Pixel-integrated contour coverage smooths the line at its actual projected width. The same treatment applies to the Challenger's door, handle and fuel contours. It retains depth testing, casts no contour shadows, and does not change the global antialiasing setting.
++
++[Volt sampled](evidence/visual-fixes-2026-11-13/contours/gl_compatibility-electric-side-sampled.png) and [integrated coverage](evidence/visual-fixes-2026-11-13/contours/gl_compatibility-electric-side-integrated.png) are matched views from the same native process.
++
++The Challenger bonnet gap required a separate fitted boundary ribbon because its original line was the actual gap between native painted panels. A 100-segment outline is derived from that bonnet boundary (maximum outline fit error 0.874 mm), then fitted above the real hood/body surfaces. Its 200 triangles join the existing contour surface; original exterior vertices and native resources remain exact. Totals are 49,968 reduced and 84,924 full triangles, within the existing 50,000/85,000 allocations. [Final native front view](evidence/visual-fixes-2026-11-13/contours/gl_compatibility-super_rally-front-integrated.png). This improves the gap's continuity; it is not a claim that every subpixel edge is alias-free in motion.
++
++## Validation and integration
++
++All engine runs use pinned `4.7.2.stable.official.ed1daf0bf`, disposable local profiles and offline configuration. `scripts/run_visual_finish.py` records commands, process exits and errors. Desktop renderer names are Compatibility/OpenGL and Mobile/Vulkan; the latter is not a tablet test.
++
++| Check | Result |
++| --- | --- |
++| Material contracts and real constructor bindings | 115 checks, 0 failures |
++| Kart finish, immutable mesh/morph data, material isolation and serialization | 64 checks, 0 failures |
++| Actual CarVisual Kart steering integration | 157 checks, 0 failures |
++| Driving and deterministic replay | 72 checks, 0 failures |
++| Car washing | 1,655 checks, 0 failures |
++| Finite join-cap regression | 51 checks, 0 failures; task-start control rejected with 14 failures |
++| Existing native road geometry controls | 42 checks, 0 failures |
++| Native C++ source syntax | Passed; binaries unchanged |
++| Final contour geometry, original-data retention and backing clearance | 172 checks, 0 failures |
++| Challenger opacity with a bright interior probe | 29 checks, 0 failures in each desktop renderer |
++| Refreshed workshop equivalence and menu lifetime | 35 checks, 0 failures |
++| Final production script parser | 562 scripts, 0 failures |
++| All kit options during implementation | 8,995 checks, 0 failures across six cars |
++| Final prepared vehicle resources | 551 resources, 2,267 checks, 0 failures |
++| Packaged Garage thumbnails | Six exact pictures, 168 current source hashes |
++| Native image imports and Rivalry textures | 318 source MD5s and 12 texture SHA-256 values verified; editor exited cleanly |
++| Final actual App, all six Garage/race selections and Kart steering | 56 checks, 0 failures in each desktop renderer; no logged engine/script errors |
++
++The static-reduction baker completed 883 observations before the prepared refresh. Material changes can alter batching keys, so existing reductions and prepared models must be refreshed together with their images. Artwork is refreshed before prepared models because the existing dependency system includes livery pictures in its source hashes. `scripts/refresh_visual_finish.py` uses the existing native bakers, source-change fences and strict prepared/picture provenance checks. `scripts/import_visual_finish_images.py` verifies imported image source digests.
++
++An existing workshop provenance check rejected a stale `tests/support/car_refinement_lods.gd` dependency. The existing transactional architecture baker refreshed the prepared room without workshop source edits. Exact procedural/prepared room equivalence passes, and the workshop gate now verifies its scene plus all 27 declared sources.
++
++The initial full script parser exposed unrelated concurrent test overrides of `App._start_race` with old argument signatures in `test_menu_quality.gd` and `test_metadata_race_preparation.gd`. That failed result remains recorded. The final production-only scan passed 562 scripts with no failures. Initial fixture errors and the first GL median cache-teardown diagnostics are retained; the corrected final median runs exited cleanly.
++
++## Finalisation — 14 November 2026
++
++The earlier refresh attempts were rejected after concurrent world-cache code, livery photographs and newly created Super Rally image-import metadata changed watched inputs or geometry revision keys. Those diagnostics are retained. Finalisation imported the images first, rebuilt all six bases, every kit, Garage rest scenes and the Compact header template, then published the six pictures using the transactional baker. The successful refresh watched 22,637 inputs with zero changes and passed the full prepared-resource and picture gates. The final client identity was regenerated after the images, with all vehicle revisions required to remain equal to the accepted bake revisions.
++
++Concurrent Challenger corner geometry and loading-cache improvements are retained. The source-only checkpoint normalises three independently reviewed world-cache changes into both sides of the track-source patch, so applying or reversing this task does not remove that work. Exact original source baselines remain in `source-baselines`; the checkpoint records both the original and normalised hashes.
++
++The original full-parser failure and rejected fixture/bake attempts remain diagnostic history; they are not counted as passes. The final production parser, material contracts and contour checks pass against the combined sources. The three superseded Kart candidate PNGs remain because automatic approval review rejected their removal with only "blocked by policy" as its reason; no alternative removal was attempted.
++
++The first finalisation fence also detected 214 changed prepared/identity files, and the picture gate rejected their outdated scene hashes. Its input manifest and rejected-path list are preserved. Pictures were republished for the settled prepared scenes, imports reverified, and both actual-App renderer runs repeated. The accepted [closeout audit](evidence/visual-fixes-2026-11-13/closeout-audit.json) then verifies **23,237 unchanged inputs** across those runs, covering sources, prepared scenes and packaged pictures. Full prepared-resource, six-picture and workshop gates pass. [Final Garage](evidence/visual-fixes-2026-11-13/app-gl_compatibility/super_rally-garage.png) and [final race](evidence/visual-fixes-2026-11-13/app-mobile/compact-race.png) show the shipped UI paths. Exact native commands and exits are in `closeout-app-gl-final-receipt.json`, `closeout-app-mobile-final-receipt.json` and `closeout-prepared-final-receipt.json` beside the audit.
++
++The [source checkpoint receipt](evidence/visual-fixes-2026-11-13/source-checkpoint.json) records byte-exact forward/reverse application, whitespace validation, the concurrent world-cache changes preserved in both directions, and the observed main-index hashes. No staging command was issued. It covers authored source, derived bonnet outline, tests, capture tooling and this report; generated mesh binaries and pictures are validated separately.
++
++The task's active `.keep` marker was removed. The prescribed [retention cleanup](evidence/visual-fixes-2026-11-13/closeout-build-retention.log) completed successfully: 24.14 GiB remained because recent, protected or locked output is retained by the policy. No disposable project/profile copies were moved into permanent evidence.
++
++No device query/test, APK/export, deployment, backend request, owner-profile operation or owner-process change was performed. Owner visual acceptance and sustained device performance remain open.
+diff --git a/docs/evidence/visual-fixes-2026-11-13/tooling/test_app.gd b/docs/evidence/visual-fixes-2026-11-13/tooling/test_app.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/visual-fixes-2026-11-13/tooling/test_app.gd
+@@ -0,0 +1,80 @@
++extends SceneTree
++## Actual six-car Garage/race integration in disposable local storage.
++var checks: int = 0
++var failures: int = 0
++var output: String
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks+=1
++	if not ok: failures+=1; printerr("VISUAL_FINISH_APP_FAIL ",label)
++func settle(frames: int = 10) -> void:
++	for frame: int in range(frames):
++		await process_frame
++		await RenderingServer.frame_post_draw
++func triangles(node: Node) -> int:
++	var count: int = 0
++	if node is MeshInstance3D and node.is_visible_in_tree() and node.cast_shadow!=GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: count+=node.mesh.get_faces().size()/3
++	for child: Node in node.get_children(): count+=triangles(child)
++	return count
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output="res://../docs/evidence/visual-fixes-2026-11-13/app-"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size=Vector2i(1280,720)
++	for id: String in ["compact","kart","forklift","electric","hovercraft","super_rally"]:
++		var folder: String = ProjectSettings.globalize_path("res://../build/visual-fixes-2026-11-13/app/"+TrackLibrary.unique_id())
++		DirAccess.make_dir_recursive_absolute(folder)
++		var app: Node = load("res://core/app.tscn").instantiate()
++		app.records=LocalRecords.new(folder.path_join("records.json"))
++		app.records.settings.selected_car=id
++		app.library=TrackLibrary.new(folder)
++		app.cloud_root_override=folder.path_join("cloud")
++		root.add_child(app)
++		while not app.startup_complete: await process_frame
++		VehicleCatalog.selected=id
++		app._show_screen("garage")
++		await settle()
++		var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++		check(page!=null,"actual Garage loads "+id)
++		page.open_car(VehicleCatalog.IDS.find(id))
++		while not page.showroom.showroom_ready or not page.showroom.car.model_ready: await process_frame
++		while page.showroom.get("preparing")==true: await process_frame
++		await settle(30)
++		check(page.showroom.car.vehicle_id==id,"Garage car identity "+id)
++		var direct := CarVisual.new()
++		direct.vehicle_id=id
++		root.add_child(direct)
++		while not direct.model_ready: await process_frame
++		check(triangles(page.showroom.car)==triangles(direct),"current Garage/direct geometry "+id)
++		var expected_triangles: int = triangles(direct)
++		direct.free()
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-garage.png")==OK,"Garage capture "+id)
++		var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++		await app._start_race(track,true,true)
++		await settle(20)
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.countdown_label.hide()
++		check(game.handling.vehicle_id==id and game.car.vehicle_id==id,"race car and handling identity "+id)
++		check(game.handling.snapshot()==VehicleCatalog.config(id).snapshot(),"complete canonical race tune "+id)
++		check(triangles(game.car)==expected_triangles,"race retains current production geometry "+id)
++		if id=="kart":
++			var wheel: Node3D = game.car.find_child("SteeringAssembly",true,false)
++			var driver: MeshInstance3D = game.car.find_child("TomkartDriver",true,false)
++			for input: float in [-1.0,0.0,1.0,0.0]:
++				# A window can lose focus during parallel native runs. Advance the
++				# fixture tick so the paused-presentation cache sees changed state.
++				game.sim.state.tick+=1
++				game.sim.state.steering=input
++				game._present_frame(1.0/60.0)
++				check(wheel.basis.is_equal_approx(preload("res://vehicle/kart_steering.gd").REST*Basis(Vector3.UP,-input*PI/3)),"actual race steering wheel")
++				var weight: float = 0
++				for shape: int in range(driver.mesh.get_blend_shape_count()): weight+=driver.get_blend_shape_value(shape)
++				check(is_equal_approx(weight,absf(input)),"actual race ten-pose driver")
++		check(root.get_texture().get_image().save_png(output+"/"+id+"-race.png")==OK,"race capture "+id)
++		app.free()
++		await settle(12)
++		print("VISUAL_FINISH_APP_CAR ",id)
++	FileAccess.open(output+"/report.json",FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures}))
++	print("VISUAL_FINISH_APP ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/docs/evidence/visual-fixes-2026-11-13/tooling/parse_production.gd b/docs/evidence/visual-fixes-2026-11-13/tooling/parse_production.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/visual-fixes-2026-11-13/tooling/parse_production.gd
+@@ -0,0 +1,33 @@
++extends SceneTree
++## Compile every project script in one engine process; never instantiate test entrypoints.
++var checked: int = 0
++var failed: bool = false
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func run() -> void:
++	scan("res://")
++	print("SCRIPT_PARSE: %d scripts, %d failures" % [checked,1 if failed else 0])
++	quit(1 if failed or checked == 0 else 0)
++
++func scan(path: String) -> void:
++	var directory := DirAccess.open(path)
++	if directory == null:
++		failed = true
++		return
++	# Match Godot's resource import boundary. Android's ignored Gradle template
++	# includes vendor instrumented-test assets that are not project scripts.
++	if directory.file_exists(".gdignore"): return
++	for filename: String in directory.get_files():
++		if not filename.ends_with(".gd") or filename == "test_script_parse.gd": continue
++		checked += 1
++		var script: GDScript = load(path.path_join(filename))
++		# Loading compiles the script and its dependencies. Reloading an autoload
++		# or another script with live instances is prohibited by the engine.
++		if script == null or not script.can_instantiate():
++			failed = true
++			print("FAIL: "+path.path_join(filename))
++	for child: String in directory.get_directories():
++		if child.begins_with(".") or child == "tests": continue
++		scan(path.path_join(child))
+diff --git a/docs/evidence/visual-fixes-2026-11-13/tooling/bake_static.gd b/docs/evidence/visual-fixes-2026-11-13/tooling/bake_static.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/visual-fixes-2026-11-13/tooling/bake_static.gd
+@@ -0,0 +1,79 @@
++extends SceneTree
++const R = preload("res://vehicle/car_static_reduction.gd")
++const Base = preload("res://vehicle/modular_car_base.gd")
++const Kits = preload("res://vehicle/modular_car_kits.gd")
++const Cache = preload("res://vehicle/prepared_car_cache.gd")
++const OUT = "res://../docs/evidence/visual-fixes-2026-11-13"
++var baker = preload("res://tests/support/car_static_reduction_bake.gd").new()
++
++func _initialize() -> void: run.call_deferred()
++
++func car_for(id: String, editable: bool, batch: bool = true) -> CarVisual:
++	var car := CarVisual.new()
++	car.vehicle_id=id
++	car.simple_model=true
++	car.editable_kits=editable
++	car.batch_parts=batch
++	car.cache_rest_pose=false
++	car.livery=VehicleLivery.defaults(id)
++	car.customisation=VehicleCustomisation.defaults()
++	return car
++
++func hover_far(editable: bool) -> void:
++	R.enabled=false
++	var near_car: CarVisual = car_for("hovercraft",editable)
++	root.add_child(near_car)
++	while not near_car.model_ready: await process_frame
++	var far_car: CarVisual = car_for("hovercraft",editable,false)
++	root.add_child(far_car)
++	while not far_car.model_ready: await process_frame
++	for part: MeshInstance3D in far_car.find_children("*","MeshInstance3D",true,false):
++		if str(part.name).begins_with("SportSkirtSeam"): part.mesh=baker.half_seam(part.mesh)
++	await VisualGeometry.batch_static_parts(far_car)
++	await VisualGeometry.batch_car_parts(far_car)
++	Cache._stable_names(near_car)
++	Cache._stable_names(far_car)
++	var reductions: int = 0
++	for part: MeshInstance3D in near_car.find_children("*","MeshInstance3D",true,false):
++		if not part.mesh is ArrayMesh or part.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		var other: MeshInstance3D = far_car.get_node_or_null(near_car.get_path_to(part))
++		assert(other!=null,"Far model must retain every attachment")
++		if other.mesh.get_faces().size()==part.mesh.get_faces().size(): continue
++		var result: ArrayMesh = preload("res://rendering/mesh_vertex_packing.gd").with_detail(part.mesh,other.mesh,0.005)
++		assert(result!=part.mesh,"Hover far sampling must be installed")
++		result.set_meta("car_authored_far",true)
++		baker.publish(part.mesh,result,"hovercraft")
++		reductions+=1
++	assert(reductions>0)
++	near_car.free()
++	far_car.free()
++	R.enabled=true
++
++func run() -> void:
++	Base.enabled=false
++	Kits.enabled=false
++	Cache.enabled=false
++	preload("res://ui/garage_car_cache.gd").enabled=false
++	R.offline=baker.create
++	for id: String in ["compact","kart","electric"]:
++		for editable: bool in [false,true]:
++			var car: CarVisual = car_for(id,editable)
++			root.add_child(car)
++			while not car.model_ready: await process_frame
++			if editable:
++				for category: String in VehicleCustomisation.CATEGORIES:
++					for option: Array in VehicleCustomisation.options(category,id):
++						var choices: Dictionary = car.customisation.duplicate()
++						choices[category]=option[0]
++						car.change_kit_parts(choices)
++					var choices: Dictionary = car.customisation.duplicate()
++					choices[category]="stock"
++					car.change_kit_parts(choices)
++			car.free()
++			await process_frame
++		print("CAR_STATIC_BAKE ",id)
++	R.offline=Callable()
++	for editable: bool in [false,true]: await hover_far(editable)
++	FileAccess.open(OUT+"/static-bake.json",FileAccess.WRITE).store_string(JSON.stringify({"resources":baker.observations},"\t"))
++	print("CAR_STATIC_BAKE resources=",baker.observations.size())
++	quit()
+diff --git a/docs/evidence/visual-fixes-2026-11-13/tooling/audit_closeout.py b/docs/evidence/visual-fixes-2026-11-13/tooling/audit_closeout.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/visual-fixes-2026-11-13/tooling/audit_closeout.py
+@@ -0,0 +1,49 @@
++"""Fence the actual sources, prepared scenes and packaged images during closeout."""
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[4]
++OUT = ROOT / 'docs/evidence/visual-fixes-2026-11-13'
++sys.path.insert(0, str(ROOT))
++from scripts.refresh_visual_finish import sources, identity
++
++
++def snapshot():
++    result = sources()
++    files = [ROOT / 'game/core/build_identity.gd', ROOT / 'game/project.godot']
++    for folder in ['game/assets/vehicles/modular_car_bases_v1',
++                   'game/assets/vehicles/modular_kits_v1', 'game/assets/garage']:
++        files += [p for p in (ROOT / folder).rglob('*') if p.suffix in ['.scn', '.json', '.png']]
++    imports = json.loads((OUT / 'image-import-receipt.json').read_text())
++    files += [ROOT / row['path'] for row in imports['images'] + imports['rivalry_textures']]
++    for path in files:
++        result[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
++    return result
++
++
++if sys.argv[1] == 'start':
++    baked = json.loads((OUT / 'identity-after-bakes.json').read_text())
++    current = identity('closeout-identity')
++    assert baked['modular_car_sha256'] == current['modular_car_sha256'], 'Final import changed vehicle revisions'
++    before = snapshot()
++    (OUT / 'closeout-inputs.json').write_text(json.dumps(before, indent=2))
++    print('CLOSEOUT_START', len(before), 'watched inputs')
++else:
++    before = json.loads((OUT / 'closeout-inputs.json').read_text())
++    for script, filename in [('scripts/check_garage_previews.py', 'closeout-picture-preflight.log'),
++                             ('scripts/check_garage_workshop.py', 'closeout-workshop-preflight.log')]:
++        with (OUT / filename).open('w', encoding='utf-8') as log:
++            subprocess.run([sys.executable, script], cwd=ROOT, check=True, stdout=log, stderr=subprocess.STDOUT)
++    for label in ['closeout-app-gl-final', 'closeout-app-mobile-final', 'closeout-prepared-final']:
++        receipt = json.loads((OUT / (label + '-receipt.json')).read_text())
++        assert receipt['exit_code'] == 0 and not receipt['errors'] and not receipt['stop_reason'], label
++    after = snapshot()
++    changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
++    receipt = {'watched_inputs': len(before), 'changed': changed,
++               'prepared_and_native_receipts_clean': True, 'picture_and_workshop_gates': 'passed'}
++    (OUT / 'closeout-audit.json').write_text(json.dumps(receipt, indent=2))
++    assert not changed, changed
++    print('CLOSEOUT_AUDIT', len(before), 'inputs stable; native and provenance gates passed')
+diff --git a/game/vehicle/kart_driver_cloth.gdshader.uid b/game/vehicle/kart_driver_cloth.gdshader.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/kart_driver_cloth.gdshader.uid
+@@ -0,0 +1 @@
++uid://cdj41csm071gk
+diff --git a/game/vehicle/panel_contour.gd.uid b/game/vehicle/panel_contour.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/panel_contour.gd.uid
+@@ -0,0 +1 @@
++uid://4eomsyfwa6vr
+diff --git a/game/vehicle/panel_contour.gdshader.uid b/game/vehicle/panel_contour.gdshader.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/panel_contour.gdshader.uid
+@@ -0,0 +1 @@
++uid://dk2oyiq3fi6bv
+diff --git a/game/vehicle/challenger_panel_contours.gd.uid b/game/vehicle/challenger_panel_contours.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/challenger_panel_contours.gd.uid
+@@ -0,0 +1 @@
++uid://c2fvx7apa24ql
+diff --git a/game/tests/test_kart_material_finish.gd.uid b/game/tests/test_kart_material_finish.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_kart_material_finish.gd.uid
+@@ -0,0 +1 @@
++uid://csxrskwm7wfgn
+diff --git a/game/tests/test_vehicle_material_finish.gd.uid b/game/tests/test_vehicle_material_finish.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_vehicle_material_finish.gd.uid
+@@ -0,0 +1 @@
++uid://cecltnmrqfxrb
+diff --git a/game/tests/test_panel_contours.gd.uid b/game/tests/test_panel_contours.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_panel_contours.gd.uid
+@@ -0,0 +1 @@
++uid://cjgokhtwpb7nm
+diff --git a/game/tests/test_join_cap_miters.gd.uid b/game/tests/test_join_cap_miters.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_join_cap_miters.gd.uid
+@@ -0,0 +1 @@
++uid://ciomosoemcdb0
+diff --git a/game/tests/capture_vehicle_finish.gd.uid b/game/tests/capture_vehicle_finish.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_vehicle_finish.gd.uid
+@@ -0,0 +1 @@
++uid://dfpspo6hb3wnh

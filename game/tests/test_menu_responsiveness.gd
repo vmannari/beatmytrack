@@ -12,27 +12,13 @@ func check(ok: bool,label: String) -> void:
 func frames(count: int=4) -> void:
 	for _i: int in range(count): await process_frame
 func geometry(node: Node, result: Array) -> void:
-	if node is Node3D: result.append([str(node.name),node.transform])
-	if node is MeshInstance3D:
-		var mesh: Mesh=node.mesh
-		result.append([node.layers,node.cast_shadow,mesh.get_surface_count()])
-		for index: int in range(mesh.get_surface_count()):
-			result.append(mesh.surface_get_arrays(index))
-		var material: Material=node.material_override
-		if material is ShaderMaterial:
-			var params: Array=[]
-			for property: Dictionary in material.get_property_list():
-				if str(property.name).begins_with("shader_parameter/"): params.append([property.name,material.get(property.name)])
-			result.append([material.shader.code,params])
-		elif material is StandardMaterial3D:
-			result.append([material.albedo_color,material.metallic,material.roughness,material.emission_enabled,material.emission,material.emission_energy_multiplier])
-	for child: Node in node.get_children(): geometry(child,result)
+	preload("res://tests/support/garage_geometry_comparison.gd").geometry(node, result)
 func architecture() -> void:
 	var prepared: PackedScene=load(GarageEnvironment.PREPARED_ARCHITECTURE)
 	GarageEnvironment.architecture_scene=null
 	var world:=Node3D.new()
 	root.add_child(world)
-	var car:=CarVisual.new()
+	var car:=preload("res://tests/support/garage_architecture_car.gd").new()
 	world.add_child(car)
 	GarageEnvironment.build(world,car,true,false)
 	var before: Node=GarageEnvironment.architecture_scene.instantiate()

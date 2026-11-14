@@ -2,6 +2,29 @@ extends RefCounted
 ## Tomkart's CC-BY-4.0 driver, posed offline; original thin open bucket.
 ## Credits and modification notes: legal/kart_driver_notices.txt.
 const G = preload("res://vehicle/kart_geometry.gd")
+const CLOTH: Shader = preload("res://vehicle/kart_driver_cloth.gdshader")
+
+static func _finish_materials() -> Dictionary:
+	# Per-car bindings preserve the immutable imported meshes and all steering
+	# poses. The fixed and moving suit use one identical garment finish.
+	var suit := ShaderMaterial.new()
+	suit.resource_name = "RT_DriverSuit"
+	suit.shader = CLOTH
+	var glove := StandardMaterial3D.new()
+	glove.resource_name = "RT_Gloves"
+	glove.albedo_color = Color("202c31")
+	glove.roughness = 0.76
+	glove.metallic_specular = 0.20
+	var visor := CompactFinish.glass(Color("263c47"))
+	visor.resource_name = "HelmetVisor"
+	visor.roughness = 0.20
+	return {"RT_DriverSuit":suit,"RT_Gloves":glove,"HelmetVisor":visor}
+
+static func _apply_finish(node: MeshInstance3D, materials: Dictionary) -> void:
+	for surface: int in range(node.mesh.get_surface_count()):
+		var source: Material = node.mesh.surface_get_material(surface)
+		if source != null and materials.has(source.resource_name):
+			node.set_surface_override_material(surface,materials[source.resource_name])
 
 static func seat_point(u: float, v: float) -> Vector3:
 	# Centreline runs from the front lip, under the hips, then up the back.
@@ -58,13 +81,24 @@ static func seat_stays(parent: Node3D, metal: Material, simple: bool) -> void:
 
 static func build(parent: Node3D, trim: Material, simple: bool) -> void:
 	_seat(parent,trim,CompactFinish.rubber(Color("30383b")),simple)
+	var finishes: Dictionary = _finish_materials()
 	var driver := MeshInstance3D.new()
 	driver.name = "TomkartDriver"
-	driver.mesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/driver.res")
+	var directory: String="res://assets/vehicles/kart_refined_v1"+"/tomkart_driver_v1/"
+	var split: bool=simple and ResourceLoader.exists(directory+"driver_steering.res") and ResourceLoader.exists(directory+"driver_static.res")
+	driver.mesh = load(directory+("driver_steering.res" if split else "driver.res"))
+	_apply_finish(driver,finishes)
+	if split:
+		var fixed := MeshInstance3D.new()
+		fixed.name="DriverStaticSuit"
+		fixed.mesh=load(directory+"driver_static.res")
+		_apply_finish(fixed,finishes)
+		driver.add_child(fixed)
 	parent.add_child(driver)
 	# The helmet never deforms with steering. Retain its four native finishes
 	# without allocating six redundant copies of its vertex/normal data.
 	var helmet := MeshInstance3D.new()
 	helmet.name = "HelmetStatic"
-	helmet.mesh = preload("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res")
+	helmet.mesh = load("res://assets/vehicles/kart_refined_v1/tomkart_driver_v1/helmet_static.res")
+	_apply_finish(helmet,finishes)
 	driver.add_child(helmet)

@@ -8,6 +8,11 @@ uniform bool night_mode = false;
 uniform bool mirror_surface = false;
 uniform bool show_frit = true;
 uniform vec3 glass_tint_srgb = vec3(0.045, 0.074, 0.090);
+varying vec3 reflection_point;
+
+void vertex() {
+	reflection_point = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
 
 vec3 linear_from_display(vec3 value) {
 	return mix(value/12.92,pow((value+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),value));
@@ -23,9 +28,14 @@ void fragment() {
 	float cloud = smoothstep(0.75,0.96,dot(direction,normalize(vec3(-0.55,0.78,0.30))));
 	environment = mix(environment,vec3(0.78,0.83,0.83),cloud*0.55);
 	if (studio_mode) {
-		float key = pow(max(0.0,dot(direction,normalize(vec3(-0.65,0.8,-0.35)))),6.0);
-		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),12.0);
-		environment = vec3(0.07,0.11,0.14)+vec3(0.42,0.48,0.52)*key+vec3(0.17,0.21,0.24)*fill;
+		// A nearby studio reflection varies across even a nearly planar pane.
+		// Position supplies bounded parallax; lights stay fixed as the car turns.
+		vec3 studio_ray = normalize(direction + reflection_point * 0.45);
+		float key = pow(max(0.0,dot(studio_ray,normalize(vec3(-0.65,0.8,-0.35)))),4.0);
+		float fill = pow(max(0.0,dot(studio_ray,normalize(vec3(0.8,0.35,0.5)))),6.0);
+		float ceiling = smoothstep(0.05,0.65,studio_ray.y);
+		environment = mix(vec3(0.055,0.075,0.09),vec3(0.19,0.23,0.27),ceiling);
+		environment += vec3(0.36,0.40,0.43)*key + vec3(0.20,0.24,0.28)*fill;
 	} else if (night_mode) {
 		// Moonlit glass retains its curved reflection without reflecting a
 		// daytime sky as a pale panel against the dark body and road.

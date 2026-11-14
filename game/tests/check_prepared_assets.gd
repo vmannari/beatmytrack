@@ -32,6 +32,7 @@ func run() -> void:
 		var validation=preload("res://vehicle/prepared_asset_sources.gd")
 		check(validation.runtime_projection(sources)==validation.runtime_hashes(id),"runtime code/configuration guard covers every preserved leaf "+id)
 		for simple: bool in [false,true]:
+			if "--simple-only" in OS.get_cmdline_user_args() and not simple: continue
 			for editable: bool in [false,true]:
 				if editable and not VehicleCustomisation.supported(id): continue
 				var car:=CarVisual.new()
@@ -43,10 +44,11 @@ func run() -> void:
 						for option: Array in VehicleCustomisation.options(category,id).slice(1):
 							inspect(Kits.path_for(car,category,option[0]),"modular_kit",Kits.key_for(car,category,option[0]),Kits.geometry_sources(id))
 				car.free()
-		var car:=CarVisual.new()
-		car.vehicle_id=id;car.simple_model=false;car.editable_kits=VehicleCustomisation.supported(id)
-		inspect(Garage.DIRECTORY+car.model_id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
-		car.free()
+		if "--simple-only" not in OS.get_cmdline_user_args():
+			var car:=CarVisual.new()
+			car.vehicle_id=id;car.simple_model=false;car.editable_kits=VehicleCustomisation.supported(id)
+			inspect(Garage.DIRECTORY+car.model_id+".scn","garage_rest",Garage.geometry_key(car),Garage.geometry_sources(id))
+			car.free()
 	var car:=CarVisual.new()
 	car.simple_model=true
 	var path: String=Header.DIRECTORY+"compact.scn"

@@ -374,6 +374,8 @@ function Prepare-AndroidGradle {
 function Export-Android {
     & python (Join-Path $PSScriptRoot 'check_android_delivery.py') --preset $AndroidPreset
     if ($LASTEXITCODE) { throw 'Android delivery preset is inconsistent. No export started.' }
+	& python (Join-Path $PSScriptRoot 'check_garage_workshop.py')
+	if ($LASTEXITCODE) { throw 'Garage workshop is stale or missing. Bake and validate its architecture before exporting.' }
 	& python (Join-Path $PSScriptRoot 'prepare_car_assets.py') --verify --godot $script:godot --output (Join-Path $commandLogRoot 'prepared-assets')
 	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')

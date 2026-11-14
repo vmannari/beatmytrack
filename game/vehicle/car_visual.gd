@@ -2,6 +2,13 @@ class_name CarVisual
 extends Node3D
 ## Base 4.25 x 1.8 m compact scaled by HandlingConfig.BODY_SCALE; +Z rear, -Z nose. Presentation only.
 
+# Prepared restoration has no eager dependency on the optional model factories.
+# Hold only factories actually used, including later night/fitted/fallback work.
+static var _builder_scripts: Dictionary = {}
+static func _builder(name: String) -> Script:
+	if not _builder_scripts.has(name): _builder_scripts[name] = load("res://vehicle/"+name+".gd")
+	return _builder_scripts[name]
+
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
 var model_id: String:
@@ -91,19 +98,19 @@ func set_night_headlights(enabled: bool) -> void:
 	lens.albedo_color = Color("fff0d2")
 	for side: float in [-1.0,1.0]:
 		if vehicle_id == "super_rally":
-			if side < 0.0: SuperRallyModel.night_lens(headlights,lens,paint_materials.body)
+			if side < 0.0: _builder("super_rally_model").night_lens(headlights,lens,paint_materials.body)
 			continue
 		if vehicle_id == "hovercraft":
-			if side < 0.0: preload("res://vehicle/hovercraft_model.gd").night_lens(headlights,lens)
+			if side < 0.0: _builder("hovercraft_model").night_lens(headlights,lens)
 			continue
 		if vehicle_id == "electric":
 			if side < 0.0:
 				lens.albedo_color = Color("e8f7ff")
-				preload("res://vehicle/electric_car_model.gd").night_lens(headlights,lens)
+				_builder("electric_car_model").night_lens(headlights,lens)
 			continue
 		if chassis_id == "compact":
-			var x: float = side*CompactFrontLamps.OFFSET
-			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
+			var x: float = side*_builder("compact_front_lamps").OFFSET
+			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,_builder("compact_front_lamps").CENTER,_builder("compact_detail")._nose_z(x)-0.047),lens)
 			round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
 			round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			continue
@@ -248,7 +255,7 @@ func _ready() -> void:
 		# Older stock forklift templates predate editable kit frames.
 		if vehicle_id == "forklift" and editable_kits and kit_frames.is_empty():
 			for category: String in VehicleCustomisation.CATEGORIES:
-				preload("res://vehicle/forklift_kits.gd").build(self,category)
+				_builder("forklift_kits").build(self,category)
 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 		apply_livery(livery)
 		_update_rear_lights()
@@ -276,14 +283,14 @@ func _ready() -> void:
 		model_ready = true
 		return
 	if vehicle_id == "super_rally":
-		SuperRallyModel.build(self)
+		_builder("super_rally_model").build(self)
 		apply_livery(livery)
 		_update_rear_lights()
 		await _finish_render_model()
 		model_ready = true
 		return
 	if chassis_id != "compact":
-		VehicleModels.build(self, vehicle_id)
+		_builder("vehicle_models").build(self, vehicle_id)
 		if not livery.is_empty(): apply_livery(livery)
 		_update_rear_lights()
 		await _finish_render_model()
@@ -299,7 +306,7 @@ func _ready() -> void:
 	body = Node3D.new()
 	add_child(body)
 	_model_stage = "body"
-	CompactCoachwork.build_body(self,blue)
+	_builder("compact_coachwork").build_body(self,blue)
 	if not await _model_checkpoint(): return
 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
 	_model_stage = "cabin"
@@ -311,26 +318,26 @@ func _ready() -> void:
 			var pivot := Node3D.new()
 			pivot.position = Vector3(side * 0.83, 0.37, axle)
 			add_child(pivot)
-			CompactDetail.tire(pivot, trim, simple_model)
+			_builder("compact_detail").tire(pivot, trim, simple_model)
 			var rim_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
-			if CompactKits.choice(self,"rims") == "stock":
+			if _builder("compact_kits").choice(self,"rims") == "stock":
 				var hub := VisualGeometry.cylinder(rim_parent, 0.228, 0.16, Vector3.ZERO, trim,true)
 				hub.rotation.z = PI * 0.5
 				for spoke: int in range(8):
 					var a: float = spoke*TAU/8.0
 					_seam(rim_parent,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
-			else: CompactKits.build_wheel(self,rim_parent,side)
+			else: _builder("compact_kits").build_wheel(self,rim_parent,side)
 			if axle < 0:
 				front_wheels.append(pivot)
 			register_rolling_wheel(pivot, 0.37)
 			var brake_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
-			if CompactKits.choice(self,"rims") != "stock": CompactKits.build_caliper(brake_parent,side)
+			if _builder("compact_kits").choice(self,"rims") != "stock": _builder("compact_kits").build_caliper(brake_parent,side)
 			if not await _model_checkpoint(): return
 	_model_stage = "details"
-	await CompactDetail.build(self, blue, paint, trim, rim,_model_checkpoint if cooperative_build else Callable())
+	await _builder("compact_detail").build(self, blue, paint, trim, rim,_model_checkpoint if cooperative_build else Callable())
 	if not await _model_checkpoint(): return
-	CompactKits.build_aero(self)
-	CompactKits.build_body(self)
+	_builder("compact_kits").build_aero(self)
+	_builder("compact_kits").build_body(self)
 	if not livery.is_empty(): apply_livery(livery)
 	_update_rear_lights()
 	await _finish_render_model()
@@ -377,7 +384,12 @@ func _restore_modular_model() -> bool:
 
 
 func _finish_render_model() -> void:
-	if simple_model: RacingCarModels.prepare(self)
+	_builder("compact_seam_strip").finish(self)
+	if simple_model: _builder("racing_car_models").prepare(self)
+	# Reduce each authored piece before assembly. Fixed cars and modular kits
+	# must not receive different geometry merely because they batch differently.
+	if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self)
+	_builder("car_coarse_reduction").apply(self)
 	if batch_parts:
 		_model_stage = "sibling batches"
 		await VisualGeometry.batch_static_parts(self,_model_checkpoint if cooperative_build else Callable())
@@ -385,6 +397,7 @@ func _finish_render_model() -> void:
 		_model_stage = "frame batches"
 		await VisualGeometry.batch_car_parts(self,_model_checkpoint if cooperative_build else Callable())
 		if not await _model_checkpoint(): return
+	if vehicle_id=="hovercraft": _builder("car_static_reduction").apply(self)
 	_model_stage = "snapshot"
 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
@@ -421,32 +434,32 @@ func change_kit_parts(value: Dictionary) -> void:
 			frame.queue_free()
 		kit_frames[category] = []
 		if vehicle_id == "super_rally":
-			SuperRallyModel.kit(self,category)
+			_builder("super_rally_model").kit(self,category)
 			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="electric":
-			preload("res://vehicle/electric_kits.gd").build(self,category)
+			_builder("electric_kits").build(self,category)
 			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="forklift":
-			preload("res://vehicle/forklift_kits.gd").build(self,category)
+			_builder("forklift_kits").build(self,category)
 			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="hovercraft":
-			if category=="rims": preload("res://vehicle/hovercraft_sport_drive.gd").rebuild_fans(self)
-			else: preload("res://vehicle/hovercraft_kits.gd").build(self,category)
+			if category=="rims": _builder("hovercraft_sport_drive").rebuild_fans(self)
+			else: _builder("hovercraft_kits").build(self,category)
 			_reduce_changed_kit(category)
 			if batch_parts:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		if vehicle_id=="kart":
-			var kart = preload("res://vehicle/kart_model.gd")
+			var kart = _builder("kart_model")
 			match category:
 				"hood": kart.build_nose(self)
 				"aero": kart.build_bumper(self)
@@ -458,9 +471,9 @@ func change_kit_parts(value: Dictionary) -> void:
 				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
 			continue
 		match category:
-			"hood": CompactCoachwork.build_hood(self,paint_materials.body,paint_materials.accent)
-			"aero": CompactKits.build_aero(self)
-			"body": CompactKits.build_body(self)
+			"hood": _builder("compact_coachwork").build_hood(self,paint_materials.body,paint_materials.accent)
+			"aero": _builder("compact_kits").build_aero(self)
+			"body": _builder("compact_kits").build_body(self)
 			"rims":
 				var trim: Material = CompactFinish.rubber(Color("171e21"))
 				var alloy: Material = CompactFinish.alloy(Color("657177"))
@@ -468,18 +481,19 @@ func change_kit_parts(value: Dictionary) -> void:
 				for rotor: Node3D in rolling_wheels:
 					var side: float = signf((rotor.get_parent() as Node3D).position.x)
 					var frame: Node3D = new_kit_frame("rims",rotor)
-					if CompactKits.choice(self,"rims")=="stock":
+					if _builder("compact_kits").choice(self,"rims")=="stock":
 						var hub := VisualGeometry.cylinder(frame,0.228,0.16,Vector3.ZERO,trim,true)
 						hub.rotation.z = PI*0.5
 						for spoke: int in range(8):
 							var a: float = spoke*TAU/8.0
 							_seam(frame,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,alloy)
-						CompactDetail.rim_detail(frame,side,alloy,trim,bright)
-					else: CompactKits.build_wheel(self,frame,side)
+						_builder("compact_detail").rim_detail(frame,side,alloy,trim,bright)
+					else: _builder("compact_kits").build_wheel(self,frame,side)
 					var brake: Node3D = new_kit_frame("rims",rotor.get_parent())
-					if CompactKits.choice(self,"rims")!="stock": CompactKits.build_caliper(brake,side)
+					if _builder("compact_kits").choice(self,"rims")!="stock": _builder("compact_kits").build_caliper(brake,side)
 		_reduce_changed_kit(category)
 		for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+	if vehicle_id=="hovercraft": _builder("car_static_reduction").apply(self)
 	graphics = LiveryGraphics.new()
 	graphics.configure(self)
 
@@ -487,7 +501,9 @@ func _reduce_changed_kit(category: String) -> void:
 	# Match construction-time reduction before batching newly fitted primitives.
 	# Offline modules and a direct fitted build must describe the same model.
 	if simple_model:
-		for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame)
+		for frame: Node3D in kit_frames[category]: _builder("racing_car_models")._reduce_primitives(frame,vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
+		if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self,kit_frames.get(category,[]))
+		_builder("car_coarse_reduction").apply(self,kit_frames.get(category,[]))
 
 
 func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:
@@ -671,7 +687,7 @@ func _keep_electric_body_clear_of_tires() -> void:
 	# The wheels keep their road contacts while the sprung body pitches, rolls
 	# and heaves independently. Lift only the rendered body when that motion
 	# would push a tire through the wheel opening.
-	const BODY = preload("res://vehicle/electric_reference_body.gd")
+	var BODY: Script = _builder("electric_reference_body")
 	const TIRE_RINGS: Array[Vector2] = [Vector2(-0.14,0.32),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.14,0.32)]
 	if electric_tire_angles.is_empty():
 		for index: int in range(32):
@@ -708,23 +724,23 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 	var outline: Array[Vector2] = ROLL_OUTLINE
 	if chassis_id=="compact" and customisation != VehicleCustomisation.defaults():
 		outline = ROLL_OUTLINE.duplicate()
-		if customisation.body in ["rally","club"] or customisation.body in CompactKitVariants.BODIES:
-			if customisation.body in CompactKitVariants.BODIES:
+		if customisation.body in ["rally","club"] or customisation.body in _builder("compact_kit_variants").BODIES:
+			if customisation.body in _builder("compact_kit_variants").BODIES:
 				outline.append_array([Vector2(-1.15,0.25),Vector2(1.15,0.25),Vector2(-1.15,0.90),Vector2(1.15,0.90)])
 			else:
 				outline.append_array([Vector2(-1.10,0.37),Vector2(1.10,0.37),Vector2(-1.10,0.85),Vector2(1.10,0.85)])
 		if customisation.aero!="stock":
 			var half: float = 0.92 if customisation.aero=="wing" else 0.65
 			var height: float = 1.89 if customisation.aero=="wing" else 1.64
-			if customisation.aero in CompactAero.PROFILES:
-				var extent: Vector2 = CompactAero.roll_extent(customisation.aero)
+			if customisation.aero in _builder("compact_aero").PROFILES:
+				var extent: Vector2 = _builder("compact_aero").roll_extent(customisation.aero)
 				half = extent.x
 				height = extent.y
 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
 	if vehicle_id == "super_rally":
 		outline = [Vector2(-1.08,0.27),Vector2(1.08,0.27),Vector2(-1.08,0.98),Vector2(1.08,0.98),Vector2(-0.58,1.42),Vector2(0.58,1.42)]
 		if customisation.aero != "stock":
-			var extent: Vector2 = SuperRallyModel.aero_extent(customisation.aero)
+			var extent: Vector2 = _builder("super_rally_model").aero_extent(customisation.aero)
 			outline.append_array([Vector2(-extent.x,extent.y),Vector2(extent.x,extent.y)])
 	if chassis_id != "compact":
 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
@@ -818,6 +834,9 @@ func _shell(parent: Node3D, sections: Array[Vector3], surface: Material) -> void
 
 
 func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: Material) -> void:
+	if vehicle_id=="compact" and simple_model and str(parent.name) in ["DoorSeamsLeft","DoorSeamsRight","TailgatePanelSeam"]:
+		_builder("compact_seam_strip").add(parent,start,end,width,surface)
+		return
 	var stroke := VisualGeometry.box(parent,Vector3(width,width,start.distance_to(end)),(start+end)*0.5,surface)
 	var up: Vector3 = Vector3.RIGHT if absf((end-start).normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
 	stroke.basis = Basis.looking_at(end-start,up)
@@ -825,17 +844,19 @@ func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: 
 
 func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material) -> void:
 	# Broad roof, long side glazing and a sloping rear hatch; +Z is the tail.
-	CompactCoachwork.build_cabin(self,paint,blue)
+	_builder("compact_coachwork").build_cabin(self,paint,blue)
 	var roof_paint := CompactFinish.paint(Color("c5baa0"))
 	accent_roof = roof_paint
-	CompactCoachwork.build_roof(self,roof_paint)
-	preload("res://vehicle/compact_glazing.gd").sheet(self,true,trim)
-	preload("res://vehicle/compact_glazing.gd").sheet(self,false,trim)
+	_builder("compact_coachwork").build_roof(self,roof_paint)
+	_builder("compact_glazing").sheet(self,true,trim)
+	_builder("compact_glazing").sheet(self,false,trim)
+	var door_bevels: Array[float] = [0.035,0.025,0.025,0.055]
+	var quarter_bevels: Array[float] = [0.025,0.070,0.045,0.025]
 	for side: float in [-1.0,1.0]:
 		var suffix: String="Left" if side<0 else "Right"
 		# Both openings share their sill, roof rail, pillar and dark gasket.
-		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,true),Vector3(side,0.277,0),trim,0.0,[0.035,0.025,0.025,0.055],null,"DoorWindow"+suffix)
-		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,false),Vector3(side,0.277,0),trim,0.0,[0.025,0.070,0.045,0.025],null,"QuarterWindow"+suffix)
+		_builder("compact_glazing").window(self,_builder("compact_coachwork").side_window_corners(side,true),Vector3(side,0.277,0),trim,0.0,door_bevels,null,"DoorWindow"+suffix)
+		_builder("compact_glazing").window(self,_builder("compact_coachwork").side_window_corners(side,false),Vector3(side,0.277,0),trim,0.0,quarter_bevels,null,"QuarterWindow"+suffix)
 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
 	# A fine inset perimeter crease defines the pressed roof's rolled edge.
 	var roof_line := CompactFinish.paint(Color("b3aa95"))
@@ -846,12 +867,12 @@ func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material
 	for i: int in range(perimeter.size()):
 		var a: Vector2 = perimeter[i]
 		var b: Vector2 = perimeter[(i+1)%perimeter.size()]
-		var pa: Vector3 = CompactCoachwork.roof_point(a.x/0.63,(a.y+0.4)/1.58)
-		var pb: Vector3 = CompactCoachwork.roof_point(b.x/0.63,(b.y+0.4)/1.58)
+		var pa: Vector3 = _builder("compact_coachwork").roof_point(a.x/0.63,(a.y+0.4)/1.58)
+		var pb: Vector3 = _builder("compact_coachwork").roof_point(b.x/0.63,(b.y+0.4)/1.58)
 		_seam(body,pa+Vector3.UP*0.001,pb+Vector3.UP*0.001,0.004,roof_line)
 		var inset_a: Vector2 = Vector2(0,0.39).lerp(a,0.986)
 		var inset_b: Vector2 = Vector2(0,0.39).lerp(b,0.986)
-		_seam(body,CompactCoachwork.roof_point(inset_a.x/0.63,(inset_a.y+0.4)/1.58)+Vector3.UP*0.001,CompactCoachwork.roof_point(inset_b.x/0.63,(inset_b.y+0.4)/1.58)+Vector3.UP*0.001,0.003,roof_highlight)
+		_seam(body,_builder("compact_coachwork").roof_point(inset_a.x/0.63,(inset_a.y+0.4)/1.58)+Vector3.UP*0.001,_builder("compact_coachwork").roof_point(inset_b.x/0.63,(inset_b.y+0.4)/1.58)+Vector3.UP*0.001,0.003,roof_highlight)
 
 
 func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:

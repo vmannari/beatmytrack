@@ -40,7 +40,8 @@ func run() -> void:
 		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
 			if part.mesh != null: triangles += part.mesh.get_faces().size()/3
 			var material: StandardMaterial3D = part.get_active_material(0) as StandardMaterial3D
-			if material != null and material.albedo_color == Color("303b40"):
+			var marking: ShaderMaterial = part.get_active_material(0) as ShaderMaterial
+			if marking != null and marking.shader == preload("res://vehicle/panel_contour.gdshader") and marking.get_shader_parameter("contour_color") == Color("303b40"):
 				contours += 1
 				contours_unshadowed = contours_unshadowed and part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			if material != null and material.albedo_color == Color("101b20"):

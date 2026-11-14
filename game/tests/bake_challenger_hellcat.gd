@@ -6,12 +6,14 @@ const DEST: String = "res://assets/vehicles/challenger_hellcat_v1/"
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
 	var source: String = SOURCE
+	var destination: String = DEST
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--source="): source = argument.trim_prefix("--source=").trim_suffix("/")+"/"
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DEST))
+		if argument.begins_with("--dest="): destination = argument.trim_prefix("--dest=").trim_suffix("/")+"/"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(destination))
 	var profile: String = FileAccess.get_file_as_string(source+"hood_profile.json")
 	assert((JSON.parse_string(profile) as Dictionary).schema == "challenger-hood-profile-1")
-	var profile_file := FileAccess.open(DEST+"hood_profile.json",FileAccess.WRITE)
+	var profile_file := FileAccess.open(destination+"hood_profile.json",FileAccess.WRITE)
 	profile_file.store_string(profile); profile_file.close()
 	var result: Dictionary = {"schema":"challenger-hellcat-1","tiers":{}}
 	for tier: String in ["full","simple"]:
@@ -48,11 +50,11 @@ func run() -> void:
 				triangles += (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array).size()/3
 				native.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
 			var file: String = tier+"_"+group+"_"+role+".res"
-			assert(ResourceSaver.save(native,DEST+file) == OK)
+			assert(ResourceSaver.save(native,destination+file) == OK)
 			entries.append({"group":group,"role":role,"mesh":file,"triangles":triangles,"bounds":str(native.get_aabb())})
 		result.tiers[tier] = entries
 		scene.free()
-	var output := FileAccess.open(DEST+"manifest.json",FileAccess.WRITE)
+	var output := FileAccess.open(destination+"manifest.json",FileAccess.WRITE)
 	output.store_string(JSON.stringify(result,"\t")); output.close()
 	var provenance: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(source+"manifest.json"))
 	for tier: String in ["full","simple"]:
@@ -60,7 +62,7 @@ func run() -> void:
 		for entry: Dictionary in result.tiers[tier]: actual += int(entry.triangles)
 		assert(actual == int(provenance.tiers[tier].triangles),"Native geometry must match its complete conversion receipt: "+tier)
 	provenance.erase("source")
-	output = FileAccess.open(DEST+"source.json",FileAccess.WRITE)
+	output = FileAccess.open(destination+"source.json",FileAccess.WRITE)
 	output.store_string(JSON.stringify(provenance,"\t")); output.close()
 	print("CHALLENGER_NATIVE_BAKE ",JSON.stringify(result.tiers.keys()))
 	quit()

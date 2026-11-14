@@ -87,7 +87,10 @@ with actual App pictures. The final scoped refresh has a 20,534-input source
 receipt with zero changed inputs and stable geometry revisions. After the
 serialization correction, the affected Rally/Forklift outputs were rebuilt and
 the scoped strict gates repeated. The original main index and all eight car
-configuration controls remain exact.
+configuration controls were exact at that qualification. During the later
+13 November handoff audit, the index no longer matched task start; this task
+did not stage or restore it. Historical passing receipts do not certify a
+subsequently changing checkout.
 
 Principal commands, with full arguments/logs in the receipts:
 
@@ -144,8 +147,25 @@ and reconstruction information remain. No owner files were deleted. One invalid
 runner invocation started an isolated private App; only that owned process was
 stopped. The known Windows certificate-store diagnostic is retained throughout.
 
-The source-only checkpoint records authored source changes separately from
-generated binaries and concurrent Challenger/cloth updates. No root staging,
+## Handoff audit — 13 November 2026
+
+The final read-only handoff audit found later edits to Kart, Forklift, Garage,
+Rivalry and Challenger inputs since the qualified refresh. All eight vehicle
+configuration controls still match task start. See
+[`handoff-source-audit.json`](evidence/car-model-refinement-2026-11-12/handoff-source-audit.json).
+The passing results above certify the recorded snapshot, not the current
+changing checkout. A new stable-source five-car refresh and focused qualification
+are required before release, followed by a fresh-launch visual review and
+physical-device memory/frame-time/thermal testing. Challenger remains excluded
+from this task's model authoring.
+
+The source-only checkpoint contains 47 current source snapshots and a
+reverse-checked patch for the 13 runtime files with independently captured
+task-start bytes. Tool/test snapshots without independent baselines are labelled
+as current snapshots; they do not establish a complete task-only diff.
+The runtime patch also includes any later edits to those files and must not be
+treated as an isolated task patch. Generated binaries and Challenger model
+source are excluded. No root staging,
 commit, merge, owner-process restart, owner-save edit, device query/test, APK,
 backend request or deployment was performed. A fresh game launch and owner art
 acceptance remain; physical-device memory, frame-time and thermal qualification

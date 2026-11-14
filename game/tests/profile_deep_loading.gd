@@ -140,10 +140,7 @@ func rivalry() -> void:
 		trace.mark("entry_ready")
 		var cars: Array = []
 		for car: Node in page.find_children("RivalryPodiumCar_*","",true,false):
-			if car.get_script()==load("res://ui/rivalry_simple_car.gd"):
-				cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.size.x,car.size.y],"triangles":car.triangle_count,"canvas":true})
-			else:
-				cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.viewport.size.x,car.viewport.size.y],"mode":car.viewport.render_target_update_mode,"model_ready":car.car.model_ready})
+			cars.append({"name":car.name,"ready":car.presentation_ready,"size":[car.viewport.size.x,car.viewport.size.y],"mode":car.viewport.render_target_update_mode,"model_ready":car.car.model_ready})
 		check(cars.size() == 3,"all three production podium widgets retained")
 		var row: Dictionary = {"cycle":cycle,"wall_ms":(Time.get_ticks_usec()-began)/1000.0,"cars":cars,"feature_load_ms":app.feature_load_ms.duplicate(true)}
 		rows.append(row); print("DEEP_ROW ",JSON.stringify(row))

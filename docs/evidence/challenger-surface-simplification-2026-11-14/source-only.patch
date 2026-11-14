@@ -1,0 +1,1673 @@
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -16,6 +16,7 @@
+ from mathutils.geometry import delaunay_2d_cdt
+ sys.path.insert(0,str(Path(__file__).resolve().parent))
+ import challenger_detail_geometry as exterior_detail
++import challenger_shell_geometry as shell_geometry
+ from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
+ from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals, nose_plan_points, nose_plan_normals, nose_corner_field, nose_corner_normals
+ 
+@@ -645,6 +646,7 @@
+                 np.savez_compressed(output/(tier+'_'+role+'_reference_input.npz'),points=faired,faces=np.asarray(faces),normals=faired_normals)
+             if role=='paint':
+                 faired,reference_faces,faired_normals=reference_body.mesh(faired,faces,faired_normals)
++                faired,reference_faces,faired_normals,strip_stats=shell_geometry.shoulder_strip(reference_body,faired,reference_faces,faired_normals,simple)
+                 faces=reference_faces.tolist()
+                 loop_vertices=np.arange(len(faired))
+             elif role=='contour':
+@@ -687,6 +689,12 @@
+         data.set_sharp_from_angle(angle=math.radians(52))
+         data.normals_split_custom_set(normals)
+         obj=bpy.data.objects.new(group+'__'+role,data);bpy.context.scene.collection.objects.link(obj);exports.append(obj)
++        if group=='body' and role=='paint':
++            shell_stats=shell_geometry.refine(obj,simple)
++            print('JOINED_SHELL',tier,shell_stats,flush=True)
++    paint_shell=next(obj for obj in exports if obj.name=='body__paint')
++    contour_shell=next(obj for obj in exports if obj.name=='body__contour')
++    fitted_contours=shell_geometry.fit_contours(paint_shell,contour_shell)
+     bpy.ops.object.select_all(action='DESELECT')
+     for obj in pieces:obj.hide_set(True);obj.hide_render=True
+     for obj in exports:obj.select_set(True)
+@@ -699,6 +707,9 @@
+         obj.data.calc_loop_triangles();total+=len(obj.data.loop_triangles)
+     statistics.append({'detail':'continuous corner seam replacement','after':total-sum(row.get('after',0) for row in statistics)})
+     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
++    record['tiers'][tier]['joined_shell']=shell_stats
++    record['tiers'][tier]['shoulder_strips']=strip_stats
++    record['tiers'][tier]['fitted_contour_vertices']=fitted_contours
+     print('CHALLENGER_EXPORT',tier,total,len(exports),flush=True)
+     for obj in exports:obj.hide_set(True);obj.hide_render=True;obj.name='ARCHIVE_'+tier+'_'+obj.name
+ for o in original_wheels.values():o.data.calc_loop_triangles()
+--- a/game/tests/bake_challenger_hellcat.gd
++++ b/game/tests/bake_challenger_hellcat.gd
+@@ -6,12 +6,14 @@
+ func _initialize() -> void: run.call_deferred()
+ func run() -> void:
+ 	var source: String = SOURCE
++	var destination: String = DEST
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--source="): source = argument.trim_prefix("--source=").trim_suffix("/")+"/"
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DEST))
++		if argument.begins_with("--dest="): destination = argument.trim_prefix("--dest=").trim_suffix("/")+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(destination))
+ 	var profile: String = FileAccess.get_file_as_string(source+"hood_profile.json")
+ 	assert((JSON.parse_string(profile) as Dictionary).schema == "challenger-hood-profile-1")
+-	var profile_file := FileAccess.open(DEST+"hood_profile.json",FileAccess.WRITE)
++	var profile_file := FileAccess.open(destination+"hood_profile.json",FileAccess.WRITE)
+ 	profile_file.store_string(profile); profile_file.close()
+ 	var result: Dictionary = {"schema":"challenger-hellcat-1","tiers":{}}
+ 	for tier: String in ["full","simple"]:
+@@ -48,11 +50,11 @@
+ 				triangles += (arrays[Mesh.ARRAY_INDEX] as PackedInt32Array).size()/3
+ 				native.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+ 			var file: String = tier+"_"+group+"_"+role+".res"
+-			assert(ResourceSaver.save(native,DEST+file) == OK)
++			assert(ResourceSaver.save(native,destination+file) == OK)
+ 			entries.append({"group":group,"role":role,"mesh":file,"triangles":triangles,"bounds":str(native.get_aabb())})
+ 		result.tiers[tier] = entries
+ 		scene.free()
+-	var output := FileAccess.open(DEST+"manifest.json",FileAccess.WRITE)
++	var output := FileAccess.open(destination+"manifest.json",FileAccess.WRITE)
+ 	output.store_string(JSON.stringify(result,"\t")); output.close()
+ 	var provenance: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(source+"manifest.json"))
+ 	for tier: String in ["full","simple"]:
+@@ -60,7 +62,7 @@
+ 		for entry: Dictionary in result.tiers[tier]: actual += int(entry.triangles)
+ 		assert(actual == int(provenance.tiers[tier].triangles),"Native geometry must match its complete conversion receipt: "+tier)
+ 	provenance.erase("source")
+-	output = FileAccess.open(DEST+"source.json",FileAccess.WRITE)
++	output = FileAccess.open(destination+"source.json",FileAccess.WRITE)
+ 	output.store_string(JSON.stringify(provenance,"\t")); output.close()
+ 	print("CHALLENGER_NATIVE_BAKE ",JSON.stringify(result.tiers.keys()))
+ 	quit()
+--- /dev/null
++++ b/scripts/challenger_shell_geometry.py
+@@ -0,0 +1,271 @@
++"""Offline fairing and reduction of the joined Challenger painted shell.
++
++Work on the complete material batch, after all fitted-panel transformations.
++Coincident panel boundaries share vertices and one geometric tangent field.
++Openings, returns and sharp character edges remain constrained during reduction.
++"""
++import math
++
++import bmesh
++import bpy
++import numpy as np
++from mathutils.kdtree import KDTree
++from challenger_reference_geometry import ReferenceBody, curve
++
++
++def shoulder_strip(reference, points, faces, normals, simple):
++    """Replace the patched character-line band by one chart on each side.
++
++    Clip complete old triangles, keeping their crossings as constrained edge
++    stations. The regular replacement follows the same reference crease and
++    its analytic transverse section, rather than independent component fits.
++    The narrow lower margin stays above the wheel apertures.
++    """
++    from mathutils import Vector
++    from mathutils.geometry import delaunay_2d_cdt
++    from mathutils.bvhtree import BVHTree
++    triangles = np.c_[points, normals].reshape(-1, 3, 6)
++    lower, upper, start, end = -.020, .055, -1.60, 2.075
++    stats = []
++    original_outer = BVHTree.FromPolygons(points.tolist(), np.asarray(faces).tolist(), all_triangles=True)
++
++    def width(y, z, sign):
++        y, z = np.broadcast_arrays(y, z)
++        d = y-reference.crease(z)
++        value = np.zeros_like(y)
++        for offset, weight in [(-.10, 1/16), (-.05, 4/16), (0, 6/16), (.05, 4/16), (.10, 1/16)]:
++            value += weight*reference.width(reference.crease(z+offset)+d, z+offset)
++        blend = _ramp(start, start+.15, z)*(1-_ramp(end-.15, end, z))
++        flat_value, flat_y, flat_z, flat_blend = [a.reshape(-1) for a in [value, y, z, blend]]
++        for i in np.flatnonzero(flat_blend < 1):
++            hit, *_ = original_outer.ray_cast((reference.cx+sign*2, float(flat_y[i]), float(flat_z[i])), (-sign, 0, 0), 4)
++            if hit is not None and sign*(hit.x-reference.cx) > .60:
++                old = sign*(hit.x-reference.cx)
++                flat_value[i] = old+(flat_value[i]-old)*flat_blend[i]
++        return value
++
++    def sample(d, z, sign):
++        y = reference.crease(z)+d
++        x = reference.cx+sign*width(y, z, sign)
++        p = np.stack([x, y, z], axis=-1)
++        e = .000025
++        dy = (width(y+e, z, sign)-width(y-e, z, sign))/(2*e)
++        dz = (width(y, z+e, sign)-width(y, z-e, sign))/(2*e)
++        n = np.stack([np.full_like(y, sign), -dy, -dz], axis=-1)
++        n /= np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-12)
++        return p, n
++
++    for sign in [-1, 1]:
++        remaining = []
++        boundary = []
++        removed = 0
++        for triangle in triangles:
++            z = triangle[:, 2]
++            d = triangle[:, 1]-reference.crease(z)
++            if (np.min((triangle[:, 0]-reference.cx)*sign) < .64
++                    or np.mean(triangle[:, 3])*sign < .15
++                    or d.min() > upper or d.max() < lower
++                    or z.min() > end or z.max() < start):
++                remaining.append(triangle)
++                continue
++            polygon = np.c_[triangle, d, z]
++            for axis, value, greater in [(6, lower, True), (6, upper, False),
++                                         (7, start, True), (7, end, False)]:
++                inside, outside = [], []
++                for i, a in enumerate(polygon):
++                    b = polygon[(i+1) % len(polygon)]
++                    da, db = a[axis]-value, b[axis]-value
++                    ain, bin = (da >= 0, db >= 0) if greater else (da <= 0, db <= 0)
++                    (inside if ain else outside).append(a)
++                    if ain != bin:
++                        v = a+(b-a)*(da/(da-db))
++                        v[:3], v[3:6] = sample(np.array(v[6]), np.array(v[7]), sign)
++                        inside.append(v)
++                        outside.append(v)
++                for i in range(1, len(outside)-1):
++                    remaining.append(np.asarray([outside[0][:6], outside[i][:6], outside[i+1][:6]]))
++                polygon = np.asarray(inside)
++                if len(polygon) < 3:
++                    break
++            if len(polygon) >= 3:
++                removed += 1
++                for p in polygon:
++                    if min(abs(p[6]-lower), abs(p[6]-upper), abs(p[7]-start), abs(p[7]-end)) < 1e-7:
++                        boundary.append(p[6:8])
++        boundary.extend([[lower, start], [upper, start], [upper, end], [lower, end]])
++        boundary = np.unique(np.round(boundary, 9), axis=0)
++        centre = np.array([(lower+upper)*.5, (start+end)*.5])
++        boundary = boundary[np.argsort(np.arctan2((boundary[:, 1]-centre[1])/(end-start),
++                                                  (boundary[:, 0]-centre[0])/(upper-lower)))]
++        samples = boundary.tolist()
++        constraints = [(i, (i+1) % len(boundary)) for i in range(len(boundary))]
++        for d in [-.012, -.006, -.003, -.0015, -.00075, 0, .00075, .0015, .003, .006, .012, .025, .040]:
++            previous = None
++            for z in np.linspace(start, end, 64 if simple else 96):
++                index = len(samples)
++                samples.append([d, float(z)])
++                if previous is not None:
++                    constraints.append((previous, index))
++                previous = index
++        uv, _, new_faces, *_ = delaunay_2d_cdt([Vector(p) for p in samples], constraints, [], 0, 1e-8, False)
++        uv = np.asarray(uv)
++        p, n = sample(uv[:, 0], uv[:, 1], sign)
++        for face in new_faces:
++            ids = np.asarray(face)
++            if np.cross(p[ids[1]]-p[ids[0]], p[ids[2]]-p[ids[0]])@n[ids].mean(0) < 0:
++                ids = ids[::-1]
++            remaining.append(np.c_[p[ids], n[ids]])
++        stats.append({'side': sign, 'replaced_triangles': removed,
++                      'new_triangles': len(new_faces), 'boundary_stations': len(boundary)})
++        triangles = np.asarray(remaining)
++    values = triangles.reshape(-1, 6)
++    return values[:, :3], np.arange(len(values)).reshape(-1, 3), values[:, 3:], stats
++
++
++def fit_contours(paint, contour):
++    """Seat the flush markings on the final reduced shell, not an older patch."""
++    from mathutils.bvhtree import BVHTree
++    paint.data.calc_loop_triangles()
++    bvh = BVHTree.FromPolygons([v.co[:] for v in paint.data.vertices],
++                              [tuple(t.vertices) for t in paint.data.loop_triangles], all_triangles=True)
++    fitted = 0
++    for vertex in contour.data.vertices:
++        p = vertex.co
++        sign = 1 if p.x > 0 else -1
++        hit, normal, *_ = bvh.ray_cast((sign*2, p.y, p.z), (-sign, 0, 0), 4)
++        if hit is not None and sign*hit.x > .60 and abs(hit.x-p.x) < .025:
++            p.x = hit.x+sign*.0018
++            fitted += 1
++    contour.data.update()
++    return fitted
++
++
++def _ramp(a, b, value):
++    t = np.clip((value-a)/(b-a), 0, 1)
++    return t*t*t*(10+t*(-15+6*t))
++
++
++def refine(obj, simple):
++    mesh = obj.data
++    mesh.calc_loop_triangles()
++    before = len(mesh.loop_triangles)
++    # Retain the authored curvature field: the reduced source has small hidden
++    # returns whose face normals are unsuitable as exterior paint tangents.
++    reference = obj.copy()
++    reference.data = mesh.copy()
++    bpy.context.scene.collection.objects.link(reference)
++    reference.hide_set(True)
++    reference.hide_render = True
++    coordinates = np.asarray([mesh.vertices[loop.vertex_index].co[:] for loop in mesh.loops])
++    authored = np.asarray([n.vector[:] for n in mesh.corner_normals])
++    records, mapping = np.unique(np.round(np.c_[coordinates, authored], 7), axis=0, return_inverse=True)
++    tree = KDTree(len(records))
++    for index, point in enumerate(records[:, :3]):
++        tree.insert(point, index)
++    tree.balance()
++    filtered = records[:, 3:].copy()
++    cosine = math.cos(math.radians(18))
++    for index, row in enumerate(records):
++        px, pz, py = row[:3]
++        if py >= 1.04:
++            continue
++        crease = float(curve(np.array(-pz), ReferenceBody.Z, ReferenceBody.Y))
++        if -1.60 <= -pz <= 2.075 and -.02001 <= py-crease <= .05501:
++            continue
++        weight = float(_ramp(.30, .40, py)*(1-_ramp(1.07, 1.15, py)))
++        weight *= max(float(_ramp(.62, .76, abs(px))), float(_ramp(1.90, 2.02, pz)))
++        if weight < 1e-6:
++            continue
++        neighbours = tree.find_range(row[:3], .045)
++        ids = np.asarray([item[1] for item in neighbours])
++        distances = np.asarray([item[2] for item in neighbours])
++        dot = records[ids, 3:]@row[3:]
++        weights = (1-distances/.045)**2*np.clip((dot-cosine)/(1-cosine), 0, 1)**2
++        normal = np.sum(records[ids, 3:]*weights[:, None], axis=0)
++        normal /= max(np.linalg.norm(normal), 1e-12)
++        normal = row[3:]*(1-weight)+normal*weight
++        filtered[index] = normal/max(np.linalg.norm(normal), 1e-12)
++    reference.data.normals_split_custom_set(filtered[mapping].tolist())
++    bm = bmesh.new()
++    bm.from_mesh(mesh)
++    bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=0.000002)
++    bmesh.ops.dissolve_degenerate(bm, edges=list(bm.edges), dist=0.0000001)
++    bm.normal_update()
++    bm.verts.ensure_lookup_table()
++    bm.verts.index_update()
++    positions = np.asarray([v.co[:] for v in bm.verts])
++    # Blender axes here are x, -longitudinal, height.
++    x, z, y = positions[:, 0], -positions[:, 1], positions[:, 2]
++    amount = _ramp(.30, .40, y)*(1-_ramp(1.07, 1.15, y))
++    amount *= np.maximum(_ramp(.62, .76, abs(x)), 1-_ramp(-2.02, -1.90, z))
++    amount *= _ramp(-1.70, -1.60, z)
++    constrained = set()
++    for edge in bm.edges:
++        if not edge.is_manifold or edge.calc_face_angle(0) > math.radians(38):
++            constrained.update(v.index for v in edge.verts)
++    crease = curve(z, ReferenceBody.Z, ReferenceBody.Y)
++    analytic = (z >= -1.60001)&(z <= 2.07501)&(y-crease >= -.02001)&(y-crease <= .05501)
++    detail = analytic&((abs(y-crease) <= .00301)|(abs(y-crease+.020) < .00001)|
++                       (abs(y-crease-.055) < .00001)|(z < -1.59999)|(z > 2.07499))
++    constrained.update(np.flatnonzero(detail).tolist())
++    constrained.update(np.flatnonzero(y >= 1.04).tolist())
++    for axis in range(3):
++        constrained.update(np.flatnonzero((positions[:, axis] == positions[:, axis].min())|
++                                          (positions[:, axis] == positions[:, axis].max())).tolist())
++    amount[list(constrained)] = 0
++    amount[analytic] = 0
++    edges = np.asarray([(e.verts[0].index, e.verts[1].index) for e in bm.edges])
++    a = np.r_[edges[:, 0], edges[:, 1]]
++    b = np.r_[edges[:, 1], edges[:, 0]]
++    degree = np.bincount(a, minlength=len(positions))
++    normals = np.asarray([v.normal[:] for v in bm.verts])
++    original = positions.copy()
++    # Paired Taubin steps suppress small waves without a one-way shrink. Only
++    # the normal component moves: irregular old triangle spacing cannot slide
++    # the arch outlines, seams or fittings along the panel.
++    for _ in range(4):
++        for step in [.45, -.47]:
++            mean = np.zeros_like(positions)
++            np.add.at(mean, a, positions[b])
++            mean /= np.maximum(degree[:, None], 1)
++            distance = np.sum((mean-positions)*normals, axis=1)
++            positions += normals*(distance*amount*step)[:, None]
++            delta = positions-original
++            length = np.linalg.norm(delta, axis=1)
++            positions = original+delta*np.minimum(1, .001/np.maximum(length, 1e-12))[:, None]
++    for vertex, point in zip(bm.verts, positions):
++        vertex.co = point
++    bm.normal_update()
++    bm.to_mesh(mesh)
++    bm.free()
++    for polygon in mesh.polygons:
++        polygon.use_smooth = True
++    mesh.set_sharp_from_angle(angle=math.radians(52))
++    mesh.update()
++    bpy.ops.object.select_all(action='DESELECT')
++    obj.hide_set(False)
++    obj.select_set(True)
++    bpy.context.view_layer.objects.active = obj
++    group = obj.vertex_groups.new(name='PreserveShellBoundaries')
++    group.add(list(range(len(mesh.vertices))), 1.0, 'REPLACE')
++    if constrained:
++        group.add(sorted(constrained), 0.0, 'REPLACE')
++    reduction = obj.modifiers.new('Joined shell reduction', 'DECIMATE')
++    reduction.ratio = .60 if simple else .63
++    reduction.use_collapse_triangulate = True
++    reduction.vertex_group = group.name
++    reduction.vertex_group_factor = 1000
++    bpy.ops.object.modifier_apply(modifier=reduction.name)
++    transfer = obj.modifiers.new('Joined shell tangents', 'DATA_TRANSFER')
++    transfer.object = reference
++    transfer.use_loop_data = True
++    transfer.data_types_loops = {'CUSTOM_NORMAL'}
++    transfer.loop_mapping = 'POLYINTERP_NEAREST'
++    bpy.ops.object.datalayout_transfer(modifier=transfer.name)
++    bpy.ops.object.modifier_apply(modifier=transfer.name)
++    bpy.data.objects.remove(reference, do_unlink=True)
++    obj.data.calc_loop_triangles()
++    obj.select_set(False)
++    return {'before_triangles': before, 'after_triangles': len(obj.data.loop_triangles),
++            'welded_vertices': len(original), 'constrained_vertices': len(constrained),
++            'maximum_fairing_metres': float(np.max(np.linalg.norm(positions-original, axis=1)))}
+--- /dev/null
++++ b/docs/CHALLENGER_SURFACE_SIMPLIFICATION_2026_11_14.md
+@@ -0,0 +1,167 @@
++# Challenger sides and nose simplified and faired (2026-11-14)
++
++The painted shell contained duplicate vertices from triangle-by-triangle export,
++plus separate local surface corrections along the wing, door and rear quarter.
++Those corrections retained small changes in the reflected shoulder line. The
++paint was already one material batch; reducing its duplicate storage and internal
++triangles offers a larger loading benefit than merging material nodes.
++
++CSS01 replaces the narrow patched shoulder band with one constrained chart per
++side and a common longitudinally faired profile. CSS02 welds coincident shell
++vertices and reduces the joined geometry while retaining the crease, apertures,
++roof and upper pillars. CSS03 filters exterior tangents within their original
++curvature domain and seats the flush outlines on the final reduced paint.
++CSS04 refreshes the prepared game assets and pictures and verifies the native
++result, cosmetic modules, physics and actual Garage/race path.
++
++## Measured result
++
++| Measurement | Before | After | Reduction |
++|---|---:|---:|---:|
++| Reduced-detail assembled car | 49,968 triangles | 45,150 triangles | 9.64% |
++| Full-detail assembled car | 84,924 triangles | 77,204 triangles | 9.09% |
++| Reduced-detail painted shell | 16,890 triangles | 12,072 triangles | 28.53% |
++| Full-detail painted shell | 25,751 triangles | 18,031 triangles | 29.98% |
++| Reduced-detail paint raw buffers | 1,722,780 bytes | 306,384 bytes | 82.22% |
++| Full-detail paint raw buffers | 2,781,108 bytes | 449,146 bytes | 83.85% |
++| Reduced-detail paint native file | 1,723,424 bytes | 307,028 bytes | 82.18% |
++| Full-detail paint native file | 2,781,752 bytes | 449,792 bytes | 83.83% |
++
++The paint remains one surface per quality tier; the conversion retains its 22
++material/articulation batches. These measurements describe mesh streams and
++native files, rather than process RAM or complete race-loading time. The smaller
++indexed payload reduces the car data that must be read and uploaded. No device
++loading-time, FPS, thermal or AAA-quality claim is made.
++
++Independent native sections measure **24.75% less aggregate reflection-normal
++jitter** along the sampled shoulder traces. Maximum sampled surface displacement
++is 6.65 mm; the additional local vertex fairing is limited to 1 mm. Complete
++shoulder coverage, exterior extrema within 10 micrometres, every original roof
++and upper-pillar vertex, and exact bonnet positions/topology pass. The sharp
++reference crease, original nose taper, rounded front corners and 14 cm lead
++remain. All eight car configurations and the runtime Challenger model source
++are byte-exact against task start; the measured handling tune remains 198 km/h.
++
++Current native comparisons:
++
++- [Original side](evidence/challenger-surface-simplification-2026-11-14/garage-before/gl_compatibility/white-side.png)
++  and [simplified side](evidence/challenger-surface-simplification-2026-11-14/garage-final/gl_compatibility/white-side.png).
++- [Original front quarter](evidence/challenger-surface-simplification-2026-11-14/garage-before/gl_compatibility/red-reference.png)
++  and [simplified front quarter](evidence/challenger-surface-simplification-2026-11-14/garage-final/gl_compatibility/red-reference.png).
++- [Current Vulkan front quarter](evidence/challenger-surface-simplification-2026-11-14/garage-final/mobile/white-opposite.png).
++
++## Changes and publication
++
++`scripts/challenger_shell_geometry.py` performs offline chart replacement,
++feature-constrained reduction, curvature-aware normal filtering and outline
++fitting. `scripts/prepare_challenger.py` constructs the common shoulder before
++the existing shared nose transforms and reduces the joined shell afterward. It
++records the resulting counts in each tier's conversion provenance.
++`game/tests/bake_challenger_hellcat.gd` accepts an optional private destination.
++The default bake destination and runtime construction API remain compatible.
++
++The source-fenced Blender conversion completes both tiers using the retained
++measured CC-BY source, with its original attribution and license unchanged.
++Private native candidates are compared before publication. The accepted write
++contains only the two paint resources, two contour resources and two provenance
++manifests. **Forty other native mesh resources and the bonnet profile remain
++byte-exact.** Their decoded geometry also passes 120 independent comparisons.
++No handling, camera or other vehicle model source was authored by this pass.
++
++## Verification
++
++Pinned Godot 4.7.2 and Blender 4.5.15 run with private test profiles and an empty
++backend URL. Assertions in the existing project fixtures are unchanged.
++
++| Check | Actual result |
++|---|---:|
++| Native fairing, coverage and roof controls | 47 / 0 failures |
++| Existing reference crease and optical carrier | 1,848 / 0 |
++| Existing native nose-plan sections | 3,912 / 0 |
++| Rounded corner retention | 20 / 0 |
++| Measured bonnet and fit | 252 / 0 |
++| Every fitted cosmetic option | 316 / 0 |
++| Prepared base/module equivalence | 1,438 / 0 |
++| Prepared physics/replay controls | 3,677 / 0 |
++| Washing | 1,655 / 0 |
++| Production script parsing | 562 / 0 |
++| Prepared opacity, contacts and budgets, each desktop renderer | 30 / 0 |
++| Actual App Garage/race, each desktop renderer | 13 / 0 |
++| Native showroom review | Eight final views per renderer |
++| Challenger livery pictures | 49 actual captures |
++| Imported Challenger pictures | 53 source MD5s current; zero editor diagnostics |
++| Final complete prepared-asset preflight | 551 resources / 2,267 checks / 0 failures |
++| Final catalogue provenance | Six exact native images / 168 current source hashes |
++
++The final Vulkan App fixture passes thirteen assertions and emits two ObjectDB
++instance warnings and one resource-in-use diagnostic at shutdown. The preceding
++Vulkan run exits without those diagnostics. Both command receipts are retained.
++
++The first scoped prepared refresh passes 84 resources / 349 checks and its
++447-input source fence. A later full-project check catches 551 source-receipt
++findings after refreshing livery previews: the existing provenance tree treats
++those pictures as shared inputs. Runtime keys and geometry checks still pass.
++All dependent prepared scenes and catalogue bindings are therefore rebuilt
++after the final livery outputs, without changing the dependency rules or
++restamping old scenes. The final 21,973-input source fence is stable, all 551
++resources pass their 2,267 checks, and all six catalogue bindings validate.
++The other vehicles' model sources and native meshes were preserved; their
++dependent prepared scenes were regenerated to carry current provenance.
++Final handoff receipts are recorded alongside the report.
++
++## Retained diagnostics and limits
++
++Early private drafts that recomputed paint tangents from face normals, extended
++the shoulder chart through the nose termination, or reduced the roof were
++rejected after native comparison. The final algorithm preserves the dense
++authored curvature field, fixes the roof vertices and leaves the nose termination
++in its existing geometry domain. An early width diagnostic compared fairing to
++the old unfiltered field; its unsuccessful targets are retained as diagnostics.
++The final acceptance measures native coverage, bounded shape change, retained
++features and reflection variation. Existing nose/crease/bonnet assertions retain
++their original bounds.
++
++One fitted-part run reports 316 passing assertions but is rejected by its source
++fence because it overlapped the build-identity refresh. Its stable repeat passes.
++The native comparison initially exposes the changed marker projection; restoring
++the original marker-fitting domain corrects it and all 120 controls pass. A first
++fixture also assumed every old native resource had a UID; existing resources
++without one are now handled explicitly. Original commands and findings remain
++available in the evidence folder.
++
++Owner appearance acceptance and physical-device loading measurements remain.
++No device query/test, APK/export, backend request, deployment, owner-save/process
++change or main-index staging was performed. The shared index changed concurrently
++and was preserved. Temporary output remains disposable under the owner retention
++policy; concise receipts and the relevant native comparisons are retained.
++
++Automatic approval review rejected the path-checked removal of redundant draft
++PNG captures, reporting only "blocked by policy". Those captures remain in the
++evidence folder as a documented cleanup exception.
++
++The active build pin is removed and the prescribed retention cleanup is applied.
++Its receipt reports 22.70 GiB remaining, with no eligible entries; recent,
++protected or locked output keeps the total above the 20 GiB target. No disposable
++profiles, caches or complete project copies were moved into permanent evidence.
++
++## Reproduction and evidence
++
++```powershell
++python docs/evidence/challenger-surface-simplification-2026-11-14/run_preparation.py
++python docs/evidence/challenger-surface-simplification-2026-11-14/refresh_all_prepared.py
++python scripts/check_garage_previews.py
++```
++
++These commands use the accepted native assets already in the checkout. Private
++conversion and publication are separate guarded stages. After retention removes
++the disposable section data, run `export_shell.gd` through `run_check.py` with
++`--before` and `--candidate` to reconstruct the two native section exports before
++running `native_acceptance.py`.
++
++The evidence folder contains the source and publication fences, actual command
++receipts, mesh measurements, native sections, rejection diagnostics and a checked
++source-only patch. The [28-file checkpoint](evidence/challenger-surface-simplification-2026-11-14/source-checkpoint.json)
++applies and reverses byte-exactly, passes whitespace checks and leaves the shared
++index unchanged during verification. Its AGENTS baseline preserves concurrent
++entries. Generated native resources and pictures are recorded separately from
++that source checkpoint.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- CHALLENGER-SURFACE-SIMPLIFICATION-20261114 -->
++## Challenger sides and nose simplified with smoother shared paint (2026-11-14)
++CSS01-CSS04: Common shoulder charts, joined-vertex reduction, curvature-aware tangents and final outline fitting replace patchwise shoulder waves and duplicate paint storage. Reduced49968to45150tri(-9.64%), full84924to77204(-9.09%); painted-shell raw buffers1722780to306384bytes(-82.22%)/2781108to449146(-83.85%). Native47/0 measures24.75% less aggregate shoulder-normal jitter, exact roof/upper-pillar vertices and bonnet; corner20/0, reference1848/0, plan3912/0, bonnet252/0, fitted316/0, modules1438/0, physics3677/0, wash1655/0 and parser562/0 pass. Prepared opacity30/0 and actual App13/0 each desktop renderer pass. Final Vulkan App teardown2-object/1-resource diagnostics retained. Forty other native mesh resources, bonnet profile/eight configurations/runtime Challenger source exact. Livery refresh invalidates shared provenance; full dependent rebuild closes21973-input fence and551-resource2267/0, six-picture168-source checks. Rejected normal/nose/roof drafts, width diagnostics and overlap/UID/marker findings retained; no existing assertion weakened. No device query/test, APK/export, backend request/deployment, owner-save/process change or main-index staging. Draft-capture removal blocked by automatic approval review. [Changes, native comparisons, commands and limits](docs/CHALLENGER_SURFACE_SIMPLIFICATION_2026_11_14.md).
++<!-- /CHALLENGER-SURFACE-SIMPLIFICATION-20261114 -->
++
+ <!-- CAR-TRIANGLE-REVIEW-20261114 -->
+ ## Car triangle/performance/appearance tradeoffs reviewed (2026-11-14)
+ CTR01-CTR03: review only; six current reduced stock masters Rally26496/Kart31612/Forklift38136/Volt34690/Hover22548/Challenger49968. Three disposable candidates, close/rear/distant native views and two earlier LOD biases pass256/0 per desktop renderer;216 image pairs include36 pixel-exact restoration controls. Medium/coarse savings vary0-22.5%/2-40.7%; current LODs overlap master opportunities. Earlier-bias distant studio proxy saves22.2% Rally/36.4% Forklift viewport primitives with unchanged draws; no FPS/device/race-performance claim. Final30-case inventory passes, all12 production base/four-per-fit module hits; transient Volt fallback closes after concurrent publication. Concurrent6/52 Electric kit changes and generated identity/version refresh recorded; no model/tune/quality-setting authoring, index write, device query/export, backend request or deployment. [Counts, comparisons, evidence and limits](docs/CAR_TRIANGLE_TRADEOFF_REVIEW_2026_11_14.md).
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/agents-entry.txt
+@@ -0,0 +1,4 @@
++<!-- CHALLENGER-SURFACE-SIMPLIFICATION-20261114 -->
++## Challenger sides and nose simplified with smoother shared paint (2026-11-14)
++CSS01-CSS04: Common shoulder charts, joined-vertex reduction, curvature-aware tangents and final outline fitting replace patchwise shoulder waves and duplicate paint storage. Reduced49968to45150tri(-9.64%), full84924to77204(-9.09%); painted-shell raw buffers1722780to306384bytes(-82.22%)/2781108to449146(-83.85%). Native47/0 measures24.75% less aggregate shoulder-normal jitter, exact roof/upper-pillar vertices and bonnet; corner20/0, reference1848/0, plan3912/0, bonnet252/0, fitted316/0, modules1438/0, physics3677/0, wash1655/0 and parser562/0 pass. Prepared opacity30/0 and actual App13/0 each desktop renderer pass. Final Vulkan App teardown2-object/1-resource diagnostics retained. Forty other native mesh resources, bonnet profile/eight configurations/runtime Challenger source exact. Livery refresh invalidates shared provenance; full dependent rebuild closes21973-input fence and551-resource2267/0, six-picture168-source checks. Rejected normal/nose/roof drafts, width diagnostics and overlap/UID/marker findings retained; no existing assertion weakened. No device query/test, APK/export, backend request/deployment, owner-save/process change or main-index staging. Draft-capture removal blocked by automatic approval review. [Changes, native comparisons, commands and limits](docs/CHALLENGER_SURFACE_SIMPLIFICATION_2026_11_14.md).
++<!-- /CHALLENGER-SURFACE-SIMPLIFICATION-20261114 -->
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/check_corner_retention.py
+@@ -0,0 +1,31 @@
++"""Keep the owner's rounded, downturned front corners after simplification."""
++from pathlib import Path
++import json,sys
++import numpy as np
++
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++BUILD=ROOT/'build/challenger-surface-simplification-2026-11-14'
++profiles=json.loads((BUILD/'corner-sections.json').read_text())
++checks=0;findings=[];rows=[]
++def check(ok,label):
++    global checks
++    checks+=1
++    if not ok:findings.append(label)
++for row in profiles:
++    if row['z']> -2.14:continue
++    a=np.asarray([p['angle'] for p in row['samples']]);y=np.asarray([p['y'] for p in row['samples']])
++    check(len(a)==241,f"{row['stage']}/{row['tier']}/{row['side']}: complete front-corner normal section")
++    low,high=np.median(a[:20]),np.median(a[-20:]);contrast=high-low
++    begin=np.flatnonzero(a>=low+contrast*.1);end=np.flatnonzero(a>=low+contrast*.9)
++    width=float(y[end[0]]-y[begin[0]]) if len(begin) and len(end) else 0
++    check(width>=.008,f"{row['stage']}/{row['tier']}/{row['side']}: at least 8 mm corner roll retained")
++    rows.append({'stage':row['stage'],'tier':row['tier'],'side':row['side'],'transition_mm':width*1000,'largest_half_mm_normal_step_degrees':float(np.max(np.diff(a)))})
++for row in rows:
++    if row['stage']!='candidate':continue
++    before=next(r for r in rows if r['stage']=='before' and r['tier']==row['tier'] and r['side']==row['side'])
++    check(row['largest_half_mm_normal_step_degrees']<=before['largest_half_mm_normal_step_degrees']+.25,
++          f"{row['tier']}/{row['side']}: no sharper front-corner reflection step")
++(OUT/'corner-retention.json').write_text(json.dumps({'checks':checks,'failures':len(findings),'findings':findings,'sections':rows},indent=2))
++print('CORNER_RETENTION:',checks,'checks,',len(findings),'failures')
++print('\n'.join(findings))
++sys.exit(1 if findings else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/check_plan.py
+@@ -0,0 +1,52 @@
++"""Native plan sections reject the front flare independently of the taper code."""
++from pathlib import Path
++import json
++import sys
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++before = '--before' in sys.argv
++data = json.loads((ROOT / ('build/challenger-surface-simplification-2026-11-14/native-plan'+('-before' if before else '-candidate' if '--candidate' in sys.argv else '')+'.json')).read_text())
++checks = 0
++failures = []
++metrics = []
++def check(ok, label):
++    global checks
++    checks += 1
++    if not ok: failures.append(label)
++
++for tier, parts in data.items():
++    tri = np.concatenate([np.asarray(parts[role]).reshape(-1,3,3) for role in ['body_paint','hood_paint']])
++    for side in [-1,1]:
++        widths = []
++        depths = np.linspace(1.50,2.15,326)
++        for depth in depths:
++            # Include vertices exactly on a section plane as well as crossing
++            # edges, so an authored mesh row cannot hide its outermost point.
++            sections = tri[np.abs(tri[:,:,2]+depth)<1e-7].tolist()
++            for ia,ib in [(0,1),(1,2),(2,0)]:
++                a,b = tri[:,ia],tri[:,ib]
++                selected = (a[:,2]+depth)*(b[:,2]+depth)<0
++                a,b = a[selected],b[selected]
++                q = a+(b-a)*((-depth-a[:,2])/(b[:,2]-a[:,2]))[:,None]
++                sections.extend(q[(q[:,1]>.35)&(q[:,1]<1.05)].tolist())
++            sections = np.asarray(sections)
++            check(len(sections)>0,f'{tier}/{side} continuous nose section {depth}')
++            widths.append(float(np.max(side*(sections[:,0]-.005052088637516661))))
++        widths = np.asarray(widths)
++        outward = widths-np.minimum.accumulate(widths)
++        for depth, amount in zip(depths,outward):
++            check(amount<.002,f'{tier}/{side} no forward flare at {depth}: {amount} m')
++        for amount in np.diff(widths):
++            check(amount<.00075,f'{tier}/{side} no abrupt outward step: {amount} m')
++        check(widths[0]-widths[-1]>.025,f'{tier}/{side} nose continues inward from front wing')
++        metrics.append({'tier':tier,'side':side,'maximum_forward_flare_metres':float(outward.max()),
++                        'largest_outward_step_metres':float(np.diff(widths).max()),
++                        'wing_to_corner_taper_metres':float(widths[0]-widths[-1]),
++                        'depths':depths.tolist(),'half_widths':widths.tolist()})
++receipt={'checks':checks,'failures':len(failures),'findings':failures,'metrics':metrics}
++(OUT/('before-plan-check.json' if before else 'candidate-plan-check.json' if '--candidate' in sys.argv else 'after-plan-check.json')).write_text(json.dumps(receipt,indent=2))
++print('CHALLENGER_PLAN:',checks,'checks,',len(failures),'failures')
++print(json.dumps([{k:v for k,v in row.items() if k not in ['depths','half_widths']} for row in metrics]))
++sys.exit(1 if failures else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/check_shell.py
+@@ -0,0 +1,88 @@
++"""Independent sections of the native, encoded shoulder geometry."""
++from pathlib import Path
++import json, sys
++import numpy as np
++
++ROOT=Path(__file__).resolve().parents[3]
++OUT=Path(__file__).resolve().parent
++BUILD=ROOT/'build/challenger-surface-simplification-2026-11-14'
++sys.path.insert(0,str(ROOT/'scripts'))
++from challenger_panel_geometry import SurfaceGrid
++from challenger_reference_geometry import ReferenceBody, nose_distance, nose_plan_points, nose_corner_field
++
++profile=json.loads((BUILD/'converted/reference_profile.json').read_text())
++class Side:
++    centre_x=profile['centre_x']
++    grid=SurfaceGrid(profile['y'],profile['z'],profile['widths'])
++    def width(self,y,z):return self.grid.at(y,z)
++source=np.load(ROOT/'art_sources/challenger_hellcat_v1/source-panels.npz')
++labels=np.load(ROOT/'art_sources/challenger_hellcat_v1/components.npz')['labels']
++points,tri=source['co'],source['tri']
++hood_faces=tri[labels[tri[:,0]]==1572]
++p=points[hood_faces];n=np.cross(p[:,1]-p[:,0],p[:,2]-p[:,0])
++hood_faces=hood_faces[n[:,1]>.3*np.linalg.norm(n,axis=1)]
++edges=np.sort(np.concatenate([hood_faces[:,[0,1]],hood_faces[:,[1,2]],hood_faces[:,[2,0]]]),axis=1)
++edges,counts=np.unique(edges,axis=0,return_counts=True)
++reference=ReferenceBody(Side(),points[np.unique(edges[counts==1])])
++
++def section(tri,normals,y,z,sign):
++    a=tri[:,0];u=tri[:,1]-a;v=tri[:,2]-a
++    det=u[:,1]*v[:,2]-u[:,2]*v[:,1]
++    keep=(abs(det)>1e-13)&(tri[:,:,1].min(1)<=y)&(tri[:,:,1].max(1)>=y)&(tri[:,:,2].min(1)<=z)&(tri[:,:,2].max(1)>=z)
++    a,u,v,det,ns=a[keep],u[keep],v[keep],det[keep],normals[keep]
++    s=((y-a[:,1])*v[:,2]-(z-a[:,2])*v[:,1])/det
++    t=(u[:,1]*(z-a[:,2])-u[:,2]*(y-a[:,1]))/det
++    ids=np.flatnonzero((s>=-1e-6)&(t>=-1e-6)&(s+t<=1+1e-6))
++    if not len(ids):return None
++    x=a[:,0]+u[:,0]*s+v[:,0]*t
++    i=ids[np.argmax(x[ids]*sign)]
++    normal=ns[i,0]*(1-s[i]-t[i])+ns[i,1]*s[i]+ns[i,2]*t[i]
++    return float(x[i]),normal/np.linalg.norm(normal)
++
++stages={stage:json.loads((BUILD/('native-plan-'+stage+'.json')).read_text()) for stage in ['before','candidate']}
++checks=0;findings=[];rows=[]
++def check(ok,label):
++    global checks
++    checks+=1
++    if not ok:findings.append(label)
++
++for tier in ['simple','full']:
++    old=np.asarray(stages['before'][tier]['body_paint']).reshape(-1,3,3)
++    new=np.asarray(stages['candidate'][tier]['body_paint']).reshape(-1,3,3)
++    check(len(new)<.70*len(old),tier+' painted shell loses at least 30% of triangles')
++    check(np.max(abs(old.min((0,1))-new.min((0,1))))<.00001,tier+' minimum silhouette extents retained')
++    check(np.max(abs(old.max((0,1))-new.max((0,1))))<.00001,tier+' maximum silhouette extents retained')
++    for sign in [-1,1]:
++        for offset in [-.010,.012,.035]:
++            z=np.linspace(-1.65,1.70,336)
++            y=reference.crease(z)+offset
++            x=reference.cx+sign*reference.width(y,z)
++            guide=np.c_[x,y,z]
++            guide[:,2]=-nose_distance(-guide[:,2],guide[:,0])[0]
++            guide=nose_corner_field(nose_plan_points(guide))[0]
++            measurements={}
++            for stage in ['before','candidate']:
++                data=stages[stage][tier]
++                tris=np.asarray(data['body_paint']).reshape(-1,3,3)
++                normals=np.asarray(data['body_paint_normals']).reshape(-1,3,3)
++                samples=[section(tris,normals,float(p[1]),float(p[2]),sign) for p in guide]
++                missing=sum(p is None for p in samples)
++                check(missing==0,f'{tier}/{sign}/{offset}/{stage}: shoulder coverage, missing {missing}')
++                if missing:continue
++                residual=np.asarray([p[0] for p in samples])-guide[:,0]
++                ns=np.asarray([p[1] for p in samples])
++                measurements[stage]={'rms_width_error_mm':float(np.sqrt(np.mean(residual**2))*1000),
++                                     'max_width_error_mm':float(np.max(abs(residual))*1000),
++                                     'normal_second_difference_rms':float(np.sqrt(np.mean(np.diff(ns,n=2,axis=0)**2)))}
++            if len(measurements)==2:
++                a,b=measurements['before'],measurements['candidate']
++                check(b['rms_width_error_mm']<a['rms_width_error_mm']*.65,
++                      f'{tier}/{sign}/{offset}: common shoulder profile error falls by at least 35%')
++                check(b['max_width_error_mm']<3.0,f'{tier}/{sign}/{offset}: continuous shoulder within 3 mm of intended profile')
++            rows.append({'tier':tier,'side':sign,'offset':offset,'measurements':measurements})
++    check(stages['before'][tier]['hood_paint']==stages['candidate'][tier]['hood_paint'],tier+' bonnet geometry exact')
++receipt={'checks':checks,'failures':len(findings),'findings':findings,'sections':rows}
++(OUT/'native-shell-check.json').write_text(json.dumps(receipt,indent=2))
++print('NATIVE_SHELL:',checks,'checks,',len(findings),'failures')
++print('\n'.join(findings))
++sys.exit(1 if findings else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/checkpoint.py
+@@ -0,0 +1,49 @@
++"""Reviewable source-only checkpoint; no writes to the shared Git index."""
++from pathlib import Path
++import difflib,hashlib,json,subprocess
++
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++BUILD=ROOT/'build/challenger-surface-simplification-2026-11-14'
++FILES=['scripts/prepare_challenger.py','game/tests/bake_challenger_hellcat.gd',
++       'scripts/challenger_shell_geometry.py','docs/CHALLENGER_SURFACE_SIMPLIFICATION_2026_11_14.md','AGENTS.md']
++FILES += sorted(p.relative_to(ROOT).as_posix() for p in OUT.iterdir()
++                if p.is_file() and (p.suffix in ['.py','.gd','.uid'] or p.name=='agents-entry.txt'))
++sha=lambda b:hashlib.sha256(b).hexdigest()
++index_before=sha((ROOT/'.git/index').read_bytes())
++before={};after={};patch=''
++for name in FILES:
++    after[name]=(ROOT/name).read_bytes()
++    baseline=OUT/'before'/name
++    before[name]=baseline.read_bytes() if baseline.exists() else None
++    if name=='AGENTS.md':
++        block=(OUT/'agents-entry.txt').read_text().rstrip('\n').encode()+b'\n\n'
++        assert after[name].count(block)==1
++        before[name]=after[name].replace(block,b'',1)
++    patch+=''.join(difflib.unified_diff((before[name] or b'').decode().splitlines(True),
++                                      after[name].decode().splitlines(True),
++                                      'a/'+name if before[name] is not None else '/dev/null','b/'+name))
++patch_path=OUT/'source-only.patch';patch_path.write_bytes(patch.encode())
++check=BUILD/'source-checkpoint';check.mkdir(exist_ok=True)
++assert check.resolve().is_relative_to(BUILD.resolve())
++for name in FILES:
++    p=check/name;p.parent.mkdir(parents=True,exist_ok=True)
++    if before[name] is not None:p.write_bytes(before[name])
++    elif p.exists():p.unlink()
++def run(*args):
++    result=subprocess.run(['git','-C',str(check),*args],capture_output=True,text=True)
++    if result.returncode:raise RuntimeError(result.stdout+result.stderr)
++run('init','--quiet')
++run('config','core.autocrlf','false')
++run('config','core.whitespace','blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol')
++run('apply','--whitespace=error',str(patch_path))
++assert all((check/n).read_bytes()==after[n] for n in FILES)
++run('apply','--reverse','--whitespace=error',str(patch_path))
++assert all((check/n).read_bytes()==before[n] if before[n] is not None else not (check/n).exists() for n in FILES)
++index_after=sha((ROOT/'.git/index').read_bytes())
++receipt={'forward_byte_exact':True,'reverse_byte_exact':True,'whitespace_clean':True,
++         'main_index_written':False,'index_unchanged_during_checkpoint':index_before==index_after,
++         'index_before':index_before,'index_after':index_after,'patch_sha256':sha(patch_path.read_bytes()),
++         'agents_baseline':'Current shared AGENTS with only this task block removed; concurrent entries retained.',
++         'files':{n:{'before_sha256':sha(before[n]) if before[n] is not None else None,'sha256':sha(after[n])} for n in FILES}}
++(OUT/'source-checkpoint.json').write_text(json.dumps(receipt,indent=2))
++print('SOURCE_CHECKPOINT:',len(FILES),'files; byte-exact forward/reverse; whitespace clean; shared index unchanged',index_before==index_after)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/compare_native.gd
+@@ -0,0 +1,28 @@
++extends SceneTree
++func _initialize() -> void:
++	var checks: int = 0
++	var differences: Array[String] = []
++	var candidate: String = "res://../build/challenger-surface-simplification-2026-11-14/native/"
++	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(SuperRallyModel.ROOT+"manifest.json"))
++	for tier: String in ["full","simple"]:
++		for entry: Dictionary in manifest.tiers[tier]:
++			var name: String = str(entry.mesh)
++			var live_path: String = SuperRallyModel.ROOT+name
++			var private_path: String = candidate+name
++			var uid: int = ResourceLoader.get_resource_uid(live_path)
++			if uid != ResourceUID.INVALID_ID: assert(ResourceSaver.set_uid(private_path,uid) == OK)
++			if name.ends_with("_body_paint.res") or name.ends_with("_body_contour.res"): continue
++			var a: Mesh = load(live_path)
++			var b: Mesh = load(private_path)
++			checks += 1
++			if a.get_aabb() != b.get_aabb(): differences.append(name+" bounds")
++			checks += 1
++			if a.get_surface_count() != b.get_surface_count(): differences.append(name+" surface count")
++			for surface: int in range(a.get_surface_count()):
++				checks += 1
++				if a.surface_get_arrays(surface) != b.surface_get_arrays(surface): differences.append(name+" arrays "+str(surface))
++	var file := FileAccess.open("res://../docs/evidence/challenger-surface-simplification-2026-11-14/native-comparison.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":differences.size(),"findings":differences,"valid_live_uids_preserved":true},"\t"));file.close()
++	print("NATIVE_UNCHANGED_PARTS: ",checks," checks, ",differences.size()," failures")
++	for finding: String in differences: print(finding)
++	quit(0 if differences.is_empty() else 1)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/export_shell.gd
+@@ -0,0 +1,29 @@
++extends SceneTree
++func _initialize() -> void:
++	var result: Dictionary = {}
++	var before: bool="--before" in OS.get_cmdline_user_args()
++	var candidate: bool="--candidate" in OS.get_cmdline_user_args()
++	var base: String="res://../docs/evidence/challenger-surface-simplification-2026-11-14/before/game/assets/vehicles/challenger_hellcat_v1/" if before else SuperRallyModel.ROOT
++	if candidate:base="res://../build/challenger-surface-simplification-2026-11-14/native/"
++	for tier: String in ["simple","full"]:
++		var parts: Dictionary = {}
++		for role: String in ["body_paint","hood_paint"]:
++			var mesh_path: String = base+tier+"_"+role+".res"
++			if not FileAccess.file_exists(mesh_path): mesh_path = SuperRallyModel.ROOT+tier+"_"+role+".res"
++			var mesh: Mesh = ResourceLoader.load(mesh_path,"",ResourceLoader.CACHE_MODE_IGNORE)
++			var values: Array = []
++			for v: Vector3 in mesh.get_faces():values.append([v.x,v.y,v.z])
++			parts[role] = values
++			if role=="body_paint":
++				var normals: Array=[]
++				for surface: int in range(mesh.get_surface_count()):
++					var data: Array=mesh.surface_get_arrays(surface)
++					var vertex_normals: PackedVector3Array=data[Mesh.ARRAY_NORMAL]
++					for index: int in data[Mesh.ARRAY_INDEX]:
++						var n: Vector3=vertex_normals[index];normals.append([n.x,n.y,n.z])
++				parts[role+"_normals"]=normals
++		result[tier] = parts
++	var path: String = "res://../build/challenger-surface-simplification-2026-11-14/native-plan"+("-before" if before else "-candidate" if candidate else "")+".json"
++	var f := FileAccess.open(path,FileAccess.WRITE);f.store_string(JSON.stringify(result));f.close()
++	print("NATIVE_PLAN_EXPORT: both native paint tiers")
++	quit()
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/garage_detail.gd
+@@ -0,0 +1,61 @@
++extends SceneTree
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	root.size = Vector2i(1440,900)
++	for tier: String in ["simple", "full"]:
++		var prefix: String = "res://../build/challenger-surface-simplification-2026-11-14/native/"
++		if "--candidate" in OS.get_cmdline_user_args():
++			SuperRallyModel.assets[SuperRallyModel.ROOT+tier+"_body_paint.res"] = load(prefix+tier+"_body_paint.res")
++			SuperRallyModel.assets[SuperRallyModel.ROOT+tier+"_body_contour.res"] = load(prefix+tier+"_body_contour.res")
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	if "--before" in OS.get_cmdline_user_args():
++		var baseline: String = "res://../docs/evidence/challenger-surface-simplification-2026-11-14/before/"
++		var manifest: Dictionary = (load(SuperRallyModel.ROOT+"manifest.json") as JSON).data
++		for tier: String in ["simple","full"]:
++			for item: Dictionary in manifest.tiers[tier]:
++				var path: String = baseline+str(item.mesh)
++				assert(FileAccess.file_exists(path),path)
++				SuperRallyModel.assets[SuperRallyModel.ROOT+str(item.mesh)] = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE)
++	if "--candidate" in OS.get_cmdline_user_args():
++		var candidate: String="res://../build/challenger-surface-simplification-2026-11-14/native/"
++		var manifest: Dictionary=(load(candidate+"manifest.json") as JSON).data
++		for tier: String in ["simple","full"]:
++			for item: Dictionary in manifest.tiers[tier]:
++				SuperRallyModel.assets[SuperRallyModel.ROOT+str(item.mesh)]=ResourceLoader.load(candidate+str(item.mesh),"",ResourceLoader.CACHE_MODE_IGNORE)
++	var stage: String = "before"
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--stage="): stage = arg.trim_prefix("--stage=")
++	var view := CarShowroom.new()
++	view.vehicle_id = "super_rally"; view.simple_model = true; view.garage_mode = true
++	view.livery = VehicleLivery.defaults("super_rally"); view.size = Vector2(1440,900)
++	root.add_child(view)
++	while not view.showroom_ready or not view.car.model_ready: await process_frame
++	view.finish_car_transition(); view.finish_paint_transition(); view.finish_kit_transition()
++	view.set_process(false)
++	if "--no-car-shadows" in OS.get_cmdline_user_args():
++		for part: MeshInstance3D in view.car.find_children("*","MeshInstance3D",true,false):part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	if "--normals" in OS.get_cmdline_user_args():
++		var shader := Shader.new(); shader.code = "shader_type spatial; render_mode unshaded; void fragment(){ALBEDO = NORMAL*0.5+0.5;}"
++		var material := ShaderMaterial.new();material.shader = shader
++		for part: MeshInstance3D in view.car.find_children("*","MeshInstance3D",true,false):part.material_override = material
++	var folder: String = "res://../docs/evidence/challenger-surface-simplification-2026-11-14/garage-"+stage+"/"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	for paint: String in ["red","white"]:
++		if paint == "white":
++			var custom: Dictionary = VehicleLivery.defaults("super_rally")
++			custom.colors.body = "ffffff"; custom.colors.accent = "9d2424"
++			view.livery = custom; view.car.apply_livery(custom)
++		for angle: Array in [["reference",-0.82,0.17],["front",0.0,0.11],["opposite",0.82,0.17],["side",-PI/2,0.12]]:
++			view.yaw = angle[1]; view.elevation = angle[2]; view.zoom = 0.64; view._orbit()
++			view.camera.position.y -= 0.35; view.camera.look_at(Vector3(0,0.87,0))
++			view.reflections.sync(); view.reflections.request_draw(); view.invalidate_render()
++			view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++			for frame: int in range(16): await process_frame; await RenderingServer.frame_post_draw
++			assert(root.get_texture().get_image().save_png(folder.path_join(paint+"-"+angle[0]+".png")) == OK)
++	view.free()
++	print("CHALLENGER_GARAGE_DETAIL: eight actual native workshop views saved")
++	quit()
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/guarded_assets.py
+@@ -0,0 +1,80 @@
++"""Refresh independent chassis in parallel, then strictly verify stable provenance."""
++from concurrent.futures import ThreadPoolExecutor
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = ROOT / "build/challenger-surface-simplification-2026-11-14/assets"
++OUT.mkdir(parents=True, exist_ok=True)
++PROFILE = OUT / "private-profile"
++(PROFILE / "Circuit01Lab").mkdir(parents=True, exist_ok=True)
++(PROFILE / "Circuit01Lab/backend.cfg").write_text('[backend]\nurl=""\n', encoding="utf-8")
++ENV = {**os.environ, "APPDATA": str(PROFILE), "LOCALAPPDATA": str(PROFILE / "local"), "BMT_API_URL": "", "BMT_DEV_AUTH_KEY": ""}
++GODOT = "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe"
++
++
++def sources():
++    files = [p for folder in ("game/vehicle", "game/resources", "game/ui")
++             for p in (ROOT / folder).rglob("*") if p.suffix in (".gd", ".tres", ".json", ".gdshader", ".gdshaderinc")]
++    files += [ROOT / "scripts/build_identity.ps1", ROOT / "scripts/garage_preview_identity.ps1", ROOT / "scripts/prepare_challenger.py", ROOT / "scripts/challenger_detail_geometry.py", ROOT / "scripts/challenger_panel_geometry.py", ROOT / "scripts/challenger_reference_geometry.py", ROOT / "scripts/challenger_shell_geometry.py", ROOT / "game/tests/bake_challenger_hellcat.gd", ROOT / "game/legal/third_party_notices.gd", ROOT / "game/legal/challenger_hellcat_notices.txt"]
++    files += [p for p in (ROOT / "game/assets/vehicles/challenger_hellcat_v1").glob("*") if p.suffix in (".res", ".json")]
++    files += list((ROOT / "art_sources/challenger_hellcat_v1").glob("*"))
++    files += [ROOT / "scripts/bake_garage_previews.gd"]
++    files += [ROOT / ("game/tests/"+name) for name in ["bake_modular_car_bases.gd","bake_modular_car_kits.gd","bake_garage_cars.gd","bake_header_simple_compact.gd","bake_super_rally_art.gd"]]
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
++
++
++def run(label, command):
++    started = time.monotonic()
++    with (OUT / (label + ".log")).open("w", encoding="utf-8") as log:
++        result = subprocess.run(command, cwd=ROOT, env=ENV, stdout=log, stderr=subprocess.STDOUT, timeout=600)
++    (OUT / (label + "-command.json")).write_text(json.dumps({"command": command, "exit_code": result.returncode,
++        "script_errors": (OUT / (label + ".log")).read_text(encoding="utf-8").count("SCRIPT ERROR:"),
++        "elapsed_seconds": time.monotonic()-started}, indent=2), encoding="utf-8")
++    print(label, "exit", result.returncode, flush=True)
++    if result.returncode or "SCRIPT ERROR:" in (OUT / (label + ".log")).read_text(encoding="utf-8"):
++        raise RuntimeError(label)
++
++
++def engine(label, script, args=(), native=False):
++    run(label, [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", GODOT,
++        *([] if native else ["--headless"]), "--path", str(ROOT / "game"), "--audio-driver", "Dummy",
++        "--rendering-method", "gl_compatibility", "--script", script, *( ["--", *args] if args else [])])
++
++
++def identity(label):
++    run(label, ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
++        ". ./scripts/build_identity.ps1; Write-ClientBuildIdentity (Get-Location).Path 'build/challenger-surface-simplification-2026-11-14/assets'"])
++
++
++before = sources()
++(OUT / "source-before.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++identity("identity-before")
++identity_before = json.loads((OUT / "client-build-identity.json").read_text(encoding="utf-8-sig"))
++(OUT / "identity-before.json").write_text(json.dumps(identity_before, indent=2), encoding="utf-8")
++if "--pictures-only" not in sys.argv:
++    engine("bases", "res://tests/bake_modular_car_bases.gd", ["--vehicle=super_rally","--reuse-validated-lods"])
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(engine, "kits-"+car, "res://tests/bake_modular_car_kits.gd", ["--vehicle="+car,"--reuse-validated-lods"])
++                for car in ("super_rally",)]
++        for job in jobs:
++            job.result()
++    engine("garage", "res://tests/bake_garage_cars.gd", ["--vehicle=super_rally","--reuse-validated-lods"])
++    engine("header", "res://tests/bake_header_simple_compact.gd")
++    engine("artwork", "res://tests/bake_super_rally_art.gd", native=True)
++engine("pictures", "res://../scripts/bake_garage_previews.gd", ["--exclude-vehicle="+id for id in ("compact","kart","forklift","electric","hovercraft")], native=True)
++after = sources()
++(OUT / "source-receipt.json").write_text(json.dumps({"before": before, "after": after,
++    "changed": [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]}, indent=2), encoding="utf-8")
++assert before == after, "Sources changed during final bake"
++identity("identity-after")
++identity_after = json.loads((OUT / "client-build-identity.json").read_text(encoding="utf-8-sig"))
++assert identity_before["modular_car_sha256"] == identity_after["modular_car_sha256"], "Model fingerprints changed during bake"
++engine("prepared", "res://tests/check_prepared_assets.gd", ["--exclude-vehicle="+id for id in ("compact","kart","forklift","electric","hovercraft")])
++run("picture-preflight", [sys.executable, "scripts/check_garage_previews.py", "--vehicles=super_rally"])
++print("SUPER_RALLY_ASSETS: stable sources and both strict preflights pass", flush=True)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/handoff_checks.py
+@@ -0,0 +1,15 @@
++"""Verify current prepared assets after final picture imports and publication."""
++from pathlib import Path
++import json,subprocess,sys,time
++
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++PREFIX='res://../docs/evidence/challenger-surface-simplification-2026-11-14/'
++for renderer in ['gl_compatibility','mobile']:
++    subprocess.run([sys.executable,str(OUT/'run_check.py'),'app-handoff-'+renderer,'res://tests/test_super_rally_ui.gd',
++                    '--audio-driver','Dummy','--rendering-method',renderer,'--','--evidence-root='+PREFIX+'app-handoff'],cwd=ROOT,check=True)
++subprocess.run([sys.executable,str(OUT/'run_check.py'),'prepared-final','res://tests/check_prepared_assets.gd','--headless','--audio-driver','Dummy'],cwd=ROOT,check=True)
++command=[sys.executable,'scripts/check_garage_previews.py']
++started=time.monotonic();result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True,check=True)
++(OUT/'catalogue-final.log').write_text(result.stdout+result.stderr)
++(OUT/'catalogue-final-command.json').write_text(json.dumps({'command':command,'exit_code':result.returncode,'seconds':time.monotonic()-started},indent=2))
++print(result.stdout)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/hood_contract.gd
+@@ -0,0 +1,27 @@
++extends "res://../docs/evidence/challenger-panels-2026-11-12/panel_geometry.gd"
++func run() -> void:
++	var source: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/challenger-panels-2026-11-12/source-panel-survey.json"))
++	var errors: Dictionary = {}
++	for tier: String in ["simple","full"]:
++		var mesh: Mesh = load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_hood_paint.res")
++		var collider: StaticBody3D = collision(mesh,2)
++		await physics_frame;await physics_frame
++		var maximum: float = 0
++		for row: Dictionary in source.hood:
++			for i: int in range(source.hood_x.size()):
++				if row.samples[i]==null:continue
++				var x: float = source.hood_x[i];var z: float = row.z
++				var vent: bool = false
++				for box: Array in source.source_vents:
++					if x>float(box[0][0])-0.01 and x<float(box[1][0])+0.01 and z>float(box[0][2])-0.01 and z<float(box[1][2])+0.01:vent=true
++				if vent:continue
++				var world_z: float = SuperRallyModel._nose_z(z,x)
++				var mapped_x: float = SuperRallyModel._nose_plan_x(x,world_z)
++				var hit: Dictionary = cast(Vector3(mapped_x,2,world_z),Vector3(mapped_x,0.7,world_z),2)
++				check(not hit.is_empty(),tier+" bonnet exists at transformed source station")
++				if hit.is_empty():continue
++				var error: float = absf(hit.position.y-float(row.samples[i]));maximum=maxf(maximum,error)
++				check(error<0.004,tier+" bonnet retains measured source height within 4 mm")
++		collider.free();await physics_frame;errors[tier]=maximum
++	print("REFERENCE_HOOD: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(errors)])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/import_images.py
+@@ -0,0 +1,51 @@
++"""Refresh native texture imports in an owned headless editor; verify source MD5s."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = ROOT / "docs/evidence/challenger-surface-simplification-2026-11-14"
++PROFILE = ROOT / "build/challenger-surface-simplification-2026-11-14/profile"
++env = dict(os.environ, APPDATA=str(PROFILE / "roaming"), LOCALAPPDATA=str(PROFILE / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++project_before = hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest()
++command = [r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64.exe", "--headless", "--editor", "--import",
++           "--path", str(ROOT / "game"), "--audio-driver", "Dummy"]
++start = time.monotonic()
++with (OUT / "image-import.log").open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    (OUT / "image-import-process.json").write_text(json.dumps({"pid": process.pid, "command": command}))
++    while process.poll() is None:
++        time.sleep(0.3)
++        if time.monotonic() - start > 300:
++            process.kill()
++            raise RuntimeError("Owned image importer exceeded 300 seconds")
++    code = process.wait()
++assert code == 0, code
++assert hashlib.sha256((ROOT / "game/project.godot").read_bytes()).hexdigest() == project_before, "Editor changed project settings"
++images = []
++for car in ["super_rally"]:
++    images += list((ROOT / "game/assets/liveries/previews_v2" / car).glob("*.png"))
++    images += [ROOT / "game/assets/menu" / (car + "_illustration_v1.png"),
++               ROOT / "game/assets/menu/header_cars_v1" / (car + ".png"),
++               ROOT / "game/assets/garage/previews_v1" / (car + ".png"), ROOT / "game/assets/news/vehicles" / (car + ".png")]
++rows = []
++for image in images:
++    metadata = Path(str(image) + ".import").read_text()
++    match = re.search(r'path="res://([^\"]+\.ctex)"', metadata)
++    assert match, image
++    imported = ROOT / "game" / match[1]
++    checksum = imported.with_suffix(".md5").read_text()
++    digest = hashlib.md5(image.read_bytes()).hexdigest()
++    assert imported.is_file() and f'source_md5="{digest}"' in checksum, image
++    rows.append({"path": image.relative_to(ROOT).as_posix(), "source_md5": digest})
++content = (OUT / "image-import.log").read_text(encoding="utf-8", errors="replace")
++diagnostics = [line for line in content.splitlines() if line.startswith(("ERROR:", "SCRIPT ERROR:"))]
++(OUT / "image-import-receipt.json").write_text(json.dumps({"exit_code": code, "verified_images": len(rows),
++     "seconds": time.monotonic() - start, "project_settings_exact": True, "editor_diagnostics": diagnostics,
++     "images": rows}, indent=2))
++print(json.dumps({"verified_images": len(rows), "editor_diagnostics": len(diagnostics), "project_settings_exact": True}))
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/metrics.gd
+@@ -0,0 +1,20 @@
++extends SceneTree
++func payload(mesh: Mesh) -> int:
++	var bytes: int = 0
++	for surface: Dictionary in mesh.get("_surfaces"):
++		for field: String in ["vertex_data","attribute_data","skin_data","index_data","blend_shapes"]:
++			bytes += surface.get(field,PackedByteArray()).size()
++	return bytes
++func _initialize() -> void:
++	var rows: Array = []
++	var prefix: String = "res://../docs/evidence/challenger-surface-simplification-2026-11-14/"
++	for tier: String in ["simple","full"]:
++		for stage: String in ["before","after"]:
++			var base: String = prefix+"before/game/assets/vehicles/challenger_hellcat_v1/" if stage == "before" else SuperRallyModel.ROOT
++			var path: String = base+tier+"_body_paint.res"
++			var mesh: Mesh = load(path)
++			rows.append({"tier":tier,"stage":stage,"triangles":mesh.get_faces().size()/3,"raw_bytes":payload(mesh),"disk_bytes":FileAccess.get_file_as_bytes(path).size(),"surfaces":mesh.get_surface_count()})
++	var file := FileAccess.open(prefix+"metrics.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t"));file.close()
++	print("SHELL_METRICS: ",JSON.stringify(rows))
++	quit()
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/native_acceptance.py
+@@ -0,0 +1,65 @@
++"""Renderer-triangle coverage, shape controls and measured reflection fairness.
++
++The early profile diagnostic compares against the old unsmoothed width field.
++This check measures the requested fairing itself, without requiring that old
++field's small waves to survive. Existing nose/shoulder/bonnet gates run separately.
++"""
++from pathlib import Path
++import json, sys
++import numpy as np
++
++OUT=Path(__file__).resolve().parent
++scope={'__file__':str(OUT/'check_shell.py')}
++exec((OUT/'check_shell.py').read_text().split('stages=')[0],scope)
++BUILD=scope['BUILD'];reference=scope['reference'];section=scope['section']
++data={s:json.loads((BUILD/('native-plan-'+s+'.json')).read_text()) for s in ['before','candidate']}
++checks=0;findings=[];rows=[]
++def check(ok,label):
++    global checks
++    checks+=1
++    if not ok:findings.append(label)
++
++for tier in ['simple','full']:
++    old=np.asarray(data['before'][tier]['body_paint']).reshape(-1,3,3)
++    new=np.asarray(data['candidate'][tier]['body_paint']).reshape(-1,3,3)
++    check(len(new)<len(old),tier+' painted shell has fewer triangles')
++    for extreme in [np.min,np.max]:
++        check(np.max(abs(extreme(old,axis=(0,1))-extreme(new,axis=(0,1))))<.00001,tier+' exterior extents unchanged')
++    roof=np.unique(np.round(old.reshape(-1,3)[old.reshape(-1,3)[:,1]>=1.04],6),axis=0)
++    candidate_roof=np.unique(np.round(new.reshape(-1,3)[new.reshape(-1,3)[:,1]>=1.03999],6),axis=0)
++    # Quantised native positions can straddle one micron rounding boundaries.
++    missing=0
++    for start in range(0,len(roof),128):
++        delta=np.linalg.norm(roof[start:start+128,None,:]-candidate_roof[None,:,:],axis=-1)
++        missing+=int(np.count_nonzero(delta.min(1)>.000003))
++    check(missing==0,f'{tier}: all original roof/upper-pillar vertices retained ({missing} missing)')
++    check(data['before'][tier]['hood_paint']==data['candidate'][tier]['hood_paint'],tier+' bonnet positions and topology exact')
++    for sign in [-1,1]:
++        for offset in [-.010,.012,.035]:
++            zs=np.linspace(-1.35,1.70,306)
++            ys=reference.crease(zs)+offset
++            samples={}
++            for stage in ['before','candidate']:
++                tri=np.asarray(data[stage][tier]['body_paint']).reshape(-1,3,3)
++                ns=np.asarray(data[stage][tier]['body_paint_normals']).reshape(-1,3,3)
++                samples[stage]=[section(tri,ns,float(y),float(z),sign) for y,z in zip(ys,zs)]
++                missing=sum(p is None for p in samples[stage])
++                check(missing==0,f'{tier}/{sign}/{offset}/{stage}: complete native shoulder coverage')
++            if any(p is None for s in samples.values() for p in s):continue
++            a,b=samples['before'],samples['candidate']
++            displacement=np.asarray([q[0]-p[0] for p,q in zip(a,b)])
++            check(float(np.max(abs(displacement)))<.010,f'{tier}/{sign}/{offset}: fairing stays within 10 mm of previous shell')
++            row={'tier':tier,'side':sign,'offset':offset,'max_displacement_mm':float(np.max(abs(displacement))*1000)}
++            for stage in ['before','candidate']:
++                normals=np.asarray([p[1] for p in samples[stage]])
++                row[stage+'_normal_jitter']=float(np.mean(np.diff(normals,n=2,axis=0)**2))
++            rows.append(row)
++before=sum(r['before_normal_jitter'] for r in rows)
++after=sum(r['candidate_normal_jitter'] for r in rows)
++check(after<before*.80,'aggregate native reflection-normal jitter falls by at least 20%')
++receipt={'checks':checks,'failures':len(findings),'findings':findings,'sections':rows,
++         'normal_jitter_reduction_fraction':1-after/before if before else None}
++(OUT/'native-acceptance.json').write_text(json.dumps(receipt,indent=2))
++print('NATIVE_ACCEPTANCE:',checks,'checks,',len(findings),'failures; normal jitter reduction',receipt['normal_jitter_reduction_fraction'])
++print('\n'.join(findings))
++sys.exit(1 if findings else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/native_corner_profiles.py
+@@ -0,0 +1,37 @@
++"""Trace the actual native triangles, including small bevel triangles.
++
++The physics proxy misses some small faces in this survey. Renderer geometry
++and interpolated encoded normals are used directly for the surface checks.
++"""
++from pathlib import Path
++import json
++import numpy as np
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++BUILD=ROOT/'build/challenger-surface-simplification-2026-11-14'
++rows=[]
++for stage in ['before','candidate']:
++    data=json.loads((BUILD/('native-plan-'+stage+'.json')).read_text())
++    for tier in ['simple','full']:
++        tri=np.asarray(data[tier]['body_paint']).reshape(-1,3,3)
++        normals=np.asarray(data[tier]['body_paint_normals']).reshape(-1,3,3)
++        for side in [-1,1]:
++            for z in [-2.03,-2.10,-2.15]:
++                p,u,v=tri[:,0],tri[:,1]-tri[:,0],tri[:,2]-tri[:,0]
++                det=u[:,1]*v[:,2]-u[:,2]*v[:,1]
++                valid=(-side*det>1e-14)&(tri[:,:,2].min(1)<=z)&(tri[:,:,2].max(1)>=z)
++                p,u,v,det,n=p[valid],u[valid],v[valid],det[valid],normals[valid]
++                samples=[]
++                for y in np.linspace(.70,.82,241):
++                    a=((y-p[:,1])*v[:,2]-(z-p[:,2])*v[:,1])/det
++                    b=(u[:,1]*(z-p[:,2])-u[:,2]*(y-p[:,1]))/det
++                    hit=(a>=-1e-7)&(b>=-1e-7)&(a+b<=1+1e-7)
++                    ids=np.flatnonzero(hit)
++                    if not len(ids):continue
++                    x=p[:,0]+a*u[:,0]+b*v[:,0]
++                    i=ids[np.argmax(side*x[ids])]
++                    normal=n[i,0]*(1-a[i]-b[i])+n[i,1]*a[i]+n[i,2]*b[i]
++                    normal/=np.linalg.norm(normal)
++                    samples.append({'y':float(y),'x':float(x[i]),'angle':float(np.rad2deg(np.arctan2(normal[1],abs(normal[0]))))})
++                rows.append(dict(stage=stage,tier=tier,side=side,z=z,samples=samples))
++(BUILD/'corner-sections.json').write_text(json.dumps(rows))
++print('NATIVE_CORNER_PROFILES:',len(rows),'profiles from encoded renderer triangles and normals')
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/opaque.gd
+@@ -0,0 +1,86 @@
++extends SceneTree
++## Opaque glazing, no cabin/rig and actual native car budget/contact controls.
++var checks: int = 0
++var failures: int = 0
++const OUT: String = "res://../docs/evidence/challenger-hellcat-2026-11-09/opaque"
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func settle() -> void:
++	for frame: int in range(64):
++		await process_frame
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++func run() -> void:
++	root.size = Vector2i(1000,640)
++	var prepared: bool = "--prepared" in OS.get_cmdline_user_args()
++	var evidence: String = OUT
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): evidence = argument.trim_prefix("--evidence-root=")
++	var folder: String = evidence.path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var source: Dictionary = (load("res://assets/vehicles/challenger_hellcat_v1/source.json") as JSON).data
++	check(source.source_triangles == 911774,"source triangle count comes from supplied body and four wheels")
++	check(source.removed_components.filter(func(p: Dictionary) -> bool: return p.reason == "cabin floor").size() == 2,"both source cabin floor slabs are removed")
++	check(preload("res://vehicle/prepared_asset_sources.gd").vehicles_for("game/assets/vehicles/challenger_hellcat_v1/simple_body_paint.res") == ["super_rally"],"native Challenger meshes participate in Super rally dependency validation")
++	preload("res://vehicle/modular_car_base.gd").enabled = prepared
++	preload("res://vehicle/modular_car_kits.gd").enabled = prepared
++	preload("res://vehicle/prepared_car_cache.gd").enabled = prepared
++	preload("res://ui/garage_car_cache.gd").enabled = prepared
++	var metrics: Array = []
++	for reduced: bool in [false,true]:
++		var view := CarShowroom.new(); view.vehicle_id = "super_rally"; view.simple_model = reduced
++		view.read_only = true; view.size = Vector2(1000,640); view.livery = VehicleLivery.defaults("super_rally")
++		root.add_child(view)
++		while not view.showroom_ready or not view.car.model_ready: await process_frame
++		view.finish_car_transition(); view.finish_paint_transition(); view.finish_kit_transition()
++		var car: CarVisual = view.car
++		check(car.find_children("*","Skeleton3D",true,false).is_empty() and car.find_children("*","AnimationPlayer",true,false).is_empty(),"source rig and animations are absent")
++		var glass_count: int = 0; var triangles: int = 0; var contours: int = 0; var contours_unshadowed: bool = true
++		for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++			if part.mesh != null: triangles += part.mesh.get_faces().size()/3
++			var active: Material = part.get_active_material(0)
++			var material: StandardMaterial3D = active as StandardMaterial3D
++			var contour: bool = material != null and material.albedo_color == Color("303b40")
++			# Preserve the same one-contour/unshadowed assertion with the
++			# concurrently introduced pixel-integrated contour material.
++			if active is ShaderMaterial and active.shader == preload("res://vehicle/panel_contour.gdshader"):
++				contour = active.get_shader_parameter("contour_color") == Color("303b40")
++			if contour:
++				contours += 1
++				contours_unshadowed = contours_unshadowed and part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++			if material != null and material.albedo_color == Color("101b20"):
++				glass_count += 1
++				var surface: StandardMaterial3D = part.get_active_material(0) as StandardMaterial3D
++				check(surface != null and surface.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and surface.albedo_color.a == 1.0,"native windows are fully opaque")
++		check(glass_count == 1,"all original glazing shares one opaque native surface")
++		check(contours == 1 and contours_unshadowed,"door, handle and fuel outlines form one unshadowed marking surface")
++		check(triangles < (50000 if reduced else 85000),"assembled car stays below the allocated 50k/85k exterior-detail budget")
++		check(car.wheel_rest_positions == [Vector3(-0.83,0.37,-1.28),Vector3(-0.83,0.37,1.28),Vector3(0.83,0.37,-1.28),Vector3(0.83,0.37,1.28)],"Rally physical wheel locations remain exact")
++		var probe := MeshInstance3D.new(); var sphere := SphereMesh.new(); sphere.radius = 0.18; sphere.height = 0.36
++		probe.mesh = sphere; probe.position = Vector3(0,1.03,0.25)
++		probe.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		var marker := StandardMaterial3D.new(); marker.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; marker.albedo_color = Color.MAGENTA
++		probe.material_override = marker; car.body.add_child(probe)
++		for angle: Array in [["front",-0.70],["rear",2.45],["side",-PI/2]]:
++			view.yaw = angle[1]; view.zoom = 1.15; view._orbit()
++			probe.hide(); view.invalidate_render(); view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; await settle()
++			if DisplayServer.get_name() != "headless":
++				var before: Image = root.get_texture().get_image()
++				await settle()
++				check(before.get_data() == root.get_texture().get_image().get_data(),"unchanged native view repeats exactly before the "+str(angle[0])+" probe")
++				probe.show(); view.invalidate_render(); view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; await settle()
++				var after: Image = root.get_texture().get_image()
++				check(before.get_data() == after.get_data(),"bright cabin probe is invisible through "+str(angle[0])+" glazing")
++				before.save_png(folder.path_join(("simple-" if reduced else "full-")+str(angle[0])+".png"))
++				after.save_png(folder.path_join(("simple-" if reduced else "full-")+str(angle[0])+"-probe.png"))
++		probe.queue_free(); await process_frame
++		car.set_night_headlights(true)
++		check(car.headlights != null and car.headlights.find_children("*","MeshInstance3D",true,false).size() == 2,"both original headlamp lens groups illuminate at night")
++		metrics.append({"simple":reduced,"triangles":triangles})
++		view.free(); await process_frame
++	if prepared: check(preload("res://vehicle/modular_car_base.gd").hits+preload("res://ui/garage_car_cache.gd").hits >= 2,"both quality tiers actually restore prepared geometry")
++	var file := FileAccess.open(folder.path_join("acceptance.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("CHALLENGER_HELLCAT: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(metrics)])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/prototype_shell.py
+@@ -0,0 +1,28 @@
++"""Fast private candidate iteration from the qualified prior conversion."""
++from pathlib import Path
++import sys, json, shutil
++import bpy
++
++ROOT=Path(__file__).resolve().parents[3]
++sys.path.insert(0,str(ROOT/'scripts'))
++import challenger_shell_geometry as shell
++source=ROOT/'build/challenger-corner-roll-2026-11-13/converted'
++destination=ROOT/'build/challenger-surface-simplification-2026-11-14/prototype'
++destination.mkdir(parents=True,exist_ok=True)
++record=json.loads((source/'manifest.json').read_text())
++shutil.copyfile(source/'hood_profile.json',destination/'hood_profile.json')
++for tier in ['full','simple']:
++    bpy.ops.object.select_all(action='SELECT')
++    bpy.ops.object.delete(use_global=False)
++    bpy.ops.import_scene.gltf(filepath=str(source/(tier+'.glb')))
++    obj=next(o for o in bpy.data.objects if o.type=='MESH' and o.name=='body__paint')
++    result=shell.refine(obj,tier=='simple')
++    for o in bpy.context.scene.objects:o.hide_set(False);o.select_set(True)
++    bpy.ops.export_scene.gltf(filepath=str(destination/(tier+'.glb')),export_format='GLB',use_selection=True,export_animations=False,export_skins=False,export_yup=True)
++    total=0
++    for o in bpy.context.scene.objects:
++        if o.type=='MESH':o.data.calc_loop_triangles();total+=len(o.data.loop_triangles)
++    record['tiers'][tier]['triangles']=total
++    record['tiers'][tier]['joined_shell']=result
++    print('PROTOTYPE',tier,total,result,flush=True)
++(destination/'manifest.json').write_text(json.dumps(record,indent=2))
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/publish_native.py
+@@ -0,0 +1,38 @@
++"""Publish four qualified shell resources, preserving every other live mesh."""
++from pathlib import Path
++import hashlib,json,os,shutil
++
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++PRIVATE=ROOT/'build/challenger-surface-simplification-2026-11-14/native'
++LIVE=ROOT/'game/assets/vehicles/challenger_hellcat_v1'
++sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
++controls=json.loads((OUT/'task-start.json').read_text())
++comparison=json.loads((OUT/'native-comparison.json').read_text())
++assert comparison['failures']==0 and comparison['checks']==120
++conversion=json.loads((OUT/'preparation-command.json').read_text())
++assert conversion['stable'] and conversion['exit_code']==0
++assert all(sha(Path(p))==h for p,h in conversion['after'].items())
++for name,h in controls.items():
++    if name.startswith('game/assets/vehicles/challenger_hellcat_v1/') or name.startswith('game/resources/cars/') or name=='game/vehicle/super_rally_model.gd':
++        assert sha(ROOT/name)==h,'Concurrent source/native write: '+name
++names=['full_body_paint.res','simple_body_paint.res','full_body_contour.res','simple_body_contour.res','source.json','manifest.json']
++before={name:(LIVE/name).read_bytes() for name in names}
++published=[]
++try:
++    for name in names:
++        backup=OUT/'before/game/assets/vehicles/challenger_hellcat_v1'/name
++        if not backup.exists():backup.write_bytes(before[name])
++        assert (LIVE/name).read_bytes()==before[name],'Concurrent output write: '+name
++        temporary=LIVE/(name+'.challenger-surface-candidate')
++        shutil.copyfile(PRIVATE/name,temporary)
++        os.replace(temporary,LIVE/name)
++        published.append(name)
++except BaseException:
++    for name in reversed(published):
++        assert (LIVE/name).read_bytes()==(PRIVATE/name).read_bytes(),'Preserve concurrent output during rollback: '+name
++        (LIVE/name).write_bytes(before[name])
++    raise
++unchanged={name:h for name,h in controls.items() if name.startswith('game/assets/vehicles/challenger_hellcat_v1/') and (ROOT/name).name not in names}
++assert all(sha(ROOT/name)==h for name,h in unchanged.items())
++(OUT/'native-publication.json').write_text(json.dumps({'published':{n:sha(LIVE/n) for n in names},'unchanged_native_controls':len(unchanged),'manifest_published_last':True},indent=2))
++print('NATIVE_PUBLICATION: four shell resources and two manifests; all other native files exact')
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/refresh_all_prepared.py
+@@ -0,0 +1,86 @@
++"""Refresh independent chassis in parallel, then strictly verify stable provenance."""
++from concurrent.futures import ThreadPoolExecutor
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = ROOT / "build/challenger-surface-simplification-2026-11-14/all-prepared"
++OUT.mkdir(parents=True, exist_ok=True)
++PROFILE = OUT / "private-profile"
++(PROFILE / "Circuit01Lab").mkdir(parents=True, exist_ok=True)
++(PROFILE / "Circuit01Lab/backend.cfg").write_text('[backend]\nurl=""\n', encoding="utf-8")
++ENV = {**os.environ, "APPDATA": str(PROFILE), "LOCALAPPDATA": str(PROFILE / "local"), "BMT_API_URL": "", "BMT_DEV_AUTH_KEY": ""}
++GODOT = "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe"
++
++
++def sources():
++    files = [p for folder in ("game/vehicle", "game/resources", "game/ui")
++             for p in (ROOT / folder).rglob("*") if p.suffix in (".gd", ".tres", ".json", ".gdshader", ".gdshaderinc")]
++    files += [ROOT / "scripts/build_identity.ps1", ROOT / "scripts/garage_preview_identity.ps1", ROOT / "scripts/prepare_challenger.py", ROOT / "scripts/challenger_detail_geometry.py", ROOT / "scripts/challenger_panel_geometry.py", ROOT / "scripts/challenger_reference_geometry.py", ROOT / "scripts/challenger_shell_geometry.py", ROOT / "game/tests/bake_challenger_hellcat.gd", ROOT / "game/legal/third_party_notices.gd", ROOT / "game/legal/challenger_hellcat_notices.txt"]
++    files += [p for p in (ROOT / "game/assets/vehicles/challenger_hellcat_v1").glob("*") if p.suffix in (".res", ".json")]
++    files += list((ROOT / "art_sources/challenger_hellcat_v1").glob("*"))
++    files += [ROOT / "scripts/bake_garage_previews.gd"]
++    files += [ROOT / ("game/tests/"+name) for name in ["bake_modular_car_bases.gd","bake_modular_car_kits.gd","bake_garage_cars.gd","bake_header_simple_compact.gd","bake_super_rally_art.gd"]]
++    for directory in ["game/assets/vehicles", "game/assets/liveries", "game/assets/fonts"]:
++        files += [p for p in (ROOT/directory).rglob("*") if p.is_file() and p.suffix not in [".import", ".uid"]
++                  and "modular_car_bases_v1" not in p.parts and "modular_kits_v1" not in p.parts
++                  and p.relative_to(ROOT).as_posix() != "game/assets/vehicles/racing_simple_v1/manifest.json"]
++    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in set(files)}
++
++
++def run(label, command):
++    started = time.monotonic()
++    with (OUT / (label + ".log")).open("w", encoding="utf-8") as log:
++        result = subprocess.run(command, cwd=ROOT, env=ENV, stdout=log, stderr=subprocess.STDOUT, timeout=600)
++    (OUT / (label + "-command.json")).write_text(json.dumps({"command": command, "exit_code": result.returncode,
++        "script_errors": (OUT / (label + ".log")).read_text(encoding="utf-8").count("SCRIPT ERROR:"),
++        "elapsed_seconds": time.monotonic()-started}, indent=2), encoding="utf-8")
++    print(label, "exit", result.returncode, flush=True)
++    if result.returncode or "SCRIPT ERROR:" in (OUT / (label + ".log")).read_text(encoding="utf-8"):
++        raise RuntimeError(label)
++
++
++def engine(label, script, args=(), native=False):
++    run(label, [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", GODOT,
++        *([] if native else ["--headless"]), "--path", str(ROOT / "game"), "--audio-driver", "Dummy",
++        "--rendering-method", "gl_compatibility", "--script", script, *( ["--", *args] if args else [])])
++
++
++def identity(label):
++    run(label, ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
++        ". ./scripts/build_identity.ps1; Write-ClientBuildIdentity (Get-Location).Path 'build/challenger-surface-simplification-2026-11-14/all-prepared'"])
++
++
++before = sources()
++(OUT / "source-before.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
++identity("identity-before")
++identity_before = json.loads((OUT / "client-build-identity.json").read_text(encoding="utf-8-sig"))
++(OUT / "identity-before.json").write_text(json.dumps(identity_before, indent=2), encoding="utf-8")
++if "--pictures-only" not in sys.argv:
++    for car in ("compact","kart","forklift","electric","hovercraft","super_rally"):
++        engine("bases-"+car, "res://tests/bake_modular_car_bases.gd", ["--vehicle="+car,"--reuse-validated-lods"])
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        jobs = [pool.submit(engine, "kits-"+car, "res://tests/bake_modular_car_kits.gd", ["--vehicle="+car,"--reuse-validated-lods"])
++                for car in ("compact","kart","forklift","electric","hovercraft","super_rally")]
++        for job in jobs:
++            job.result()
++    for car in ("compact","kart","forklift","electric","hovercraft","super_rally"):
++        engine("garage-"+car, "res://tests/bake_garage_cars.gd", ["--vehicle="+car,"--reuse-validated-lods"])
++    engine("header", "res://tests/bake_header_simple_compact.gd")
++
++engine("pictures", "res://../scripts/bake_garage_previews.gd", [], native=True)
++after = sources()
++(OUT / "source-receipt.json").write_text(json.dumps({"before": before, "after": after,
++    "changed": [p for p in before.keys() | after.keys() if before.get(p) != after.get(p)]}, indent=2), encoding="utf-8")
++assert before == after, "Sources changed during final bake"
++identity("identity-after")
++identity_after = json.loads((OUT / "client-build-identity.json").read_text(encoding="utf-8-sig"))
++assert identity_before["modular_car_sha256"] == identity_after["modular_car_sha256"], "Model fingerprints changed during bake"
++engine("prepared", "res://tests/check_prepared_assets.gd", [])
++run("picture-preflight", [sys.executable, "scripts/check_garage_previews.py"])
++print("SUPER_RALLY_ASSETS: stable sources and both strict preflights pass", flush=True)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/replay_shell.py
+@@ -0,0 +1,50 @@
++"""Private iteration from the source-fenced pre-reference conversion buffers."""
++from pathlib import Path
++import sys, json, shutil
++import bpy
++import numpy as np
++
++ROOT=Path(__file__).resolve().parents[3]
++OUT=Path(__file__).resolve().parent
++BUILD=ROOT/'build/challenger-surface-simplification-2026-11-14'
++sys.path.insert(0,str(ROOT/'scripts'))
++import challenger_shell_geometry as shell
++from challenger_reference_geometry import nose_normals,nose_plan_normals,nose_corner_normals
++scope={'__file__':str(OUT/'check_shell.py')}
++exec((OUT/'check_shell.py').read_text().split('stages=')[0],scope)
++# The independent builder above is pure numpy; retain one reference per replay.
++reference=scope['reference']
++source=BUILD/'converted'
++destination=BUILD/'replay'
++destination.mkdir(parents=True,exist_ok=True)
++record=json.loads((source/'manifest.json').read_text())
++shutil.copyfile(source/'hood_profile.json',destination/'hood_profile.json')
++for tier in ['full','simple']:
++    bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
++    bpy.ops.import_scene.gltf(filepath=str(source/(tier+'.glb')))
++    obj=next(o for o in bpy.data.objects if o.type=='MESH' and o.name=='body__paint')
++    cached=np.load(source/(tier+'_paint_reference_input.npz'))
++    p,f,n=reference.mesh(cached['points'],cached['faces'],cached['normals'])
++    p,f,n,strip=shell.shoulder_strip(reference,p,f,n,tier=='simple')
++    n=nose_normals(p,n)
++    p[:,2]=-scope['nose_distance'](-p[:,2],p[:,0])[0]
++    n=nose_plan_normals(p,n);p=scope['nose_plan_points'](p)
++    n=nose_corner_normals(p,n);p=scope['nose_corner_field'](p)[0]
++    data=bpy.data.meshes.new('ReplayedJoinedShell')
++    data.from_pydata((p[:,[0,2,1]]*np.array([1,-1,1])).tolist(),[],f.tolist())
++    data.materials.append(obj.data.materials[0]);data.update()
++    for polygon in data.polygons:polygon.use_smooth=True
++    data.set_sharp_from_angle(angle=np.deg2rad(52))
++    data.normals_split_custom_set((n[:,[0,2,1]]*np.array([1,-1,1])).tolist())
++    obj.data=data
++    result=shell.refine(obj,tier=='simple')
++    contour=next(o for o in bpy.data.objects if o.type=='MESH' and o.name=='body__contour')
++    fitted=shell.fit_contours(obj,contour)
++    for o in bpy.context.scene.objects:o.hide_set(False);o.select_set(True)
++    bpy.ops.export_scene.gltf(filepath=str(destination/(tier+'.glb')),export_format='GLB',use_selection=True,export_animations=False,export_skins=False,export_yup=True)
++    total=0
++    for o in bpy.context.scene.objects:
++        if o.type=='MESH':o.data.calc_loop_triangles();total+=len(o.data.loop_triangles)
++    record['tiers'][tier].update(triangles=total,joined_shell=result,shoulder_strips=strip,fitted_contour_vertices=fitted)
++    print('REPLAY',tier,total,result,flush=True)
++(destination/'manifest.json').write_text(json.dumps(record,indent=2))
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/run_check.py
+@@ -0,0 +1,59 @@
++"""Offline pinned-engine checks with private saves, bounded processes and receipts."""
++import ctypes
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++GODOT = "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe"
++def snapshot():
++    files=[]
++    for name in ["game/vehicle", "game/ui", "game/core", "game/resources/cars", "game/assets/vehicles/challenger_hellcat_v1"]:
++        files += [p for p in (ROOT/name).rglob("*") if p.suffix in [".gd", ".gdshader", ".gdshaderinc", ".json", ".res", ".tres"]]
++    files += [ROOT/"game/project.godot"]
++    return {p.relative_to(ROOT).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
++
++label, script, *extra = sys.argv[1:]
++source_before=snapshot()
++encoded=json.dumps(source_before,sort_keys=True).encode()
++source_digest=hashlib.sha256(encoded).hexdigest()
++pins=OUT/"input-pins";pins.mkdir(exist_ok=True)
++pin=pins/(source_digest+".json")
++if not pin.exists():pin.write_bytes(encoded)
++index_before=hashlib.sha256((ROOT/".git/index").read_bytes()).hexdigest()
++profile = ROOT / "build/challenger-surface-simplification-2026-11-14/profile"
++(profile / "Circuit01Lab").mkdir(parents=True, exist_ok=True)
++(profile / "Circuit01Lab/backend.cfg").write_text('[backend]\nurl=""\n', encoding="utf-8")
++env = {**os.environ, "APPDATA": str(profile), "LOCALAPPDATA": str(profile / "local"), "BMT_API_URL": "", "BMT_DEV_AUTH_KEY": ""}
++ctypes.windll.kernel32.SetErrorMode(0x0002)
++command = [GODOT, "--path", str(ROOT / "game"), "--script", script, *extra]
++started = time.monotonic()
++with (OUT / (label + ".log")).open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    (OUT / (label + "-running.json")).write_text(json.dumps({"owned_pid":process.pid,"command":command}),encoding="utf-8")
++    while process.poll() is None:
++        if "SCRIPT ERROR:" in (OUT / (label + ".log")).read_text(encoding="utf-8",errors="replace"):
++            process.kill();process.wait();break
++        if time.monotonic()-started>300:
++            process.kill();process.wait();break
++        time.sleep(0.25)
++    code = process.returncode
++lines = (OUT / (label + ".log")).read_text(encoding="utf-8", errors="replace").splitlines()
++process_code = code
++script_errors = sum("SCRIPT ERROR:" in line for line in lines)
++if code == 0 and script_errors: code = 1
++source_after=snapshot()
++changed=[p for p in source_before.keys()|source_after.keys() if source_before.get(p)!=source_after.get(p)]
++if code==0 and changed:code=1
++receipt = {"source_pin_sha256":source_digest,"changed_inputs":changed,"index_sha256_before":index_before,"index_sha256_after":hashlib.sha256((ROOT/".git/index").read_bytes()).hexdigest(),"command": command, "process_exit_code": process_code, "script_errors": script_errors, "exit_code": code, "elapsed_seconds": time.monotonic()-started,
++           "owned_pid": process.pid, "private_profile": str(profile)}
++(OUT / (label + "-command.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++lines = (OUT / (label + ".log")).read_text(encoding="utf-8", errors="replace").splitlines()
++print(label, "exit", code)
++print("\n".join(lines[-15:]))
++sys.exit(code)
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/run_preparation.py
+@@ -0,0 +1,27 @@
++from pathlib import Path
++import hashlib,json,subprocess,time
++ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
++source=Path(r'C:\Users\ville\Downloads\Dodge Challenger HellCat - Rigged.blend')
++original_source=source
++source=source if source.is_file() else ROOT/'art_sources/challenger_hellcat_v1/source-panels.npz'
++script=ROOT/'scripts/prepare_challenger.py'
++labels=ROOT/'art_sources/challenger_hellcat_v1/components.npz'
++destination=ROOT/'build/challenger-surface-simplification-2026-11-14/converted'
++sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
++inputs=[source,script,labels,ROOT/'scripts/challenger_detail_geometry.py',ROOT/'scripts/challenger_panel_geometry.py',ROOT/'scripts/challenger_reference_geometry.py',ROOT/'scripts/challenger_shell_geometry.py']
++if source.suffix=='.npz':inputs.append(source.with_name('source-facts.json'))
++before={str(p):sha(p) for p in inputs}
++command=[str(ROOT/'build/tools/blender-4.5.15-windows-x64/blender.exe'),'--background','--factory-startup','--disable-autoexec','--python-exit-code','1','--python',str(script),'--',str(source),str(labels),str(destination),"--debug-cache"]
++started=time.monotonic()
++with (OUT/'preparation-qualified.log').open('w',encoding='utf-8') as log:
++    result=subprocess.run(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,timeout=300)
++after={p:sha(Path(p)) for p in before}
++receipt={'command':command,'exit_code':result.returncode,'elapsed_seconds':time.monotonic()-started,'before':before,'after':after,'stable':before==after,'original_download_available':original_source.is_file()}
++if result.returncode==0:
++    receipt['outputs']={p.name:sha(p) for p in destination.glob('*')}
++(OUT/'preparation-command.json').write_text(json.dumps(receipt,indent=2),encoding='utf-8')
++assert result.returncode==0 and before==after
++log=(OUT/'preparation-qualified.log').read_text(encoding='utf-8')
++assert 'Traceback (most recent call last)' not in log and log.count('CHALLENGER_EXPORT')==2 and 'CHALLENGER_PREPARED' in log
++assert all((destination/name).stat().st_mtime>time.time()-(time.monotonic()-started)-2 for name in ['full.glb','simple.glb','manifest.json','hood_profile.json']), 'Every output must come from this run'
++print('CHALLENGER_PREPARATION: exact source, labels and script; both final tiers written')
+--- /dev/null
++++ b/docs/evidence/challenger-surface-simplification-2026-11-14/shoulder_geometry.gd
+@@ -0,0 +1,55 @@
++extends "res://../docs/evidence/challenger-panels-2026-11-12/panel_geometry.gd"
++func warp(z: float) -> float:return SuperRallyModel._nose_z(z,0.90)
++func run() -> void:
++	var before: bool = "--before" in OS.get_cmdline_user_args()
++	var folder: String = "res://../docs/evidence/challenger-surface-simplification-2026-11-14/"
++	var base: String = folder+"before/" if before else "res://assets/vehicles/challenger_hellcat_v1/"
++	if "--candidate" in OS.get_cmdline_user_args(): base = "res://../build/challenger-surface-simplification-2026-11-14/native/"
++	var metrics: Array = []
++	for tier: String in ["simple","full"]:
++		var mesh: Mesh = load(base+tier+"_body_paint.res")
++		var collider: StaticBody3D = collision(mesh,1)
++		var dark: Mesh = load(base+tier+"_body_dark.res")
++		var carrier: StaticBody3D = collision(dark,2)
++		await physics_frame;await physics_frame
++		for station: Vector2 in [Vector2(-1.70,0.802),Vector2(-1.25,0.823),Vector2(-0.35,0.833),Vector2(0.20,0.835),Vector2(0.80,0.880),Vector2(1.15,0.918),Vector2(1.55,0.931)]:
++			for side: float in [-1.0,1.0]:
++				var angles: Array[float] = [];var heights: Array[float] = []
++				for i: int in range(61):
++					var y: float = station.y-0.030+i*0.001
++					var hit: Dictionary = cast(Vector3(side*2,y,warp(station.x)),Vector3(0,y,warp(station.x)),1)
++					if hit.is_empty():hit = cast(Vector3(side*2,y,warp(station.x)+0.00001),Vector3(0,y,warp(station.x)+0.00001),1)
++					check(not hit.is_empty(),tier+" continuous reference shoulder skin "+str(Vector2(station.x,y)))
++					if hit.is_empty():continue
++					var n: Vector3 = shade(mesh,hit)
++					angles.append(rad_to_deg(atan2(n.y,absf(n.x))));heights.append(y)
++				if angles.size()<50:continue
++				var lower: float = angles[10];var upper: float = angles[angles.size()-11]
++				var contrast: float = upper-lower
++				check(contrast>25.0,tier+" distinct upper/lower shoulder planes z="+str(station.x)+" contrast="+str(contrast))
++				var start: float = 0;var finish: float = 0;var peak: float = 0;var peak_y: float = 0
++				for i: int in range(angles.size()):
++					if start==0 and angles[i]>=lower+contrast*0.10:start=heights[i]
++					if finish==0 and angles[i]>=lower+contrast*0.90:finish=heights[i]
++					if i>0 and angles[i]-angles[i-1]>peak:peak=angles[i]-angles[i-1];peak_y=(heights[i]+heights[i-1])*0.5
++				var width: float = finish-start if finish>start else 1.0
++				check(width<0.014,tier+" tight shoulder bend instead of broad roll z="+str(station.x)+" width="+str(width))
++				check(absf(peak_y-station.y)<0.008,tier+" crease follows reference-guided station "+str(station))
++				metrics.append({"tier":tier,"side":side,"z":station.x,"plane_change_degrees":contrast,"transition_metres":width,"peak_height":peak_y})
++		var front_min: float = 0;var front_max: float = -10
++		for x: float in [-0.78,-0.63,-0.45,-0.20,0.0,0.20,0.45,0.63,0.78]:
++			# The complete carrier narrows with the whole front assembly. Probe
++			# its original nine stations in the common transformed coordinate.
++			var probe_x: float = SuperRallyModel._nose_plan_x(x,-2.22)
++			var hit: Dictionary = cast(Vector3(probe_x,0.76,-3),Vector3(probe_x,0.76,-1.70),2)
++			check(not hit.is_empty(),tier+" complete optical carrier across front width "+str(x))
++			if hit.is_empty():continue
++			front_min=minf(front_min,hit.position.z);front_max=maxf(front_max,hit.position.z)
++			check(hit.position.z< -2.16,tier+" optical face sits forward in squared nose "+str(x))
++			check(shade(dark,hit).z< -0.90,tier+" nearly upright optical face "+str(x))
++		check(front_max-front_min<0.045,tier+" shallow front-face sweep "+str(front_max-front_min))
++		collider.free();carrier.free();await physics_frame
++	var file := FileAccess.open(folder+("before" if before else "after")+"-reference.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"));file.close()
++	print("CHALLENGER_REFERENCE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)

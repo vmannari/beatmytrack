@@ -30,6 +30,7 @@ func full_detail(source: Mesh) -> Mesh:
 	return result
 
 func prepare(source: Mesh) -> Mesh:
+	if source.has_meta("car_authored_far"): return source
 	if meshes.has(source): return meshes[source]
 	if not source is ArrayMesh or source.get_blend_shape_count() != 0: return source
 	var importer := ImporterMesh.new()
@@ -101,7 +102,8 @@ func eligible(part: MeshInstance3D, vehicle: String) -> bool:
 func prepare_vehicle(holder: Node, vehicle: String, bias: float = 1.0) -> void:
 	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
 		if part.mesh == null: continue
-		part.mesh = prepare(part.mesh) if eligible(part,vehicle) else full_detail(part.mesh)
+		if not part.mesh.has_meta("car_authored_far"):
+			part.mesh = prepare(part.mesh) if eligible(part,vehicle) else full_detail(part.mesh)
 		# The race viewport retains its world-wide one-pixel policy. A car-only
 		# bias of two uses the conservative half-pixel car threshold instead.
 		# Garage viewports already use half a pixel and retain their unit bias.

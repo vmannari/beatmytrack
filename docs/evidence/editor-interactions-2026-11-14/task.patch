@@ -1,0 +1,410 @@
+diff --git a/game/tests/review_editor_interactions_2026_11_14.gd b/game/tests/review_editor_interactions_2026_11_14.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_editor_interactions_2026_11_14.gd
+@@ -0,0 +1,251 @@
++extends SceneTree
++## Review probes only. Runtime sources are not modified; all saves are disposable.
++var out: String = ProjectSettings.globalize_path("res://../docs/evidence/editor-interactions-2026-11-14")
++var observations: Dictionary = {}
++var controls: Dictionary = {}
++var app: Node
++var fixture_checks: int = 0
++var fixture_failures: int = 0
++var before_hashes: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	fixture_checks += 1
++	if not ok: fixture_failures += 1; print("FIXTURE_FAIL ",message)
++
++func record(key: String, value: Dictionary) -> void:
++	observations[key] = value
++	print("EDITOR_INTERACTION ",key," ",JSON.stringify(value))
++
++func frames(count: int = 3) -> void:
++	for i: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func hashes() -> Dictionary:
++	var result: Dictionary = {}
++	for path: String in ["editor/editor_canvas.gd","editor/object_editing.gd","editor/object_properties.gd","core/features/editor.gd","core/app.gd"]:
++		result[path] = FileAccess.get_sha256("res://"+path)
++	return result
++
++func object(x: float, y: float) -> Dictionary:
++	return {"kind":"crate","position":[x,y],"rotation":0.0}
++
++func road(y: float) -> Dictionary:
++	var piece: Dictionary = RoadPieces.create("straight",Vector2(-30,y),0,6)
++	piece.length = 60.0
++	return piece
++
++func canvas(doc: Dictionary, mode: String) -> EditorCanvas:
++	var result := EditorCanvas.new()
++	result.document = doc; result.mode = mode
++	root.add_child(result); result.size = Vector2(1280,720)
++	result.zoom = 1.0; result.pan = Vector2.ZERO
++	return result
++
++func touch(target: EditorCanvas, point: Vector2, down: bool) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = 4; event.position = point; event.pressed = down
++	target._gui_input(event)
++
++func drag(target: EditorCanvas, point: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.index = 4; event.position = point; target._gui_input(event)
++
++func tap(target: EditorCanvas, point: Vector2) -> void:
++	touch(target,point,true); touch(target,point,false)
++
++func direct_probes() -> void:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.objects = [object(0,0)]
++	var c: EditorCanvas = canvas(doc,"place")
++	c.stamp_kind = "crate"
++	tap(c,c.to_screen(Vector2.ZERO))
++	var after_hit: String = c.mode
++	tap(c,c.to_screen(Vector2(20,0)))
++	record("placement_click_existing",{"mode_after_hit":after_hit,"mode_after_empty":c.mode,"objects_after_two_taps":doc.objects.size()})
++	c.free()
++	doc = TrackDocument.create_blank(); doc.pieces = [road(0),road(8)]
++	c = canvas(doc,"road"); c.zoom = 0.35
++	tap(c,c.to_screen(Vector2.ZERO))
++	var picked: int = c.selected_piece
++	c.selected_piece = 0
++	tap(c,c.to_screen(Vector2(0,8)))
++	record("road_nearest_and_sticky",{"exact_first_center_picks":picked,"exact_second_center_with_first_selected_picks":c.selected_piece,"center_separation_px":c.to_screen(Vector2.ZERO).distance_to(c.to_screen(Vector2(0,8))),"hit_radius_px":maxf(24,3*c.scale_factor())})
++	c.free()
++	doc = TrackDocument.create_blank(); doc.objects = [object(0.49,0.49)]
++	c = canvas(doc,"objects")
++	var from: Vector2 = c.to_screen(Vector2(0.49,0.49))
++	touch(c,from,true); drag(c,from+Vector2(1,0)); touch(c,from+Vector2(1,0),false)
++	record("object_one_pixel_jitter",{"input_px":1,"before":[0.49,0.49],"after":doc.objects[0].position.duplicate(),"screen_displacement_px":from.distance_to(c.to_screen(Vector2(doc.objects[0].position[0],doc.objects[0].position[1])))})
++	c.free()
++	# Controls: explicit navigation, pure taps, overlap cycling and cancelled drags.
++	doc = TrackDocument.create_blank(); doc.objects = [object(0.49,0.49)]
++	c = canvas(doc,"objects"); var saved: Dictionary = doc.duplicate(true)
++	tap(c,c.to_screen(Vector2(0.49,0.49)))
++	controls.pure_selection_unchanged = doc == saved
++	from = c.to_screen(Vector2(0.49,0.49)); touch(c,from,true); drag(c,from+Vector2(50,0)); c.cancel_gesture()
++	controls.cancelled_drag_restored = doc == saved
++	c.free()
++	doc = TrackDocument.create_blank(); doc.pieces = [road(0),road(8)]
++	c = canvas(doc,"road"); c.zoom = 0.35; tap(c,c.to_screen(Vector2.ZERO)); c.cycle_piece()
++	controls.road_cycle_reaches_other = c.selected_piece == 0
++	c.free()
++	for key: String in controls: check(controls[key],key)
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+90000
++	var next_log: int = Time.get_ticks_msec()+10000
++	while Time.get_ticks_msec()<deadline:
++		if Time.get_ticks_msec() >= next_log:
++			print("READINESS ",{"background_allowed":app._background_work_allowed(),"game":is_instance_valid(app.game),"loading":is_instance_valid(app.race_loading),"feature_loading":is_instance_valid(app._feature_loading),"preparing":app.canvas.preparing,"native":app.canvas.native_preview != null,"building":app.editor_world._building,"initial_done":app.editor_world._initial_preparation_done,"thread":app.editor_preview_thread != null,"thread_alive":app.editor_preview_thread.is_alive() if app.editor_preview_thread != null else false,"pointer":app.canvas.active_pointer})
++			next_log += 10000
++		if not app.canvas.preparing and app.canvas.native_preview != null and not app.editor_commits.unsettled() and app.editor_preview_thread == null and not app.editor_world._building and not app.editor_writes.unsettled(app.library,str(app.document.id)):
++			await frames(4)
++			if not app.canvas.preparing and app.editor_preview_thread == null and not app.editor_world._building: return
++		await process_frame
++	check(false,"editor settles within 90 seconds")
++
++func show_fixture() -> void:
++	if is_instance_valid(app.canvas) and is_instance_valid(app.editor_world): await settle()
++	app.canvas = null; app.editor_pending_tools.clear(); app.editor_pending_id = ""
++	app.editor_view.clear(); app.history.clear(); app.redo_history.clear()
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "interaction_review"; doc.name = "Interaction review"; doc["automatic_scenery"] = false
++	doc.pieces = [road(0)]; doc.objects = [object(0,14)]
++	check(TrackDocument.validate(doc,false).is_empty(),"review fixture passes unchanged production document validation")
++	app.document = doc
++	await app._show_screen("create"); await frames(); await settle()
++	app.canvas.zoom = 1.0; app.canvas.pan = Vector2.ZERO
++	app.canvas.queue_redraw(); await frames()
++
++func click(point: Vector2) -> void:
++	for down: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point; event.global_position = point
++		event.button_index = MOUSE_BUTTON_LEFT; event.pressed = down
++		root.push_input(event,true); await process_frame
++	await frames()
++
++func click_named(node_name: String) -> void:
++	var target: Control = app.root_ui.find_child(node_name,true,false) as Control
++	check(target != null and target.is_visible_in_tree(),"visible click target "+node_name)
++	if target != null and target.is_visible_in_tree(): await click(target.get_global_rect().get_center())
++
++func click_text(text: String) -> void:
++	for target: Node in app.root_ui.find_children("*","Button",true,false):
++		if target.is_visible_in_tree() and target.text == text:
++			await click(target.get_global_rect().get_center()); return
++	check(false,"visible button "+text)
++
++func choose_crate() -> void:
++	await click_named("EditorObjects")
++	await click_named("Category_Props")
++	for page: int in range(3):
++		var tile: Control = app.root_ui.find_child("Asset_crate",true,false) as Control
++		if tile != null and tile.is_visible_in_tree(): break
++		await click_named("NextObjects")
++	await click_named("Asset_crate")
++	check(app.canvas.mode == "place" and app.canvas.stamp_kind == "crate","object palette arms crate placement")
++	await settle()
++
++func key(value: Key) -> void:
++	root.gui_release_focus()
++	for down: bool in [true,false]:
++		var event := InputEventKey.new(); event.keycode = value; event.physical_keycode = value; event.pressed = down
++		root.push_input(event,true); await process_frame
++	await frames()
++
++func shot(label: String) -> void:
++	await frames(5)
++	if DisplayServer.get_name() != "headless":
++		check(root.get_texture().get_image().save_png(out.path_join(label+".png")) == OK,"save "+label)
++
++func app_probes() -> void:
++	app = load("res://core/app.tscn").instantiate()
++	var storage: String = ProjectSettings.globalize_path("res://../build/editor-interactions-2026-11-14/storage-"+str(OS.get_process_id()))
++	app.library = TrackLibrary.new(storage.path_join("tracks"))
++	app.records = LocalRecords.new(storage.path_join("records.json"))
++	app.cloud_root_override = storage.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await show_fixture()
++	await choose_crate()
++	await shot("01-place-before-click")
++	await click(app.canvas.to_screen(Vector2(0,14)))
++	var mode_after: String = app.canvas.mode
++	await shot("02-placement-became-selection")
++	await click(app.canvas.to_screen(Vector2(30,14)))
++	record("app_placement_lost",{"mode_after_existing_click":mode_after,"mode_after_empty_click":app.canvas.mode,"object_count":app.document.objects.size(),"browser_visible":app.object_browser.is_visible_in_tree()})
++	await show_fixture()
++	await choose_crate()
++	await click(app.canvas.to_screen(Vector2(20,0)))
++	check(app.document.objects.size() == 2,"viewport click places a second crate")
++	var angle_before: float = app.document.objects.back().rotation
++	var history_before: int = app.history.size()
++	await settle(); await shot("03-after-placement")
++	await click_named("ObjectOrientation")
++	await click_named("Face_90")
++	record("app_stamp_rotation_edits_previous",{"mode":app.canvas.mode,"selected_object":app.canvas.selected_object,"controls_selected":app.object_controls.selected,"before_degrees":angle_before,"after_degrees":app.document.objects.back().rotation,"stamp_degrees":app.canvas.stamp_rotation,"undo_delta":app.history.size()-history_before})
++	await settle(); await shot("04-stamp-rotation-changed-existing")
++	await settle()
++	var count: int = app.document.objects.size()
++	await key(KEY_ESCAPE); var selected_after_escape: int = app.canvas.selected_object
++	var mode_after_escape: String = app.canvas.mode
++	await key(KEY_DELETE)
++	record("app_escape_delete",{"mode_after_escape":mode_after_escape,"selection_after_escape":selected_after_escape,"objects_before":count,"objects_after_delete":app.document.objects.size()})
++	await show_fixture()
++	app._editor_category("paint"); await frames()
++	await click_named("PaintMode_area")
++	for point: Vector2 in [Vector2(10,-6),Vector2(25,-6),Vector2(25,-17)]: await click(app.canvas.to_screen(point))
++	check(app.canvas.paint_points.size() == 3,"three viewport taps define an area preview")
++	var before_points: Array = app.canvas.paint_points.duplicate(true)
++	await shot("05-pending-area")
++	await click_named("PaintMode_area")
++	record("app_reclick_active_paint_mode",{"before_points":before_points,"after_points":app.canvas.paint_points.duplicate(true),"history_entries":app.history.size(),"pending_work":app._has_pending_editor_work()})
++	await shot("06-area-lost-on-active-tool-click")
++	for point: Vector2 in [Vector2(10,-6),Vector2(25,-6),Vector2(25,-17)]: await click(app.canvas.to_screen(point))
++	check(app.canvas.paint_points.size() == 3,"area preview before Map")
++	await click_text("Map")
++	record("app_open_map_discards_area",{"after_points":app.canvas.paint_points.duplicate(true),"map_visible":app.editor_map_panel.is_visible_in_tree(),"pending_work":app._has_pending_editor_work()})
++	await show_fixture()
++	app._editor_category("paint"); app.canvas.paint_mode = "line"; app._build_editor_tools(); await frames()
++	# Last canvas click is on a road; Tab is routed through the real App handler.
++	await click(app.canvas.to_screen(Vector2(0,0)))
++	var mode_before: String = app.canvas.mode
++	await key(KEY_TAB)
++	record("app_tab_from_surface",{"before_mode":mode_before,"after_mode":app.canvas.mode,"selected_piece":app.canvas.selected_piece,"surface_toolbar_visible":app.surface_toolbar.is_visible_in_tree()})
++	await shot("07-tab-switched-to-road")
++	await show_fixture()
++	await choose_crate()
++	await key(KEY_ESCAPE)
++	var mode_before_click: String = app.canvas.mode
++	await click(app.canvas.to_screen(Vector2(20,0)))
++	record("app_escape_keeps_stamp_armed",{"mode_after_escape":mode_before_click,"objects_after_click":app.document.objects.size()})
++	# Positive control: switching categories preserves an unfinished road preview.
++	await show_fixture()
++	app.canvas.choose_piece("curve"); var preview: Dictionary = app.canvas.ghost.duplicate(true)
++	app._editor_category("objects"); app._editor_category("road")
++	controls.category_round_trip_keeps_road_preview = app.canvas.ghost == preview
++	check(controls.category_round_trip_keeps_road_preview,"category round trip retains road preview")
++	record("app_guidance_visibility",{"guidance":app.editor_guidance,"guidance_visible":app.editor_status.is_visible_in_tree(),"hint_active":app.editor_hint_active})
++	await shot("08-road-guidance")
++	await settle(); app.queue_free(); await frames(6)
++	if is_instance_valid(GameSoundtrack.instance()): GameSoundtrack.instance().queue_free()
++	await frames(3); await create_timer(0.25).timeout
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--review-out="): out = argument.trim_prefix("--review-out=")
++	DirAccess.make_dir_recursive_absolute(out)
++	OS.set_environment("BMT_API_URL",""); OS.set_environment("BMT_DEV_AUTH_KEY","")
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size; root.gui_embed_subwindows = true
++	before_hashes = hashes()
++	direct_probes()
++	if "--direct-only" not in OS.get_cmdline_user_args(): await app_probes()
++	var after: Dictionary = hashes(); check(after == before_hashes,"reviewed production sources unchanged during probes")
++	var report: Dictionary = {"observations":observations,"positive_controls":controls,"fixture_checks":fixture_checks,"fixture_failures":fixture_failures,"sources_before":before_hashes,"sources_after":after,"renderer":RenderingServer.get_current_rendering_method(),"display":DisplayServer.get_name()}
++	var file := FileAccess.open(out.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t")); file.close()
++	print("EDITOR_INTERACTION_REVIEW ",fixture_checks," checks / ",fixture_failures," fixture failures")
++	quit(0 if fixture_failures == 0 else 1)
+diff --git a/docs/TRACK_EDITOR_USABILITY_ASSESSMENT_2026_11_14.md b/docs/TRACK_EDITOR_USABILITY_ASSESSMENT_2026_11_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_EDITOR_USABILITY_ASSESSMENT_2026_11_14.md
+@@ -0,0 +1,149 @@
++# Track editor usability assessment
++
++The editor has reproducible problems with picking, tool state and unfinished work. The most serious findings are losing a surface preview through ordinary toolbar actions and editing the previous object through controls presented as placement settings. These are sufficient to make routine authoring unpredictable, even though basic selection and gesture rollback work.
++
++This is an assessment of the current implementation on 14 November 2026. It includes seven interaction findings and one supporting visibility observation. No production editor fix is included.
++
++## Findings
++
++Priority 1 means loss of work through a routine action. Priority 2 means an incorrect target, unintended edit, or inconsistent interaction that materially disrupts authoring. Priority 3 identifies a visibility weakness. These priorities are engineering judgments, not measured user failure rates.
++
++### EUI01 Unrelated toolbar clicks discard a surface preview
++
++**Priority 1. Confirmed through actual App mouse input.**
++
++Choose Surfaces and Area, then tap three points. Clicking the already-active Area button removes all three points. Opening Map also removes the pending area. Neither action asks whether to discard it. In the Area-button reproduction, the history remains empty and pending work becomes false, so Undo has no checkpoint for the removed preview.
++
++Both actions call `cancel_gesture()`, which also clears `paint_points`. Cancelling an in-progress pointer transaction and discarding a completed but unconfirmed preview currently share that operation. The Map action calls it before opening its panel, and paint-mode buttons call it even when the chosen mode is unchanged.
++
++Sources: [gesture cancellation](../game/editor/editor_canvas.gd#L232), [Map action](../game/core/features/editor.gd#L172), [paint-mode buttons](../game/core/features/editor.gd#L2197).
++
++Native evidence: [three pending points](evidence/editor-interactions-2026-11-14/native-final/05-pending-area.png), [zero points after clicking Area](evidence/editor-interactions-2026-11-14/native-final/06-area-lost-on-active-tool-click.png). The JSON observations also reproduce loss on Map entry.
++
++Recommended behavior: clicking an active tool should preserve its state. Opening settings should preserve the preview. Deliberate preview cancellation should have a separate, explicit action.
++
++### EUI02 Placement orientation changes the last placed object
++
++**Priority 2. Confirmed through the actual object palette and orientation buttons.**
++
++Choose a wooden crate, place it, and change Orientation to 90 degrees while remaining in placement mode. The placed crate changes from 0 to 90 degrees and an Undo entry is added. The placement angle also becomes 90 degrees.
++
++At the time of the edit, `mode` is `place` and the property controls report `selected = false`, but `selected_object` still refers to the placed crate. The controls construct a placement-settings view; the rotation handler instead treats any nonnegative object selection as an instruction to edit that object. Size explicitly checks whether the controls are editing a selected object, making rotation inconsistent with its neighboring control.
++
++Sources: [selection after placement](../game/editor/editor_canvas.gd#L641), [property-control target](../game/core/features/editor.gd#L924), [rotation handler](../game/core/features/editor.gd#L972).
++
++Native evidence: [placement controls](evidence/editor-interactions-2026-11-14/native-final/03-after-placement.png), [orientation adjustment](evidence/editor-interactions-2026-11-14/native-final/04-stamp-rotation-changed-existing.png). The object-angle change is recorded in JSON; a square crate's footprint alone is insufficient to prove a 90-degree rotation visually.
++
++Recommended behavior: placement controls should update the next placement. Editing an existing object should require an explicit selected-object context.
++
++### EUI03 Road picking favors selection and insertion order over the clicked road
++
++**Priority 2. Reproduced with mouse-equivalent canvas coordinates and native touch events.**
++
++The controlled case contains two separate parallel roads, each 6 m wide, with centers 8 m apart. At overview zoom their centers are 21.049 pixels apart. Clicking the exact center of road 0 selects road 1 when nothing is selected. After selecting road 0, clicking the exact center of road 1 keeps road 0 selected.
++
++The road picker first tries the current selection, then tries other pieces in reverse insertion order. It accepts the first piece with a sampled centerline point inside a minimum 24-pixel radius. It does not rank candidates by distance. At this zoom, that invisible tolerance extends beyond the visible road and includes the neighboring road's center.
++
++Source: [road candidates and hit testing](../game/editor/editor_canvas.gd#L888). The object picker already ranks containment and distance; the road picker uses a different rule.
++
++Layer/cycling reaches the other road in the control case, but requiring it for a click directly on a separate road creates unnecessary recovery work.
++
++Recommended behavior: rank road hits by the visible geometry and distance, then provide cycling for ambiguous overlaps. Avoid letting an existing selection override a clearly closer road.
++
++### EUI04 Clicking an object permanently leaves placement mode
++
++**Priority 2 usability issue with intentional implementation behavior. Confirmed through actual App mouse input.**
++
++Choose a crate for placement and click an existing crate. The mode changes from `place` to `objects`. Click empty ground next: nothing is placed, and the mode remains `objects`. Resuming placement requires choosing an asset again.
++
++The transition is deliberate: the canvas changes mode when placement input intersects an authored object. Direct access to object editing is useful, but the incidental hit also changes the meaning of subsequent clicks. Both states keep the Objects rail highlighted, and ordinary contextual guidance is hidden as described in EUI08.
++
++Source: [placement-to-selection transition](../game/editor/editor_canvas.gd#L388). Native evidence: [placement palette](evidence/editor-interactions-2026-11-14/native-final/01-place-before-click.png), [object editing after the click](evidence/editor-interactions-2026-11-14/native-final/02-placement-became-selection.png).
++
++Recommended behavior: expose Select and Place as clear states. If clicking an object temporarily selects it during placement, provide an obvious way to resume the pending placement.
++
++### EUI05 A one-pixel movement can move an object substantially
++
++**Priority 2. Reproduced directly against the production canvas input handler.**
++
++With the default 1 m object grid, an object at `(0.49, 0.49)` moves to approximately `(1, 0)` after a one-pixel horizontal drag. Its resulting screen displacement is 5.497 pixels. The initial coordinates are legal; imported objects, rotation and free-placement operations can produce coordinates outside the active grid.
++
++The drag path snaps the absolute target before deciding whether the gesture is an edit. It uses a world-distance threshold of 0.1 m rather than a screen-space drag threshold. Small pointer movement can therefore start an edit and snap both axes, including an axis the pointer did not move along.
++
++Source: [object movement and edit threshold](../game/editor/editor_canvas.gd#L545). A pure tap leaves the document unchanged, so this is specifically a movement-discrimination problem.
++
++Recommended behavior: require a screen-space drag threshold before editing, and apply grid snapping to the intended movement without immediately relocating an off-grid selection.
++
++### EUI06 Escape leaves placement and the previous object targeted
++
++**Priority 2. Confirmed through actual App keyboard and mouse input.**
++
++After choosing a crate, press Escape and click empty ground. A crate is still placed. After placing an object, Escape also leaves `selected_object` intact; pressing Delete next removes that object. In the controlled sequence the object count falls from two to one.
++
++Escape clears the road ghost and road selection, but does not clear the object selection or exit object placement. The help says “Esc cancels” without explaining that difference. Undo can recover the deletion; this finding concerns inconsistent cancellation and continued targeting.
++
++Source: [Escape handling](../game/core/features/editor.gd#L1436), [object deletion](../game/core/features/editor.gd#L906).
++
++Recommended behavior: define one cancellation sequence across tools, such as cancelling the active gesture first, then clearing the preview/selection or returning to Select on another Escape. Show when a placement tool remains armed.
++
++### EUI07 Tab can switch Surfaces to Track
++
++**Priority 2. Confirmed through the actual App keyboard handler.**
++
++Choose Surfaces and Line, click on a road, then press Tab with no text field focused. The mode changes from `paint` to `road`, a road is selected, and the surface toolbar disappears.
++
++The shortcut cycles objects only in `objects` mode. Every other mode calls `cycle_piece()`, which sets the road mode. This route bypasses the normal category-switch handler. The help describes Tab as cycling overlapping roads, but its implementation is not limited to road editing.
++
++Sources: [Tab handling](../game/core/features/editor.gd#L1461), [road cycling changes mode](../game/editor/editor_canvas.gd#L1390). Native evidence: [surface tool replaced by road controls](evidence/editor-interactions-2026-11-14/native-final/07-tab-switched-to-road.png).
++
++Recommended behavior: scope cycling to its active domain and preserve conventional focus navigation where appropriate.
++
++### EUI08 Useful guidance exists but is normally hidden
++
++**Priority 3 supporting observation.**
++
++The UI computes tool instructions, including how to place, move, reshape and cycle components, but hides the feedback label when there is no save error or temporary hint. The native review records a nonempty road instruction with `guidance_visible = false`. Error hints do appear; the limitation is ordinary mode guidance.
++
++Source: [guidance stored then hidden](../game/core/features/editor.gd#L754). Native evidence: [road preview without the computed guidance](evidence/editor-interactions-2026-11-14/native-final/08-road-guidance.png).
++
++A compact persistent state such as “Place: Wooden crate” or “Select objects” would help users predict their next click without displaying the full help text continuously.
++
++## What works
++
++The control cases retain useful behavior: a pure object-selection tap does not alter document data; cancelling a moved-object gesture restores its original position; switching away from and back to Track preserves an unfinished road preview; and road cycling can reach the otherwise obscured candidate. These findings do not establish a general failure of selection, cancellation or preview retention. The problems occur at specific state transitions and input boundaries.
++
++## Recommended order
++
++1. Preserve unfinished surface work and separate placement settings from existing-object edits.
++2. Correct road candidate ranking and object drag discrimination.
++3. Make placement/selection state explicit, align Escape behavior, and constrain shortcuts to their tool domains.
++
++This work should precede further cosmetic editor changes. Verification should exercise the complete click sequences above, including the next click after a mode transition, and check both document state and visible controls.
++
++## Evidence and scope
++
++The [review script](../game/tests/review_editor_interactions_2026_11_14.gd) uses validated disposable fixtures, actual App controls, viewport mouse/keyboard events and direct native-touch canvas events. It runs offline with workspace-owned profiles, draft libraries and records. The ready-editor gate waits for the real native preview, canvas preparation, world construction and pending writes. No production assertion was weakened.
++
++The final graphical Compatibility run completed **41 fixture/control checks with zero fixture failures**, produced eight native screenshots and reproduced the findings above. The final headless run and a further run through `scripts/dev.ps1` each completed **33 checks with zero fixture failures** and reproduced the same observations. These counts qualify the probes and controls; they are not a claim that the editor has no defects. [Graphical measurements and source hashes](evidence/editor-interactions-2026-11-14/native-final/report.json), [headless measurements](evidence/editor-interactions-2026-11-14/headless-final/report.json), [preferred-runner measurements](evidence/editor-interactions-2026-11-14/preferred-final/report.json).
++
++The engine is the pinned `4.7.2.stable.official.ed1daf0bf`. The preferred entry-point command is:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 `
++  -Action TestScript `
++  -ScriptPath res://tests/review_editor_interactions_2026_11_14.gd `
++  -CommandTimeoutSeconds 150 `
++  -TestArgument '--review-out=C:/Codes/Godot/Beat my track/docs/evidence/editor-interactions-2026-11-14/preferred-final'
++```
++
++Before execution, the process environment assigns `APPDATA` and `LOCALAPPDATA` to a review profile under `build/editor-interactions-2026-11-14/` and clears `BMT_API_URL` and `BMT_DEV_AUTH_KEY`. Direct final runs use the exact pinned console executable with `--path game --script res://tests/review_editor_interactions_2026_11_14.gd`, adding either `--headless` or `--rendering-method gl_compatibility`. Final raw logs and command receipts accompany the measurements.
++
++Initial attempts are excluded from finding qualification: one did not await lazy editor entry; another fixture assigned a new dictionary key through property syntax, producing a key type rejected by the unchanged document validator; and a later palette-input fixture omitted paging to the crate. Corrected fixtures validate before entry, wait for actual readiness and click through the palette pages. Their original logs/reports are retained under [attempts](evidence/editor-interactions-2026-11-14/attempts). Those setup failures are not attributed to editor usability.
++
++Changed files are this assessment, the review script and its evidence. The five reviewed production sources have exact before/after hashes within each final run. The normal development wrapper refreshes generated build metadata; concurrent repository work remains intact. The review adds no production editor behavior, asset or quality-setting change.
++
++The [source checkpoint](evidence/editor-interactions-2026-11-14/task.patch) contains only the new review script and this assessment. Its verification receipt records exact forward/reverse application in a private repository and equality of the final observations across all three accepted runs. No main-index staging or commit is included. The checkpoint verifier initially encountered Windows automatic line-ending conversion; the private validation repository explicitly disables it for byte-exact application. An earlier receipt check also ran before the checkpoint existed; both verification setup errors were corrected.
++
++The prescribed build-retention cleaner ran at closeout. Automatic approval review rejected direct deletion of `build/editor-interactions-2026-11-14` as “blocked by policy,” so its disposable profiles and private validation output remain under normal retention. The [cleanup receipt](evidence/editor-interactions-2026-11-14/build-cleanup.json) records the shared build total and protected/recent output above the target. The root-level initial report and the `attempts` directory contain excluded fixture results; accepted results are only the three `*-final` directories.
++
++The assessment covers deterministic interaction behavior on Windows at 1280 by 720, with a small Pine fixture. It is not a user study, a performance benchmark, a full editor regression pass or a physical-device result. Phone ergonomics, sustained touch use, dense/large documents and other biomes remain acceptance work. No device test, APK/export, live backend operation, deployment, external share or owner-process action was performed.

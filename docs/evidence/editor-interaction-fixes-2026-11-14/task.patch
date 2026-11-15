@@ -1,0 +1,997 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -246,7 +246,7 @@
+ 		editor_memory.pressure_requested = true
+ 		editor_memory.next_sample = 0
+ 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:
+-		if is_instance_valid(canvas) and canvas.active_pointer != -99: canvas.cancel_gesture()
++		if is_instance_valid(canvas) and canvas.active_pointer != -99: canvas.cancel_gesture(false)
+ 		_flush_editor_writes()
+ 		_publishing_slots_foreground = false
+ 		if race_ad_breaks != null:
+diff --git a/game/core/features/editor.gd b/game/core/features/editor.gd
+--- a/game/core/features/editor.gd
++++ b/game/core/features/editor.gd
+@@ -171,7 +171,7 @@
+ 	app.editor_issue_button.custom_minimum_size = Vector2(112,52)
+ 	top.add_child(app.editor_issue_button)
+ 	var settings: Button = EditorButton.make("","more",func() -> void:
+-		app.canvas.cancel_gesture()
++		app.canvas.cancel_gesture(false)
+ 		app.editor_map_panel.visible = not app.editor_map_panel.visible
+ 		app.editor_tools_panel.hide())
+ 	settings.text = "Map"
+@@ -483,7 +483,9 @@
+ 	app.get_tree().create_timer(4.0).timeout.connect(func() -> void:
+ 		if generation == app.editor_hint_generation and is_instance_valid(app.editor_status) and app.editor_status.get_instance_id() == label_id:
+ 			app.editor_hint_active = false
+-			if app.editor_save_error == OK: app.editor_status.hide())
++			if app.editor_save_error == OK:
++				app.editor_status.text = app.editor_guidance
++				app.editor_status.visible = not app.editor_guidance.is_empty())
+ 
+ func run_update_editor_save_state(app: Node) -> void:
+ 	if not is_instance_valid(app.editor_save_button): return
+@@ -613,8 +615,8 @@
+ 	dialog.popup_centered_clamped(Vector2i(510,200))
+ 
+ func run_editor_category(app: Node, value: String) -> void:
++	app.canvas.cancel_gesture(false)
+ 	app._stash_pending_tool()
+-	app.canvas.cancel_gesture()
+ 	app._restore_pending_tool(value)
+ 	app.canvas.selected_piece = -1
+ 	app.canvas.selected_object = -1
+@@ -729,7 +731,7 @@
+ 			(surface_button as EditorButton).surface_tint = TrackTheme.palette(biome)[pair[0]]
+ 		app._context_button("Puddle","terrain_puddle",app._choose_hazard.bind("puddle"))
+ 		app._build_paint_tools()
+-		app.editor_status.text = "Drag to paint freely" if app.canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
++		app.editor_status.text = "Choose a paint mode to continue." if app.canvas.mode == "pan" else "Drag to paint freely" if app.canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
+ 	elif category == "objects":
+ 		if app.canvas.selected_object >= 0 and app.canvas.mode == "objects":
+ 			app.editor_status.text=CreatorObjects.description(app.document.objects[app.canvas.selected_object].kind)
+@@ -748,12 +750,12 @@
+ 				app._build_editor_tools())
+ 		else:
+ 			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(app.canvas.stamp_jump_profile,str(app.document.theme))) if app.canvas.stamp_kind == "jump" else CreatorCatalog.label(app.canvas.stamp_kind)
+-			app.editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if app.canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if app.canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
++			app.editor_status.text = GameText.message(stamp_label)+" / "+GameText.message(("Drag a curve; release to place" if app.canvas.run_shape=="curve" else "Drag a line, or tap its two ends") if app.canvas.mode=="run" else "Tap empty ground to place one object.")
+ 			if app.canvas.mode=="objects": app.editor_status.text="Tap an object to move, rotate or delete"
+ 	app._build_object_controls(category == "objects",browsing)
+ 	app.editor_guidance = app.editor_status.text
+ 	if app.editor_hint_active: app.editor_status.text = active_hint
+-	if app.editor_save_error == OK and not app.editor_hint_active: app.editor_status.hide()
++	app.editor_status.show()
+ 	app._layout_editor_feedback()
+ 
+ 	var context_width: float = 0
+@@ -929,6 +931,7 @@
+ 	var selected: bool = app.canvas.mode == "objects" and app.canvas.selected_object >= 0 and app.canvas.selected_object < app.document.objects.size()
+ 	var state: Dictionary = app.document.objects[app.canvas.selected_object].duplicate(true) if selected else {"kind":app.canvas.stamp_kind,"scale":app.canvas.stamp_scale,"rotation":app.canvas.stamp_rotation,"span":app.canvas.stamp_span,"placement":app.object_browser.placement,"color":app.canvas.stamp_container_color}
+ 	state["multiple"] = selected and app.canvas.object_indices().size() > 1
++	state["mode"] = app.canvas.mode
+ 	if selected: state["span"] = CreatorObjects.size_of(state).y
+ 	if state.kind == "jump": state["jump_profile"] = JumpProfiles.id(state) if selected else app.canvas.stamp_jump_profile
+ 	var target: String = str(app.document.id)+"/"+str(app.canvas.selected_object if selected else -1)+"/"+str(state.kind)+"/"+str(state.multiple)
+@@ -952,6 +955,17 @@
+ 	if not is_instance_valid(app.canvas) or app.screen != "create" or app.canvas.mode not in ["objects","place","run"]: return
+ 	var selected: bool = app.canvas.mode == "objects" and app.canvas.selected_object >= 0
+ 	match property:
++		"mode":
++			if (value == "objects" and app.canvas.mode == "objects") or (value == "place" and app.canvas.mode in ["place","run"]):
++				app._build_editor_tools()
++				return
++			app.canvas.cancel_gesture(false)
++			app.canvas.multi_select = false
++			app.canvas.selected_object = -1
++			app.canvas.mode = "objects" if value == "objects" else "place" if app.object_browser.placement == "single" else "run"
++			app.editor_object_property = ""
++			app._build_editor_tools()
++			return
+ 		"kind": app.object_browser.choose(str(value)); return
+ 		"placement": app._object_placement(str(value)); return
+ 		"rotation": app._set_object_rotation(float(value)); return
+@@ -967,13 +981,13 @@
+ 	app._build_editor_tools()
+ 
+ func run_object_rotation(app: Node) -> float:
+-	return float(app.document.objects[app.canvas.selected_object].rotation) if app.canvas.selected_object >= 0 else app.canvas.stamp_rotation
++	return float(app.document.objects[app.canvas.selected_object].rotation) if app.canvas.mode == "objects" and app.canvas.selected_object >= 0 else app.canvas.stamp_rotation
+ 
+ func run_set_object_rotation(app: Node, value: float) -> void:
+ 	if not is_finite(value): return
+ 	var angle: float = fposmod(value,360.0)
+ 	app.canvas.stamp_rotation = angle
+-	if app.canvas.selected_object >= 0 and not is_equal_approx(float(app.document.objects[app.canvas.selected_object].rotation),angle):
++	if app.canvas.mode == "objects" and app.canvas.selected_object >= 0 and not is_equal_approx(float(app.document.objects[app.canvas.selected_object].rotation),angle):
+ 		var proposed: Array = preload("res://editor/object_editing.gd").rotated(app.document.objects,app.canvas.object_indices(),angle-float(app.document.objects[app.canvas.selected_object].rotation))
+ 		if proposed.is_empty(): app._editor_hint("Keep the whole selection inside the map."); return
+ 		if not app.canvas.admit("objects",proposed): return
+@@ -1411,7 +1425,7 @@
+ 
+ func run_unhandled_key_input(app: Node, event: InputEvent) -> void:
+ 	if is_instance_valid(app.object_population_panel): return
+-	if app.screen != "create" or is_instance_valid(app.game) or not event is InputEventKey or not event.pressed: return
++	if app.screen != "create" or is_instance_valid(app.game) or not event is InputEventKey or not event.pressed or event.echo: return
+ 	var focus: Control = app.get_viewport().gui_get_focus_owner()
+ 	if focus is LineEdit or focus is TextEdit: return
+ 	var key: Key = event.physical_keycode if event.physical_keycode != 0 else event.keycode
+@@ -1434,9 +1448,19 @@
+ 				if app.canvas.mode == "road": app.canvas.confirm_piece()
+ 				elif app.canvas.mode in ["paint","pan"]: app.canvas.confirm_paint()
+ 			KEY_ESCAPE:
+-				app.canvas.cancel_gesture()
++				var had_pointer: bool = app.canvas.active_pointer != -99
++				app.canvas.cancel_gesture(not had_pointer)
++				if had_pointer:
++					app._build_editor_tools()
++					app.get_viewport().set_input_as_handled()
++					return
+ 				app.canvas.ghost.clear()
+ 				app.canvas.selected_piece = -1
++				app.canvas.selected_object = -1
++				app.canvas.multi_select = false
++				if app.canvas.mode in ["place","run"]: app.canvas.mode = "objects"
++				elif app.canvas.mode in ["start","start_line"]: app.canvas.mode = "road"
++				elif app.canvas.mode == "paint": app.canvas.mode = "pan"
+ 				app.editor_geometry = ""
+ 				app.editor_tools_panel.hide()
+ 				app.editor_map_panel.hide()
+@@ -1451,7 +1475,9 @@
+ 			KEY_1: app._editor_category("road")
+ 			KEY_2: app._editor_category("paint")
+ 			KEY_3: app._editor_category("objects")
+-			KEY_4: app.canvas.choose_start_line()
++			KEY_4:
++				if app._editor_tool() != "road": app._editor_category("road")
++				app.canvas.choose_start_line()
+ 			KEY_Q:
+ 				if app.canvas.mode in ["objects","place"]: app._set_object_rotation(app._object_rotation()-22.5)
+ 				else: app._change_piece("heading",-15.0)
+@@ -1460,7 +1486,8 @@
+ 				else: app._change_piece("heading",15.0)
+ 			KEY_TAB:
+ 				if app.canvas.mode == "objects": app.canvas.cycle_objects()
+-				else: app.canvas.cycle_piece()
++				elif app.canvas.mode == "road" and app.canvas.ghost.is_empty(): app.canvas.cycle_piece()
++				else: handled = false
+ 			_: handled = false
+ 	if handled: app.get_viewport().set_input_as_handled()
+ 
+@@ -2044,7 +2071,7 @@
+ 	if is_instance_valid(app.object_browser):
+ 		app.object_browser.stamp_container_color = color
+ 		app.object_browser.refresh()
+-	if app.canvas.selected_object < 0: return
++	if app.canvas.mode != "objects" or app.canvas.selected_object < 0: return
+ 	var object: Dictionary = app.document.objects[app.canvas.selected_object]
+ 	if object.kind != "container" or ContainerPaint.value(object) == color: return
+ 	app._remember()
+@@ -2108,6 +2135,8 @@
+ 
+ func run_object_placement(app: Node, value: String) -> void:
+ 	app.canvas.cancel_gesture()
++	app.canvas.multi_select = false
++	app.canvas.selected_object = -1
+ 	app.canvas.run_start=Vector2.INF
+ 	app.canvas.run_preview.clear()
+ 	app.canvas.run_shape="curve" if value=="curve" else "line"
+@@ -2117,6 +2146,9 @@
+ 	app._build_editor_tools()
+ 
+ func run_choose_hazard(app: Node, kind: String) -> void:
++	if not app.canvas.paint_points.is_empty():
++		app._resolve_editor_previews(func() -> void: run_choose_hazard(app,kind),"Confirm or discard the pending previews before changing tools.")
++		return
+ 	app.canvas.cancel_gesture()
+ 	app.canvas.ghost.clear()
+ 	app.canvas.stamp_kind=kind
+@@ -2176,6 +2208,20 @@
+ 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+ 		DisplayServer.virtual_keyboard_show(field.text,field.get_viewport().get_screen_transform()*field.get_global_rect(),DisplayServer.KEYBOARD_TYPE_DEFAULT,40,0,field.text.length())
+ 
++func run_choose_paint_mode(app: Node, value: String) -> void:
++	if app.canvas.mode == "paint" and app.canvas.paint_mode == value:
++		app.canvas.cancel_gesture(false)
++		app._build_editor_tools()
++		return
++	if not app.canvas.paint_points.is_empty():
++		app._resolve_editor_previews(func() -> void: run_choose_paint_mode(app,value),"Confirm or discard the pending previews before changing tools.")
++		return
++	app.canvas.cancel_gesture(false)
++	app.canvas.paint_mode = value
++	app.canvas.mode = "paint"
++	app.canvas.queue_redraw()
++	app._build_editor_tools()
++
+ func run_build_surface_toolbar(app: Node) -> void:
+ 	for child: Node in app.surface_actions.get_children():
+ 		app.surface_actions.remove_child(child)
+@@ -2192,13 +2238,9 @@
+ 	modes.add_child(segments)
+ 	for entry: Array in [["free","Free","paint_brush"],["area","Area","paint_area"],["line","Line","paint_line"]]:
+ 		var value: String = entry[0]
+-		var chosen: bool = app.canvas.paint_mode == value
++		var chosen: bool = app.canvas.mode == "paint" and app.canvas.paint_mode == value
+ 		var button: Button = EditorButton.make(entry[1],entry[2],func() -> void:
+-			app.canvas.cancel_gesture()
+-			app.canvas.paint_mode = value
+-			app.canvas.mode = "paint"
+-			app.canvas.queue_redraw()
+-			app._build_editor_tools(),chosen)
++			run_choose_paint_mode(app,value),chosen)
+ 		button.name = "PaintMode_"+value
+ 		button.custom_minimum_size = Vector2(78,68)
+ 		for state: String in ["normal","hover","pressed","hover_pressed"]:
+diff --git a/game/editor/editor_canvas.gd b/game/editor/editor_canvas.gd
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -11,6 +11,7 @@
+ signal native_changed(track: NativeTrack)
+ 
+ const PLANNING_PITCH: float = 70.0
++const OBJECT_DRAG_THRESHOLD: float = 6.0
+ 
+ var document: Dictionary
+ var mode: String = "road"
+@@ -229,15 +230,23 @@
+ 	if not multi_select: selected_objects.assign([selected_object] if selected_object >= 0 else [])
+ 	selection_changed.emit(); queue_redraw()
+ 
+-func cancel_gesture() -> void:
++func cancel_gesture(discard_previews: bool = true) -> void:
++	# Passive UI/navigation cancels the pointer transaction while keeping
++	# completed previews. Explicit Cancel/Discard still clears those previews.
++	var had_pointer: bool = active_pointer != -99
+ 	_rollback_navigation_edit()
+ 	_selection_toggle = -1
+ 	pending_paint_accept = false
+-	run_draw.clear()
++	if discard_previews or drawing_run:
++		run_draw.clear()
++		run_preview.clear()
+ 	drawing_run=false
+-	run_preview.clear()
+-	run_start=Vector2.INF
+-	paint_points.clear()
++	if discard_previews:
++		run_start=Vector2.INF
++		paint_points.clear()
++	elif had_pointer and mode == "paint":
++		paint_points = paint_before_gesture.duplicate(true) if paint_mode != "free" else []
++	paint_handle = -1
+ 	pending_stamp = false
+ 	dragging = false
+ 	panning = false
+@@ -388,8 +397,9 @@
+ 	if mode=="place":
+ 		for object: Dictionary in document.objects:
+ 			if CreatorObjects.contains(object,to_world(point)):
+-				mode="objects"
+-				break
++				pending_stamp = false
++				hint_changed.emit("Choose Select to edit an existing object.")
++				return
+ 	start_drag = false
+ 	pending_start_flip = false
+ 	if mode == "road" and ghost.is_empty() and document.has("start_line") and not editing_spline():
+@@ -543,16 +553,19 @@
+ 			pending_stamp = false
+ 			panning = true
+ 	if dragging:
+-		var position: Vector2 = object_position(drag_origin+to_world(point)-pointer_origin)
+-		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
++		if press_position.distance_to(point) < OBJECT_DRAG_THRESHOLD and not changed_in_gesture: return
++		if selected_object < 0: return
++		var delta: Vector2 = to_world(point)-pointer_origin
++		if object_snap > 0.0: delta = delta.snapped(Vector2.ONE*object_snap)
++		if delta.is_zero_approx() and not changed_in_gesture: return
++		var original: Array = gesture.before.get("objects",document.objects)
++		var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),delta)
++		if moved == document.objects: return
++		if not changed_in_gesture:
+ 			_start_edit()
+ 			changed_in_gesture = true
+-		if changed_in_gesture and selected_object >= 0:
+-			var original: Array = gesture.before.get("objects",document.objects)
+-			var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),position-drag_origin)
+-			if moved == document.objects: return
+-			document.objects = moved
+-			document_changed.emit()
++		document.objects = moved
++		document_changed.emit()
+ 	elif panning: pan += point-previous_pointer
+ 	previous_pointer = point
+ 	queue_redraw()
+@@ -638,7 +651,7 @@
+ 		if not admit("objects",document.objects+[object]): return
+ 		_start_edit()
+ 		document.objects.append(object)
+-		selected_object = document.objects.size()-1
++		selected_object = -1
+ 		selected = -1
+ 	else: return
+ 	document_changed.emit()
+@@ -717,7 +730,7 @@
+ 	queue_redraw()
+ 
+ func _notification(what: int) -> void:
+-	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: cancel_gesture()
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: cancel_gesture(false)
+ 
+ func _draw() -> void:
+ 	if document.is_empty() or size.x < 10 or size.y < 10: return
+@@ -852,10 +865,18 @@
+ 	pending_road_tap = false
+ 	pending_piece_accept = false
+ 	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
+-	if not current.is_empty() and current.kind == "spline" and _begin_spline(current,point): return
++	var candidates: Array[int] = []
++	if ghost.is_empty(): candidates = road_candidates(point)
++	var other_body: bool = false
++	var other_distance: float = INF
++	if not candidates.is_empty() and candidates[0] != selected_piece:
++		var geometries: Array = _prepared("road_picking",[document.pieces],_road_pick_geometry)
++		other_body = Geometry2D.is_point_in_polygon(to_world(point),geometries[candidates[0]].outline)
++		if other_body: other_distance = _road_center_distance(geometries[candidates[0]].points,point)
++	if not current.is_empty() and current.kind == "spline" and _begin_spline(current,point,other_distance): return
+ 	if not current.is_empty():
+ 		for key: String in geometry_keys(current):
+-			if to_screen(_geometry_handle(current,key)).distance_to(point) <= 24:
++			if to_screen(_geometry_handle(current,key)).distance_to(point) <= minf(24.0,other_distance+0.001):
+ 				geometry_drag = key
+ 				geometry_origin = RoadPieces.height(current) if key == "height" else float(current.get(key,0.0 if key == "curvature" else 90.0))
+ 				piece_before_drag = current.duplicate(true)
+@@ -864,12 +885,12 @@
+ 				return
+ 		for end: int in range(0 if current.kind == "spline" else 2):
+ 			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
+-			if to_screen(handle).distance_to(point) <= 26:
++			if to_screen(handle).distance_to(point) <= minf(26.0,other_distance+0.001):
+ 				endpoint_drag = end
+ 				piece_before_drag = current.duplicate(true)
+ 				dragging = true
+ 				return
+-	if not current.is_empty() and piece_accept_rect(current).has_point(point):
++	if not current.is_empty() and piece_accept_rect(current).has_point(point) and piece_accept_rect(current).get_center().distance_to(point) <= other_distance+0.001:
+ 		pending_piece_accept = true
+ 		drag_origin = Vector2(current.position[0],current.position[1])
+ 		dragging = true
+@@ -885,17 +906,7 @@
+ 		drag_origin = Vector2(ghost.position[0],ghost.position[1])
+ 		dragging = true
+ 	else:
+-		var candidates: Array[int] = []
+-		if selected_piece >= 0: candidates.append(selected_piece)
+-		for i: int in range(document.pieces.size()-1,-1,-1):
+-			if i != selected_piece: candidates.append(i)
+-		selected_piece = -1
+-		for i: int in candidates:
+-			for p: Vector2 in RoadPieces.samples(document.pieces[i]):
+-				if to_screen(p).distance_to(point) < maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
+-					selected_piece = i
+-					break
+-			if selected_piece >= 0: break
++		selected_piece = candidates[0] if not candidates.is_empty() else -1
+ 		if selected_piece >= 0:
+ 			var piece: Dictionary = document.pieces[selected_piece]
+ 			if piece.kind == "spline" and _begin_spline(piece,point): return
+@@ -928,17 +939,17 @@
+ 	var reach: float = maxf(float(piece.point_widths[spline_point])*0.5+2.0,48.0/scale_factor())
+ 	return to_screen(nodes[spline_point]+normal*reach)
+ 
+-func _begin_spline(piece: Dictionary, point: Vector2) -> bool:
++func _begin_spline(piece: Dictionary, point: Vector2, hit_limit: float = INF) -> bool:
+ 	var nodes: PackedVector2Array = SplineRoad.points(piece)
+ 	var closest: int = -1
+-	var distance: float = 26.0
++	var distance: float = minf(26.0,hit_limit+0.001)
+ 	for i: int in range(nodes.size()):
+ 		var candidate: float = to_screen(nodes[i]).distance_to(point)
+ 		if candidate < distance: closest = i; distance = candidate
+ 	if closest >= 0:
+ 		spline_point = closest
+ 		spline_point_drag = closest
+-	elif spline_width_handle(piece).distance_to(point) <= 24:
++	elif spline_width_handle(piece).distance_to(point) <= minf(24.0,hit_limit+0.001):
+ 		geometry_drag = "point_width"
+ 		geometry_origin = float(piece.point_widths[spline_point])
+ 	else: return false
+@@ -1387,17 +1398,43 @@
+ 	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
+ 	return points[middle]+Vector2(-direction.y,direction.x)*float(piece.width)*0.5
+ 
++func _road_pick_geometry() -> Array:
++	var result: Array = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
++	for index: int in range(document.pieces.size()):
++		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,index,topology)
++		result.append({"points":geometry.points,"outline":RoadPieces.section_outline(document.pieces,index,0.0,topology)})
++	return result
++
++func _road_center_distance(points: PackedVector2Array, point: Vector2) -> float:
++	var distance: float = INF
++	for sample_index: int in range(points.size()-1):
++		var closest: Vector2 = Geometry2D.get_closest_point_to_segment(point,to_screen(points[sample_index]),to_screen(points[sample_index+1]))
++		distance = minf(distance,closest.distance_to(point))
++	return distance
++
++func road_candidates(point: Vector2) -> Array[int]:
++	var hits: Array[Dictionary] = []
++	var geometries: Array = _prepared("road_picking",[document.pieces],_road_pick_geometry)
++	var world_point: Vector2 = to_world(point)
++	for index: int in range(geometries.size()):
++		var geometry: Dictionary = geometries[index]
++		var inside: bool = Geometry2D.is_point_in_polygon(world_point,geometry.outline)
++		var distance: float = _road_center_distance(geometry.points,point)
++		if inside or distance <= 24.0: hits.append({"index":index,"inside":inside,"distance":distance})
++	hits.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
++		if a.inside != b.inside: return a.inside
++		if not is_equal_approx(a.distance,b.distance): return a.distance < b.distance
++		return a.index > b.index)
++	var result: Array[int] = []
++	for hit: Dictionary in hits: result.append(hit.index)
++	return result
++
+ func cycle_piece() -> void:
+-	var hits: Array[int] = []
+-	for i: int in range(document.pieces.size()):
+-		for p: Vector2 in RoadPieces.samples(document.pieces[i]):
+-			if to_screen(p).distance_to(press_position) <= maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
+-				hits.append(i)
+-				break
++	if mode != "road" or not ghost.is_empty(): return
++	var hits: Array[int] = road_candidates(press_position)
+ 	if hits.is_empty(): return
+ 	selected_piece = hits[(hits.find(selected_piece)+1)%hits.size()]
+-	ghost.clear()
+-	mode = "road"
+ 	selection_changed.emit()
+ 	queue_redraw()
+ 
+diff --git a/game/editor/object_properties.gd b/game/editor/object_properties.gd
+--- a/game/editor/object_properties.gd
++++ b/game/editor/object_properties.gd
+@@ -21,6 +21,11 @@
+ 		child.queue_free()
+ 	alignment = BoxContainer.ALIGNMENT_CENTER
+ 	add_theme_constant_override("separation",6)
++	if state.has("mode"):
++		var select: Button = _action("Select","multi_select",func() -> void: _edit("mode","objects"),"ObjectSelectMode",state.mode == "objects")
++		var place: Button = _action("Place","place_single",func() -> void: _edit("mode","place"),"ObjectPlaceMode",state.mode != "objects")
++		select.custom_minimum_size.x = 62
++		place.custom_minimum_size.x = 62
+ 	if editing in ["scale","rotation","span"]: _adjustment()
+ 	else: _overview()
+ 
+@@ -35,7 +40,7 @@
+ 	return button
+ 
+ func _edit(property: String, value: Variant) -> void:
+-	if state.get(property) == value: return
++	if property != "mode" and state.get(property) == value: return
+ 	edited.emit(property,value)
+ 
+ func _overview() -> void:
+diff --git a/game/tests/test_editor_workflow.gd b/game/tests/test_editor_workflow.gd
+--- a/game/tests/test_editor_workflow.gd
++++ b/game/tests/test_editor_workflow.gd
+@@ -71,7 +71,7 @@
+ 	app.set("editor_view",{})
+ 	app.set("history",[])
+ 	app.set("redo_history",[])
+-	app.call("_show_screen","create")
++	await app.call("_show_screen","create")
+ 	await process_frame
+ 	await process_frame
+ 	await _wait_preview()
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Eine niedrigere feste Ansicht, die Autos und Streckenumgebung hervorhebt."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Wähle Auswählen, um ein vorhandenes Objekt zu bearbeiten."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Wähle einen Malmodus, um fortzufahren."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Bestätige oder verwirf die ausstehenden Vorschauen, bevor du das Werkzeug wechselst."
+diff --git a/game/localization/en.po b/game/localization/en.po
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11805,3 +11805,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "A lower fixed view that brings out the cars and track scenery."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Choose Select to edit an existing object."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Choose a paint mode to continue."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Confirm or discard the pending previews before changing tools."
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Una vista fija más baja que destaca los coches y el entorno del circuito."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Elige Seleccionar para editar un objeto existente."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Elige un modo de pintura para continuar."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Confirma o descarta las vistas previas pendientes antes de cambiar de herramienta."
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Matalampi kiinteä näkymä korostaa autoja ja radan maisemia."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Muokkaa olemassa olevaa esinettä vaihtamalla valintatilaan."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Jatka valitsemalla maalaustila."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Vahvista tai hylkää keskeneräiset esikatselut ennen työkalun vaihtamista."
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Une vue fixe plus basse qui met en valeur les voitures et le décor du circuit."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Choisissez Sélectionner pour modifier un objet existant."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Choisissez un mode de peinture pour continuer."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Confirmez ou abandonnez les aperçus en attente avant de changer d’outil."
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Una vista fissa più bassa che mette in risalto auto e paesaggio."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Scegli Seleziona per modificare un oggetto esistente."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Scegli una modalità di pittura per continuare."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Conferma o scarta le anteprime in sospeso prima di cambiare strumento."
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11660,3 +11660,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "低い角度で固定し、車やコースの風景を引き立てます。"
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "既存のオブジェクトを編集するには「選択」を選んでください。"
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "続けるにはペイントモードを選んでください。"
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "ツールを変更する前に、保留中のプレビューを確定または破棄してください。"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11660,3 +11660,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "더 낮은 각도의 고정 시점으로 차량과 트랙 풍경을 강조합니다."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "기존 오브젝트를 편집하려면 선택을 누르세요."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "계속하려면 페인트 모드를 선택하세요."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "도구를 변경하기 전에 대기 중인 미리보기를 확정하거나 버리세요."
+diff --git a/game/localization/messages.pot b/game/localization/messages.pot
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11502,3 +11502,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr ""
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr ""
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr ""
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr ""
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "En lavere fast visning som fremhever bilene og omgivelsene."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Bytt til valgmodus for å redigere et eksisterende objekt."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Velg en malemodus for å fortsette."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Bekreft eller forkast de ventende forhåndsvisningene før du bytter verktøy."
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Een lager vast zicht dat de auto's en de omgeving van het circuit benadrukt."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Kies Selecteren om een bestaand object te bewerken."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Kies een schildermodus om door te gaan."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Bevestig of verwerp de openstaande voorbeelden voordat je van gereedschap wisselt."
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "Uma vista fixa mais baixa que destaca os carros e o cenário da pista."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Escolha Selecionar para editar um objeto existente."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Escolha um modo de pintura para continuar."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Confirme ou descarte as prévias pendentes antes de mudar de ferramenta."
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11691,3 +11691,15 @@
+ #: game/camera/camera_profile.gd
+ msgid "A lower fixed view that brings out the cars and track scenery."
+ msgstr "En lägre fast vy som framhäver bilarna och banans omgivning."
++
++#: game/editor/editor_canvas.gd:401
++msgid "Choose Select to edit an existing object."
++msgstr "Välj Markera för att redigera ett befintligt objekt."
++
++#: game/core/features/editor.gd:734
++msgid "Choose a paint mode to continue."
++msgstr "Välj ett målningsläge för att fortsätta."
++
++#: game/core/features/editor.gd:2150 game/core/features/editor.gd:2217
++msgid "Confirm or discard the pending previews before changing tools."
++msgstr "Bekräfta eller kasta de väntande förhandsvisningarna innan du byter verktyg."
+diff --git a/game/tests/test_editor_interactions_2026_11_14.gd b/game/tests/test_editor_interactions_2026_11_14.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_interactions_2026_11_14.gd
+@@ -0,0 +1,171 @@
++extends "res://tests/review_editor_interactions_2026_11_14.gd"
++## Regression sequences for EUI01-EUI08. Every save is workspace-owned.
++
++func direct_probes() -> void:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.objects = [object(0,0)]
++	var c: EditorCanvas = canvas(doc,"place"); c.stamp_kind = "crate"
++	tap(c,c.to_screen(Vector2.ZERO))
++	check(c.mode == "place" and doc.objects.size() == 1,"EUI04 occupied placement neither changes mode nor duplicates an object")
++	tap(c,c.to_screen(Vector2(20,0)))
++	check(c.mode == "place" and doc.objects.size() == 2,"EUI04 next empty tap still places")
++	check(c.selected_object == -1,"EUI02 placement does not retain an editable object selection")
++	c.free()
++	doc = TrackDocument.create_blank(); doc.pieces = [road(0),road(8)]
++	c = canvas(doc,"road"); c.zoom = 0.35
++	tap(c,c.to_screen(Vector2.ZERO))
++	check(c.selected_piece == 0,"EUI03 exact road center wins over a later neighbor")
++	tap(c,c.to_screen(Vector2(0,8)))
++	record("road_selection",{"selected":c.selected_piece,"geometry_drag":c.geometry_drag,"endpoint_drag":c.endpoint_drag,"candidates":c.road_candidates(c.to_screen(Vector2(0,8)))})
++	check(c.selected_piece == 1,"EUI03 nearest road wins over the existing selection")
++	c.cycle_piece(); check(c.selected_piece == 0,"Layer still reaches the other tolerance candidate")
++	c.ghost = RoadPieces.create("curve",Vector2(20,20)); var ghost: Dictionary = c.ghost.duplicate(true)
++	c.cycle_piece(); check(c.ghost == ghost,"EUI07 cycling never discards a road preview")
++	var handle: Vector2 = c.geometry_controls(c.ghost).width
++	touch(c,handle,true)
++	check(c.geometry_drag == "width","road preview geometry handles remain editable")
++	touch(c,handle,false)
++	c.free()
++	doc = TrackDocument.create_blank(); doc.pieces = [road(0),road(0)]
++	c = canvas(doc,"road"); tap(c,c.to_screen(Vector2.ZERO))
++	check(c.selected_piece == 1,"coincident roads retain deterministic topmost selection")
++	c.cycle_piece(); check(c.selected_piece == 0,"Layer cycles coincident roads")
++	c.free()
++	doc = TrackDocument.create_blank(); c = canvas(doc,"paint"); c.paint_mode = "area"
++	c.paint_points = [[0.0,0.0],[10.0,0.0],[10.0,10.0]]
++	var original_points: Array = c.paint_points.duplicate(true)
++	c.notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++	check(c.paint_points == original_points,"EUI01 passive focus changes preserve a finished preview")
++	from_paint_drag(c,original_points)
++	c.free()
++	doc = TrackDocument.create_blank(); doc.objects = [object(0.49,0.49)]
++	c = canvas(doc,"objects"); var saved: Dictionary = doc.duplicate(true)
++	var from: Vector2 = c.to_screen(Vector2(0.49,0.49))
++	touch(c,from,true); drag(c,from+Vector2(1,0)); touch(c,from+Vector2(1,0),false)
++	check(doc == saved,"EUI05 one-pixel jitter is selection only")
++	touch(c,from,true); drag(c,from+Vector2(12,0)); touch(c,from+Vector2(12,0),false)
++	var moved := Vector2(doc.objects[0].position[0],doc.objects[0].position[1])
++	check(moved.is_equal_approx(Vector2(2.49,0.49)),"EUI05 a deliberate drag snaps its delta and retains the unmoved axis")
++	from = c.to_screen(moved); touch(c,from,true); drag(c,from+Vector2(32,0)); c.cancel_gesture()
++	check(Vector2(doc.objects[0].position[0],doc.objects[0].position[1]).is_equal_approx(moved),"cancelled deliberate drag restores the object")
++	c.free()
++	doc = TrackDocument.create_blank(); doc.objects = [object(110,0)]
++	c = canvas(doc,"objects"); var edits: Array[int] = [0]
++	c.edit_started.connect(func() -> void: edits[0] += 1)
++	from = c.to_screen(Vector2(110,0)); touch(c,from,true); drag(c,from+Vector2(32,0)); touch(c,from+Vector2(32,0),false)
++	record("boundary_drag",{"position":doc.objects[0].position,"edits":edits[0]})
++	check(doc.objects[0].position == [110.0,0.0] and edits[0] == 0,"a drag blocked by the map boundary creates no edit transaction")
++	c.free()
++
++func copy_coverage() -> void:
++	for language: String in ["en","fr","es","de","pt_BR","ja","ko","nl","it","fi","sv","nb"]:
++		var catalogue: Translation = load("res://localization/"+language+".po")
++		for source: String in ["Choose Select to edit an existing object.","Choose a paint mode to continue.","Confirm or discard the pending previews before changing tools."]:
++			var translated: String = catalogue.get_message(source)
++			check(not translated.is_empty(),language+" has the new interaction message")
++			check(language == "en" or translated != source,language+" has authored copy rather than English fallback")
++
++func from_paint_drag(c: EditorCanvas, original_points: Array) -> void:
++	var at: Vector2 = c.to_screen(Vector2.ZERO)
++	touch(c,at,true); drag(c,at+Vector2(24,0))
++	c.notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++	check(c.paint_points == original_points and c.active_pointer == -99,"passive cancellation rolls back a draft handle without discarding the area")
++
++func app_probes() -> void:
++	app = load("res://core/app.tscn").instantiate()
++	var storage: String = ProjectSettings.globalize_path("res://../build/editor-interaction-fixes-2026-11-14/storage-"+str(OS.get_process_id()))
++	app.library = TrackLibrary.new(storage.path_join("tracks")); app.records = LocalRecords.new(storage.path_join("records.json"))
++	app.cloud_root_override = storage.path_join("cloud"); root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await show_fixture(); await choose_crate()
++	await click(app.canvas.to_screen(Vector2(0,14)))
++	check(app.canvas.mode == "place" and app.document.objects.size() == 1,"EUI04 actual occupied click preserves placement")
++	await click(app.canvas.to_screen(Vector2(30,14)))
++	check(app.canvas.mode == "place" and app.document.objects.size() == 2,"EUI04 actual following click places")
++	await show_fixture(); await choose_crate(); await click(app.canvas.to_screen(Vector2(30,14)))
++	check(app.document.objects.size() == 2,"independent placement-orientation fixture places its object")
++	await settle(); var prior: Array = app.document.objects.duplicate(true); var undo_count: int = app.history.size()
++	await click_named("ObjectOrientation"); await click_named("Face_90")
++	check(app.document.objects == prior and app.canvas.stamp_rotation == 90.0 and app.history.size() == undo_count,"EUI02 placement orientation changes only the next placement")
++	await click_named("ObjectControlsBack")
++	await click_named("ObjectPlaceMode")
++	check((app.root_ui.find_child("ObjectPlaceMode",true,false) as Button).button_pressed and app.document.objects == prior,"reselecting Place keeps its indicator and document unchanged")
++	await shot("01-place-mode")
++	await click_named("ObjectSelectMode")
++	check(app.canvas.mode == "objects","explicit Select switches to object selection")
++	await click(app.canvas.to_screen(Vector2(0,14)))
++	check(app.canvas.selected_object == 0,"explicit Select can select an existing object")
++	await click_named("ObjectSelectMode")
++	check(app.canvas.selected_object == 0 and (app.root_ui.find_child("ObjectSelectMode",true,false) as Button).button_pressed,"reselecting Select preserves the selection and indicator")
++	await click_named("ObjectOrientation"); await click_named("Face_90")
++	check(app.document.objects[0].rotation == 90.0 and app.history.size() == undo_count+1,"selected-object orientation remains an undoable edit")
++	app._undo(); await settle()
++	check(app.document.objects == prior,"Undo restores only the selected-object rotation")
++	await key(KEY_ESCAPE); await key(KEY_DELETE)
++	check(app.canvas.mode == "objects" and app.canvas.selected_object == -1 and app.document.objects == prior,"EUI06 Escape clears selection before Delete")
++	await click_named("ObjectPlaceMode")
++	check(app.canvas.mode == "place","explicit Place resumes the existing asset")
++	await key(KEY_ESCAPE); await click(app.canvas.to_screen(Vector2(20,0)))
++	check(app.canvas.mode == "objects" and app.document.objects == prior,"EUI06 Escape disarms placement before the next click")
++	await shot("02-select-mode")
++	await show_fixture(); app._editor_category("paint"); await frames(); await click_named("PaintMode_area")
++	for point: Vector2 in [Vector2(10,-6),Vector2(25,-6),Vector2(25,-17)]: await click(app.canvas.to_screen(point))
++	var pending: Array = app.canvas.paint_points.duplicate(true)
++	check(pending.size() == 3,"area preview has three points")
++	await click_named("PaintMode_area")
++	check(app.canvas.paint_points == pending and app._has_pending_editor_work(),"EUI01 reselecting Area preserves all preview points")
++	await click_text("Map")
++	check(app.editor_map_panel.visible and app.canvas.paint_points == pending,"EUI01 opening Map preserves the area")
++	await click_text("Map"); await shot("03-area-preserved")
++	await key(KEY_TAB)
++	check(app.canvas.mode == "paint" and app.canvas.paint_points == pending and app.surface_toolbar.visible,"EUI07 Tab preserves the surface tool and its preview")
++	await click_named("PaintMode_line")
++	var dialog: ConfirmationDialog = app.root_ui.find_child("PendingPreviewDialog",true,false) as ConfirmationDialog
++	check(dialog != null and dialog.visible and app.canvas.paint_points == pending,"changing paint tools resolves an unfinished preview explicitly")
++	if dialog != null: dialog.canceled.emit(); await frames()
++	check(app.canvas.paint_mode == "area" and app.canvas.paint_points == pending,"Cancel preserves the original paint tool and area")
++	await key(KEY_4)
++	check(app.canvas.mode == "start_line" and app._has_pending_editor_work(),"start-line shortcut preserves the hidden area preview")
++	app._editor_category("paint"); await frames()
++	check(app.canvas.paint_points == pending,"returning to Surfaces restores its area after start-line placement")
++	await click_named("AreaConfirm"); await settle()
++	check(app.document.paint.size() == 1 and app.canvas.paint_points.is_empty(),"preserved area still confirms normally")
++	app._undo(); await settle(); check(app.document.paint.is_empty(),"confirmed area is one undoable edit")
++	await key(KEY_ESCAPE)
++	var before_click: Dictionary = app.document.duplicate(true)
++	await click(app.canvas.to_screen(Vector2(10,-6)))
++	check(app.canvas.mode == "pan" and app.document == before_click and app.canvas.paint_points.is_empty(),"EUI06 Escape disarms surface authoring")
++	await show_fixture(); await choose_crate(); await click_named("ObjectSelectMode")
++	var at: Vector2 = app.canvas.to_screen(Vector2(0,14))
++	touch(app.canvas,at,true); drag(app.canvas,at+Vector2(40,0))
++	check(app.document.objects[0].position != [0.0,14.0],"drag fixture moves before Escape")
++	await key(KEY_ESCAPE)
++	check(app.document.objects[0].position == [0.0,14.0] and app.history.is_empty() and app.canvas.active_pointer == -99,"EUI06 first Escape rolls back an active drag without saving movement")
++	await settle()
++	check(app.library.load_wip(app.document.id).objects == app.document.objects,"cancelled drag recovery contains the original object position")
++	await show_fixture(); app.canvas.choose_piece("curve"); var preview: Dictionary = app.canvas.ghost.duplicate(true)
++	app._editor_category("objects"); app._editor_category("road")
++	check(app.canvas.ghost == preview,"category round trip retains pending road geometry")
++	check(app.editor_status.is_visible_in_tree() and not app.editor_guidance.is_empty(),"EUI08 normal tool guidance is visible")
++	await shot("04-road-guidance")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++		root.size = dimensions; root.content_scale_size = dimensions; await frames(8)
++		check(not app.editor_status.get_global_rect().intersects(app.root_ui.find_child("EditorRailPanel",true,false).get_global_rect()),"guidance stays clear of the rail at "+str(dimensions))
++	await settle(); app.queue_free(); await frames(6)
++	if is_instance_valid(GameSoundtrack.instance()): GameSoundtrack.instance().queue_free()
++	await frames(3); await create_timer(0.25).timeout
++
++func run() -> void:
++	out = ProjectSettings.globalize_path("res://../build/editor-interaction-fixes-2026-11-14/default")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--review-out="): out = argument.trim_prefix("--review-out=")
++	DirAccess.make_dir_recursive_absolute(out)
++	OS.set_environment("BMT_API_URL",""); OS.set_environment("BMT_DEV_AUTH_KEY","")
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size; root.gui_embed_subwindows = true
++	before_hashes = hashes(); copy_coverage(); direct_probes()
++	if "--direct-only" not in OS.get_cmdline_user_args(): await app_probes()
++	check(hashes() == before_hashes,"production sources stay stable throughout the run")
++	var file := FileAccess.open(out.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":fixture_checks,"failures":fixture_failures,"sources":before_hashes,"renderer":RenderingServer.get_current_rendering_method(),"display":DisplayServer.get_name()},"\t")); file.close()
++	print("EDITOR_INTERACTION_FIXES ",fixture_checks," checks / ",fixture_failures," failures")
++	quit(0 if fixture_failures == 0 else 1)
+diff --git a/game/tests/test_editor_interactions_2026_11_14.gd.uid b/game/tests/test_editor_interactions_2026_11_14.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_interactions_2026_11_14.gd.uid
+@@ -0,0 +1 @@
++uid://def3j02emyees
+diff --git a/scripts/translations/editor_interactions_2026_11_14.tsv b/scripts/translations/editor_interactions_2026_11_14.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/editor_interactions_2026_11_14.tsv
+@@ -0,0 +1,3 @@
++Choose Select to edit an existing object.|Choisissez Sélectionner pour modifier un objet existant.|Elige Seleccionar para editar un objeto existente.|Wähle Auswählen, um ein vorhandenes Objekt zu bearbeiten.|Escolha Selecionar para editar um objeto existente.|既存のオブジェクトを編集するには「選択」を選んでください。|기존 오브젝트를 편집하려면 선택을 누르세요.|Kies Selecteren om een bestaand object te bewerken.|Scegli Seleziona per modificare un oggetto esistente.|Muokkaa olemassa olevaa esinettä vaihtamalla valintatilaan.|Välj Markera för att redigera ett befintligt objekt.|Bytt til valgmodus for å redigere et eksisterende objekt.
++Choose a paint mode to continue.|Choisissez un mode de peinture pour continuer.|Elige un modo de pintura para continuar.|Wähle einen Malmodus, um fortzufahren.|Escolha um modo de pintura para continuar.|続けるにはペイントモードを選んでください。|계속하려면 페인트 모드를 선택하세요.|Kies een schildermodus om door te gaan.|Scegli una modalità di pittura per continuare.|Jatka valitsemalla maalaustila.|Välj ett målningsläge för att fortsätta.|Velg en malemodus for å fortsette.
++Confirm or discard the pending previews before changing tools.|Confirmez ou abandonnez les aperçus en attente avant de changer d’outil.|Confirma o descarta las vistas previas pendientes antes de cambiar de herramienta.|Bestätige oder verwirf die ausstehenden Vorschauen, bevor du das Werkzeug wechselst.|Confirme ou descarte as prévias pendentes antes de mudar de ferramenta.|ツールを変更する前に、保留中のプレビューを確定または破棄してください。|도구를 변경하기 전에 대기 중인 미리보기를 확정하거나 버리세요.|Bevestig of verwerp de openstaande voorbeelden voordat je van gereedschap wisselt.|Conferma o scarta le anteprime in sospeso prima di cambiare strumento.|Vahvista tai hylkää keskeneräiset esikatselut ennen työkalun vaihtamista.|Bekräfta eller kasta de väntande förhandsvisningarna innan du byter verktyg.|Bekreft eller forkast de ventende forhåndsvisningene før du bytter verktøy.
+diff --git a/docs/TRACK_EDITOR_INTERACTION_FIXES_2026_11_14.md b/docs/TRACK_EDITOR_INTERACTION_FIXES_2026_11_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_EDITOR_INTERACTION_FIXES_2026_11_14.md
+@@ -0,0 +1,66 @@
++# Track editor interaction fixes
++
++The seven issues in the [usability assessment](TRACK_EDITOR_USABILITY_ASSESSMENT_2026_11_14.md) are fixed locally. Tool state is explicit, routine toolbar actions preserve unfinished work, and selecting or adjusting a component acts on the intended target. Ordinary tool guidance is also visible.
++
++## Changed behavior
++
++| Requirement | Result |
++| --- | --- |
++| EUI01 Preserve unfinished work | Reselecting Area and opening Map retain the preview. Passive focus changes cancel the pointer transaction without discarding a completed preview. Changing paint modes or choosing a hazard with pending paint offers Confirm, Discard and Cancel. Explicit Cancel still removes the preview. |
++| EUI02 Separate placement settings from existing objects | Placement clears the editable-object selection. Rotation and container-color handlers also require object-selection mode before changing existing objects. Selected-object rotation remains an undoable edit. |
++| EUI03 Pick the intended road | Picking ranks actual road containment and projected centerline distance, using complete segments and the joined section outline. A neighboring road can beat the enlarged hit region around an existing handle; clicking the handle itself still selects it. Coincident ties remain deterministic, and Layer reaches overlapping candidates. Picking geometry uses the existing bounded canvas cache. |
++| EUI04 Keep placement predictable | Select and Place are explicit buttons in the object control strip. Clicking an occupied object while placing keeps Place active and points to Select. The next empty-ground click still places the chosen asset. Reselecting the active mode preserves its state and indicator. |
++| EUI05 Distinguish selection from dragging | Object movement requires six screen pixels of deliberate travel. Snapping applies to the movement delta, preserving an off-grid object's unmoved axis and group spacing. A movement blocked by the map boundary creates no edit transaction. |
++| EUI06 Make Escape consistent | During a gesture, Escape rolls back that gesture and releases pointer capture. Otherwise it clears selections and disarms placement, start placement or surface authoring. Surface authoring returns to navigation until a paint mode is chosen again. Repeated key echoes do not perform a second cancellation. |
++| EUI07 Constrain shortcuts | Tab cycles objects in object-selection mode and roads in road mode; it cannot change Surfaces to Track. Cycling cannot discard a road preview. The start-line shortcut retains an unfinished surface preview in its own tool state. |
++| EUI08 Show guidance | Normal instructions remain visible. Temporary hints restore the current guidance when they expire. Guidance stays clear of the tool rail at both tested viewport sizes. |
++
++The new guidance messages have authored translations in all 12 approved languages. Existing unrelated translations are preserved; only three messages are appended to each catalogue and the source inventory.
++
++## Verification
++
++| Check | Actual result |
++| --- | --- |
++| New regression through `scripts/dev.ps1`, headless | 154 checks, zero failures |
++| New regression, desktop Compatibility | 158 checks, zero failures; four native captures |
++| New regression, desktop Vulkan Mobile | 158 checks, zero failures; four native captures |
++| Existing full editor workflow | 254 checks, zero failures |
++| Existing editor session and gesture suite | 305 checks, zero failures |
++| Exportable production parsing | 570 scripts, zero failures |
++| Three-message source/catalogue validation | 75 checks, zero failures |
++| Runtime translation resources | All three messages present in 12 languages, with authored non-English copy; included in the regression counts |
++| Pinned editor import | Exit 0 |
++
++The regression uses the actual App, viewport mouse/keyboard input, native-touch canvas events, disposable validated documents, draft recovery and Undo. It exercises the next click after a transition, not just the immediate mode value. The reviewed runtime sources match across all three accepted runs and remain stable within each run.
++
++Native views: [Place active](evidence/editor-interaction-fixes-2026-11-14/compatibility/01-place-mode.png), [Select active](evidence/editor-interaction-fixes-2026-11-14/compatibility/02-select-mode.png), [area retained after toolbar actions](evidence/editor-interaction-fixes-2026-11-14/compatibility/03-area-preserved.png), [road guidance](evidence/editor-interaction-fixes-2026-11-14/mobile/04-road-guidance.png). [Verification and source-checkpoint receipt](evidence/editor-interaction-fixes-2026-11-14/verification.json).
++
++The initial regression rejected the original editor with six direct-input failures and 21 App-sequence failures. Intermediate attempts exposed handle priority still overriding the neighboring road and an untyped empty-array branch during road-preview interaction; both were corrected. A later boundary probe compared float coordinates with an integer array and falsely failed despite zero movement and zero transactions; the expected numeric types were corrected. The original logs remain in the evidence folder.
++
++The historical workflow fixture did not await lazy editor entry and initially accessed a null canvas/world. Its setup now awaits that entry. All 254 existing workflow assertions are retained. No production invariant was removed or relaxed.
++
++The broad translation-authoring unittest remains blocked by the unchanged `scripts/translations/track_editor_review_fixes.tsv`, line 1, which its parser reads as one field instead of 12. The task's three-row sheet is checked independently and its imported resources pass the native checks above. This is not a whole-catalogue or whole-repository clean-suite claim.
++
++## Files and commands
++
++Production changes are in [EditorCanvas](../game/editor/editor_canvas.gd), [editor composition](../game/core/features/editor.gd), [object properties](../game/editor/object_properties.gd), and the App's one-line focus-cancellation call. Tests are [the new regression](../game/tests/test_editor_interactions_2026_11_14.gd) and the workflow fixture's awaited entry. The three-message translation sheet, 12 catalogues, source inventory and this report complete the authored scope. Generated build identity refreshes are separate from the source checkpoint. Concurrent model, preparation and repository work is preserved.
++
++The pinned engine is `4.7.2.stable.official.ed1daf0bf`. The preferred accepted command is:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 `
++  -Action TestScript `
++  -ScriptPath res://tests/test_editor_interactions_2026_11_14.gd `
++  -CommandTimeoutSeconds 240 `
++  -TestArgument '--review-out=C:/Codes/Godot/Beat my track/build/editor-interaction-fixes-2026-11-14/accepted-headless'
++```
++
++Each test process assigns `APPDATA` and `LOCALAPPDATA` to a task-owned profile under `build/`, clears `BMT_API_URL` and `BMT_DEV_AUTH_KEY`, and redirects App draft/record/cloud storage into the workspace. Direct runs use the same exact pinned console executable with `--path game --script`, adding `--headless`, `--rendering-method gl_compatibility`, or `--rendering-method mobile --rendering-driver vulkan`. The retained workflow, session and parser scripts are `test_editor_workflow.gd`, `test_editor_t11_t15.gd`, and `test_editor_shipping_parse.gd`. [Accepted logs and receipts](evidence/editor-interaction-fixes-2026-11-14/verification.json) retain their outcomes.
++
++The [task-only source patch](evidence/editor-interaction-fixes-2026-11-14/task.patch) is checked forward and backward against the captured task-start files with normalized line endings. The new regression reuses the preserved assessment's fixture helper. No main-index staging, commit, merge, owner-process restart or owner-save action was performed.
++
++## Remaining acceptance
++
++Restart or reload the game to use the edited scripts. Owner interaction acceptance, physical-phone gestures, translated layout on devices and large/dense-map latency remain separate checks. Desktop Vulkan Mobile is a desktop renderer result. This task makes no phone-performance or whole-project readiness claim.
++
++No physical-device test or attachment query, APK/export, live backend operation, external share or deployment was performed. The prescribed build-retention cleaner runs at closeout; task profiles and intermediate output stay disposable under that policy. Permanent evidence contains the accepted native views, concise logs, receipts and source patch rather than profiles or project copies.

@@ -21,6 +21,11 @@ func show_state(values: Dictionary, is_selected: bool, property: String) -> void
 		child.queue_free()
 	alignment = BoxContainer.ALIGNMENT_CENTER
 	add_theme_constant_override("separation",6)
+	if state.has("mode"):
+		var select: Button = _action("Select","multi_select",func() -> void: _edit("mode","objects"),"ObjectSelectMode",state.mode == "objects")
+		var place: Button = _action("Place","place_single",func() -> void: _edit("mode","place"),"ObjectPlaceMode",state.mode != "objects")
+		select.custom_minimum_size.x = 62
+		place.custom_minimum_size.x = 62
 	if editing in ["scale","rotation","span"]: _adjustment()
 	else: _overview()
 
@@ -35,7 +40,7 @@ func _action(caption: String, glyph: String, action: Callable, node_name: String
 	return button
 
 func _edit(property: String, value: Variant) -> void:
-	if state.get(property) == value: return
+	if property != "mode" and state.get(property) == value: return
 	edited.emit(property,value)
 
 func _overview() -> void:

@@ -171,7 +171,7 @@ func run_editor(app: Node) -> void:
 	app.editor_issue_button.custom_minimum_size = Vector2(112,52)
 	top.add_child(app.editor_issue_button)
 	var settings: Button = EditorButton.make("","more",func() -> void:
-		app.canvas.cancel_gesture()
+		app.canvas.cancel_gesture(false)
 		app.editor_map_panel.visible = not app.editor_map_panel.visible
 		app.editor_tools_panel.hide())
 	settings.text = "Map"
@@ -483,7 +483,9 @@ func run_editor_hint(app: Node, message: String) -> void:
 	app.get_tree().create_timer(4.0).timeout.connect(func() -> void:
 		if generation == app.editor_hint_generation and is_instance_valid(app.editor_status) and app.editor_status.get_instance_id() == label_id:
 			app.editor_hint_active = false
-			if app.editor_save_error == OK: app.editor_status.hide())
+			if app.editor_save_error == OK:
+				app.editor_status.text = app.editor_guidance
+				app.editor_status.visible = not app.editor_guidance.is_empty())
 
 func run_update_editor_save_state(app: Node) -> void:
 	if not is_instance_valid(app.editor_save_button): return
@@ -613,8 +615,8 @@ func run_resolve_editor_previews(app: Node, after: Callable, message: String = "
 	dialog.popup_centered_clamped(Vector2i(510,200))
 
 func run_editor_category(app: Node, value: String) -> void:
+	app.canvas.cancel_gesture(false)
 	app._stash_pending_tool()
-	app.canvas.cancel_gesture()
 	app._restore_pending_tool(value)
 	app.canvas.selected_piece = -1
 	app.canvas.selected_object = -1
@@ -729,7 +731,7 @@ func run_build_editor_tools(app: Node) -> void:
 			(surface_button as EditorButton).surface_tint = TrackTheme.palette(biome)[pair[0]]
 		app._context_button("Puddle","terrain_puddle",app._choose_hazard.bind("puddle"))
 		app._build_paint_tools()
-		app.editor_status.text = "Drag to paint freely" if app.canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
+		app.editor_status.text = "Choose a paint mode to continue." if app.canvas.mode == "pan" else "Drag to paint freely" if app.canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
 	elif category == "objects":
 		if app.canvas.selected_object >= 0 and app.canvas.mode == "objects":
 			app.editor_status.text=CreatorObjects.description(app.document.objects[app.canvas.selected_object].kind)
@@ -748,12 +750,12 @@ func run_build_editor_tools(app: Node) -> void:
 				app._build_editor_tools())
 		else:
 			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(app.canvas.stamp_jump_profile,str(app.document.theme))) if app.canvas.stamp_kind == "jump" else CreatorCatalog.label(app.canvas.stamp_kind)
-			app.editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if app.canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if app.canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+			app.editor_status.text = GameText.message(stamp_label)+" / "+GameText.message(("Drag a curve; release to place" if app.canvas.run_shape=="curve" else "Drag a line, or tap its two ends") if app.canvas.mode=="run" else "Tap empty ground to place one object.")
 			if app.canvas.mode=="objects": app.editor_status.text="Tap an object to move, rotate or delete"
 	app._build_object_controls(category == "objects",browsing)
 	app.editor_guidance = app.editor_status.text
 	if app.editor_hint_active: app.editor_status.text = active_hint
-	if app.editor_save_error == OK and not app.editor_hint_active: app.editor_status.hide()
+	app.editor_status.show()
 	app._layout_editor_feedback()
 
 	var context_width: float = 0
@@ -929,6 +931,7 @@ func run_build_object_controls(app: Node, active: bool, browsing: bool) -> void:
 	var selected: bool = app.canvas.mode == "objects" and app.canvas.selected_object >= 0 and app.canvas.selected_object < app.document.objects.size()
 	var state: Dictionary = app.document.objects[app.canvas.selected_object].duplicate(true) if selected else {"kind":app.canvas.stamp_kind,"scale":app.canvas.stamp_scale,"rotation":app.canvas.stamp_rotation,"span":app.canvas.stamp_span,"placement":app.object_browser.placement,"color":app.canvas.stamp_container_color}
 	state["multiple"] = selected and app.canvas.object_indices().size() > 1
+	state["mode"] = app.canvas.mode
 	if selected: state["span"] = CreatorObjects.size_of(state).y
 	if state.kind == "jump": state["jump_profile"] = JumpProfiles.id(state) if selected else app.canvas.stamp_jump_profile
 	var target: String = str(app.document.id)+"/"+str(app.canvas.selected_object if selected else -1)+"/"+str(state.kind)+"/"+str(state.multiple)
@@ -952,6 +955,17 @@ func run_edit_object_control(app: Node, property: String, value: Variant) -> voi
 	if not is_instance_valid(app.canvas) or app.screen != "create" or app.canvas.mode not in ["objects","place","run"]: return
 	var selected: bool = app.canvas.mode == "objects" and app.canvas.selected_object >= 0
 	match property:
+		"mode":
+			if (value == "objects" and app.canvas.mode == "objects") or (value == "place" and app.canvas.mode in ["place","run"]):
+				app._build_editor_tools()
+				return
+			app.canvas.cancel_gesture(false)
+			app.canvas.multi_select = false
+			app.canvas.selected_object = -1
+			app.canvas.mode = "objects" if value == "objects" else "place" if app.object_browser.placement == "single" else "run"
+			app.editor_object_property = ""
+			app._build_editor_tools()
+			return
 		"kind": app.object_browser.choose(str(value)); return
 		"placement": app._object_placement(str(value)); return
 		"rotation": app._set_object_rotation(float(value)); return
@@ -967,13 +981,13 @@ func run_edit_object_control(app: Node, property: String, value: Variant) -> voi
 	app._build_editor_tools()
 
 func run_object_rotation(app: Node) -> float:
-	return float(app.document.objects[app.canvas.selected_object].rotation) if app.canvas.selected_object >= 0 else app.canvas.stamp_rotation
+	return float(app.document.objects[app.canvas.selected_object].rotation) if app.canvas.mode == "objects" and app.canvas.selected_object >= 0 else app.canvas.stamp_rotation
 
 func run_set_object_rotation(app: Node, value: float) -> void:
 	if not is_finite(value): return
 	var angle: float = fposmod(value,360.0)
 	app.canvas.stamp_rotation = angle
-	if app.canvas.selected_object >= 0 and not is_equal_approx(float(app.document.objects[app.canvas.selected_object].rotation),angle):
+	if app.canvas.mode == "objects" and app.canvas.selected_object >= 0 and not is_equal_approx(float(app.document.objects[app.canvas.selected_object].rotation),angle):
 		var proposed: Array = preload("res://editor/object_editing.gd").rotated(app.document.objects,app.canvas.object_indices(),angle-float(app.document.objects[app.canvas.selected_object].rotation))
 		if proposed.is_empty(): app._editor_hint("Keep the whole selection inside the map."); return
 		if not app.canvas.admit("objects",proposed): return
@@ -1411,7 +1425,7 @@ func run_editor_help(app: Node) -> void:
 
 func run_unhandled_key_input(app: Node, event: InputEvent) -> void:
 	if is_instance_valid(app.object_population_panel): return
-	if app.screen != "create" or is_instance_valid(app.game) or not event is InputEventKey or not event.pressed: return
+	if app.screen != "create" or is_instance_valid(app.game) or not event is InputEventKey or not event.pressed or event.echo: return
 	var focus: Control = app.get_viewport().gui_get_focus_owner()
 	if focus is LineEdit or focus is TextEdit: return
 	var key: Key = event.physical_keycode if event.physical_keycode != 0 else event.keycode
@@ -1434,9 +1448,19 @@ func run_unhandled_key_input(app: Node, event: InputEvent) -> void:
 				if app.canvas.mode == "road": app.canvas.confirm_piece()
 				elif app.canvas.mode in ["paint","pan"]: app.canvas.confirm_paint()
 			KEY_ESCAPE:
-				app.canvas.cancel_gesture()
+				var had_pointer: bool = app.canvas.active_pointer != -99
+				app.canvas.cancel_gesture(not had_pointer)
+				if had_pointer:
+					app._build_editor_tools()
+					app.get_viewport().set_input_as_handled()
+					return
 				app.canvas.ghost.clear()
 				app.canvas.selected_piece = -1
+				app.canvas.selected_object = -1
+				app.canvas.multi_select = false
+				if app.canvas.mode in ["place","run"]: app.canvas.mode = "objects"
+				elif app.canvas.mode in ["start","start_line"]: app.canvas.mode = "road"
+				elif app.canvas.mode == "paint": app.canvas.mode = "pan"
 				app.editor_geometry = ""
 				app.editor_tools_panel.hide()
 				app.editor_map_panel.hide()
@@ -1451,7 +1475,9 @@ func run_unhandled_key_input(app: Node, event: InputEvent) -> void:
 			KEY_1: app._editor_category("road")
 			KEY_2: app._editor_category("paint")
 			KEY_3: app._editor_category("objects")
-			KEY_4: app.canvas.choose_start_line()
+			KEY_4:
+				if app._editor_tool() != "road": app._editor_category("road")
+				app.canvas.choose_start_line()
 			KEY_Q:
 				if app.canvas.mode in ["objects","place"]: app._set_object_rotation(app._object_rotation()-22.5)
 				else: app._change_piece("heading",-15.0)
@@ -1460,7 +1486,8 @@ func run_unhandled_key_input(app: Node, event: InputEvent) -> void:
 				else: app._change_piece("heading",15.0)
 			KEY_TAB:
 				if app.canvas.mode == "objects": app.canvas.cycle_objects()
-				else: app.canvas.cycle_piece()
+				elif app.canvas.mode == "road" and app.canvas.ghost.is_empty(): app.canvas.cycle_piece()
+				else: handled = false
 			_: handled = false
 	if handled: app.get_viewport().set_input_as_handled()
 
@@ -2044,7 +2071,7 @@ func run_container_colour(app: Node, color: String) -> void:
 	if is_instance_valid(app.object_browser):
 		app.object_browser.stamp_container_color = color
 		app.object_browser.refresh()
-	if app.canvas.selected_object < 0: return
+	if app.canvas.mode != "objects" or app.canvas.selected_object < 0: return
 	var object: Dictionary = app.document.objects[app.canvas.selected_object]
 	if object.kind != "container" or ContainerPaint.value(object) == color: return
 	app._remember()
@@ -2108,6 +2135,8 @@ func run_close_object_population(app: Node, applied: bool) -> void:
 
 func run_object_placement(app: Node, value: String) -> void:
 	app.canvas.cancel_gesture()
+	app.canvas.multi_select = false
+	app.canvas.selected_object = -1
 	app.canvas.run_start=Vector2.INF
 	app.canvas.run_preview.clear()
 	app.canvas.run_shape="curve" if value=="curve" else "line"
@@ -2117,6 +2146,9 @@ func run_object_placement(app: Node, value: String) -> void:
 	app._build_editor_tools()
 
 func run_choose_hazard(app: Node, kind: String) -> void:
+	if not app.canvas.paint_points.is_empty():
+		app._resolve_editor_previews(func() -> void: run_choose_hazard(app,kind),"Confirm or discard the pending previews before changing tools.")
+		return
 	app.canvas.cancel_gesture()
 	app.canvas.ghost.clear()
 	app.canvas.stamp_kind=kind
@@ -2176,6 +2208,20 @@ func run_rename_track(app: Node) -> void:
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
 		DisplayServer.virtual_keyboard_show(field.text,field.get_viewport().get_screen_transform()*field.get_global_rect(),DisplayServer.KEYBOARD_TYPE_DEFAULT,40,0,field.text.length())
 
+func run_choose_paint_mode(app: Node, value: String) -> void:
+	if app.canvas.mode == "paint" and app.canvas.paint_mode == value:
+		app.canvas.cancel_gesture(false)
+		app._build_editor_tools()
+		return
+	if not app.canvas.paint_points.is_empty():
+		app._resolve_editor_previews(func() -> void: run_choose_paint_mode(app,value),"Confirm or discard the pending previews before changing tools.")
+		return
+	app.canvas.cancel_gesture(false)
+	app.canvas.paint_mode = value
+	app.canvas.mode = "paint"
+	app.canvas.queue_redraw()
+	app._build_editor_tools()
+
 func run_build_surface_toolbar(app: Node) -> void:
 	for child: Node in app.surface_actions.get_children():
 		app.surface_actions.remove_child(child)
@@ -2192,13 +2238,9 @@ func run_build_surface_toolbar(app: Node) -> void:
 	modes.add_child(segments)
 	for entry: Array in [["free","Free","paint_brush"],["area","Area","paint_area"],["line","Line","paint_line"]]:
 		var value: String = entry[0]
-		var chosen: bool = app.canvas.paint_mode == value
+		var chosen: bool = app.canvas.mode == "paint" and app.canvas.paint_mode == value
 		var button: Button = EditorButton.make(entry[1],entry[2],func() -> void:
-			app.canvas.cancel_gesture()
-			app.canvas.paint_mode = value
-			app.canvas.mode = "paint"
-			app.canvas.queue_redraw()
-			app._build_editor_tools(),chosen)
+			run_choose_paint_mode(app,value),chosen)
 		button.name = "PaintMode_"+value
 		button.custom_minimum_size = Vector2(78,68)
 		for state: String in ["normal","hover","pressed","hover_pressed"]:

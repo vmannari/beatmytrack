@@ -71,7 +71,7 @@ func _show_document(doc: Dictionary) -> void:
 	app.set("editor_view",{})
 	app.set("history",[])
 	app.set("redo_history",[])
-	app.call("_show_screen","create")
+	await app.call("_show_screen","create")
 	await process_frame
 	await process_frame
 	await _wait_preview()

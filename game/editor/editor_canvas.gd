@@ -11,6 +11,7 @@ signal selection_changed
 signal native_changed(track: NativeTrack)
 
 const PLANNING_PITCH: float = 70.0
+const OBJECT_DRAG_THRESHOLD: float = 6.0
 
 var document: Dictionary
 var mode: String = "road"
@@ -229,15 +230,23 @@ func toggle_multi_select() -> void:
 	if not multi_select: selected_objects.assign([selected_object] if selected_object >= 0 else [])
 	selection_changed.emit(); queue_redraw()
 
-func cancel_gesture() -> void:
+func cancel_gesture(discard_previews: bool = true) -> void:
+	# Passive UI/navigation cancels the pointer transaction while keeping
+	# completed previews. Explicit Cancel/Discard still clears those previews.
+	var had_pointer: bool = active_pointer != -99
 	_rollback_navigation_edit()
 	_selection_toggle = -1
 	pending_paint_accept = false
-	run_draw.clear()
+	if discard_previews or drawing_run:
+		run_draw.clear()
+		run_preview.clear()
 	drawing_run=false
-	run_preview.clear()
-	run_start=Vector2.INF
-	paint_points.clear()
+	if discard_previews:
+		run_start=Vector2.INF
+		paint_points.clear()
+	elif had_pointer and mode == "paint":
+		paint_points = paint_before_gesture.duplicate(true) if paint_mode != "free" else []
+	paint_handle = -1
 	pending_stamp = false
 	dragging = false
 	panning = false
@@ -388,8 +397,9 @@ func _begin(point: Vector2, pointer: int) -> void:
 	if mode=="place":
 		for object: Dictionary in document.objects:
 			if CreatorObjects.contains(object,to_world(point)):
-				mode="objects"
-				break
+				pending_stamp = false
+				hint_changed.emit("Choose Select to edit an existing object.")
+				return
 	start_drag = false
 	pending_start_flip = false
 	if mode == "road" and ghost.is_empty() and document.has("start_line") and not editing_spline():
@@ -543,16 +553,19 @@ func _move(point: Vector2) -> void:
 			pending_stamp = false
 			panning = true
 	if dragging:
-		var position: Vector2 = object_position(drag_origin+to_world(point)-pointer_origin)
-		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
+		if press_position.distance_to(point) < OBJECT_DRAG_THRESHOLD and not changed_in_gesture: return
+		if selected_object < 0: return
+		var delta: Vector2 = to_world(point)-pointer_origin
+		if object_snap > 0.0: delta = delta.snapped(Vector2.ONE*object_snap)
+		if delta.is_zero_approx() and not changed_in_gesture: return
+		var original: Array = gesture.before.get("objects",document.objects)
+		var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),delta)
+		if moved == document.objects: return
+		if not changed_in_gesture:
 			_start_edit()
 			changed_in_gesture = true
-		if changed_in_gesture and selected_object >= 0:
-			var original: Array = gesture.before.get("objects",document.objects)
-			var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),position-drag_origin)
-			if moved == document.objects: return
-			document.objects = moved
-			document_changed.emit()
+		document.objects = moved
+		document_changed.emit()
 	elif panning: pan += point-previous_pointer
 	previous_pointer = point
 	queue_redraw()
@@ -638,7 +651,7 @@ func _place(point: Vector2) -> void:
 		if not admit("objects",document.objects+[object]): return
 		_start_edit()
 		document.objects.append(object)
-		selected_object = document.objects.size()-1
+		selected_object = -1
 		selected = -1
 	else: return
 	document_changed.emit()
@@ -717,7 +730,7 @@ func _end(pointer: int) -> void:
 	queue_redraw()
 
 func _notification(what: int) -> void:
-	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: cancel_gesture()
+	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: cancel_gesture(false)
 
 func _draw() -> void:
 	if document.is_empty() or size.x < 10 or size.y < 10: return
@@ -852,10 +865,18 @@ func _begin_road(point: Vector2) -> void:
 	pending_road_tap = false
 	pending_piece_accept = false
 	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
-	if not current.is_empty() and current.kind == "spline" and _begin_spline(current,point): return
+	var candidates: Array[int] = []
+	if ghost.is_empty(): candidates = road_candidates(point)
+	var other_body: bool = false
+	var other_distance: float = INF
+	if not candidates.is_empty() and candidates[0] != selected_piece:
+		var geometries: Array = _prepared("road_picking",[document.pieces],_road_pick_geometry)
+		other_body = Geometry2D.is_point_in_polygon(to_world(point),geometries[candidates[0]].outline)
+		if other_body: other_distance = _road_center_distance(geometries[candidates[0]].points,point)
+	if not current.is_empty() and current.kind == "spline" and _begin_spline(current,point,other_distance): return
 	if not current.is_empty():
 		for key: String in geometry_keys(current):
-			if to_screen(_geometry_handle(current,key)).distance_to(point) <= 24:
+			if to_screen(_geometry_handle(current,key)).distance_to(point) <= minf(24.0,other_distance+0.001):
 				geometry_drag = key
 				geometry_origin = RoadPieces.height(current) if key == "height" else float(current.get(key,0.0 if key == "curvature" else 90.0))
 				piece_before_drag = current.duplicate(true)
@@ -864,12 +885,12 @@ func _begin_road(point: Vector2) -> void:
 				return
 		for end: int in range(0 if current.kind == "spline" else 2):
 			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
-			if to_screen(handle).distance_to(point) <= 26:
+			if to_screen(handle).distance_to(point) <= minf(26.0,other_distance+0.001):
 				endpoint_drag = end
 				piece_before_drag = current.duplicate(true)
 				dragging = true
 				return
-	if not current.is_empty() and piece_accept_rect(current).has_point(point):
+	if not current.is_empty() and piece_accept_rect(current).has_point(point) and piece_accept_rect(current).get_center().distance_to(point) <= other_distance+0.001:
 		pending_piece_accept = true
 		drag_origin = Vector2(current.position[0],current.position[1])
 		dragging = true
@@ -885,17 +906,7 @@ func _begin_road(point: Vector2) -> void:
 		drag_origin = Vector2(ghost.position[0],ghost.position[1])
 		dragging = true
 	else:
-		var candidates: Array[int] = []
-		if selected_piece >= 0: candidates.append(selected_piece)
-		for i: int in range(document.pieces.size()-1,-1,-1):
-			if i != selected_piece: candidates.append(i)
-		selected_piece = -1
-		for i: int in candidates:
-			for p: Vector2 in RoadPieces.samples(document.pieces[i]):
-				if to_screen(p).distance_to(point) < maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
-					selected_piece = i
-					break
-			if selected_piece >= 0: break
+		selected_piece = candidates[0] if not candidates.is_empty() else -1
 		if selected_piece >= 0:
 			var piece: Dictionary = document.pieces[selected_piece]
 			if piece.kind == "spline" and _begin_spline(piece,point): return
@@ -928,17 +939,17 @@ func spline_width_handle(piece: Dictionary) -> Vector2:
 	var reach: float = maxf(float(piece.point_widths[spline_point])*0.5+2.0,48.0/scale_factor())
 	return to_screen(nodes[spline_point]+normal*reach)
 
-func _begin_spline(piece: Dictionary, point: Vector2) -> bool:
+func _begin_spline(piece: Dictionary, point: Vector2, hit_limit: float = INF) -> bool:
 	var nodes: PackedVector2Array = SplineRoad.points(piece)
 	var closest: int = -1
-	var distance: float = 26.0
+	var distance: float = minf(26.0,hit_limit+0.001)
 	for i: int in range(nodes.size()):
 		var candidate: float = to_screen(nodes[i]).distance_to(point)
 		if candidate < distance: closest = i; distance = candidate
 	if closest >= 0:
 		spline_point = closest
 		spline_point_drag = closest
-	elif spline_width_handle(piece).distance_to(point) <= 24:
+	elif spline_width_handle(piece).distance_to(point) <= minf(24.0,hit_limit+0.001):
 		geometry_drag = "point_width"
 		geometry_origin = float(piece.point_widths[spline_point])
 	else: return false
@@ -1387,17 +1398,43 @@ func _geometry_anchor(piece: Dictionary, key: String) -> Vector2:
 	var direction: Vector2 = (points[mini(middle+1,points.size()-1)]-points[maxi(0,middle-1)]).normalized()
 	return points[middle]+Vector2(-direction.y,direction.x)*float(piece.width)*0.5
 
+func _road_pick_geometry() -> Array:
+	var result: Array = []
+	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
+	for index: int in range(document.pieces.size()):
+		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,index,topology)
+		result.append({"points":geometry.points,"outline":RoadPieces.section_outline(document.pieces,index,0.0,topology)})
+	return result
+
+func _road_center_distance(points: PackedVector2Array, point: Vector2) -> float:
+	var distance: float = INF
+	for sample_index: int in range(points.size()-1):
+		var closest: Vector2 = Geometry2D.get_closest_point_to_segment(point,to_screen(points[sample_index]),to_screen(points[sample_index+1]))
+		distance = minf(distance,closest.distance_to(point))
+	return distance
+
+func road_candidates(point: Vector2) -> Array[int]:
+	var hits: Array[Dictionary] = []
+	var geometries: Array = _prepared("road_picking",[document.pieces],_road_pick_geometry)
+	var world_point: Vector2 = to_world(point)
+	for index: int in range(geometries.size()):
+		var geometry: Dictionary = geometries[index]
+		var inside: bool = Geometry2D.is_point_in_polygon(world_point,geometry.outline)
+		var distance: float = _road_center_distance(geometry.points,point)
+		if inside or distance <= 24.0: hits.append({"index":index,"inside":inside,"distance":distance})
+	hits.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if a.inside != b.inside: return a.inside
+		if not is_equal_approx(a.distance,b.distance): return a.distance < b.distance
+		return a.index > b.index)
+	var result: Array[int] = []
+	for hit: Dictionary in hits: result.append(hit.index)
+	return result
+
 func cycle_piece() -> void:
-	var hits: Array[int] = []
-	for i: int in range(document.pieces.size()):
-		for p: Vector2 in RoadPieces.samples(document.pieces[i]):
-			if to_screen(p).distance_to(press_position) <= maxf(24,float(document.pieces[i].width)*scale_factor()*0.5):
-				hits.append(i)
-				break
+	if mode != "road" or not ghost.is_empty(): return
+	var hits: Array[int] = road_candidates(press_position)
 	if hits.is_empty(): return
 	selected_piece = hits[(hits.find(selected_piece)+1)%hits.size()]
-	ghost.clear()
-	mode = "road"
 	selection_changed.emit()
 	queue_redraw()
 

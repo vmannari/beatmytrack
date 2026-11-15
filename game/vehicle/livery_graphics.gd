@@ -3,6 +3,7 @@ extends RefCounted
 ## Opaque replacement of existing paint surfaces. No extra meshes or draw passes.
 const FINISH: Shader = preload("res://vehicle/livery_finish.gdshader")
 static var toon_finish: Shader
+static var premium_shaders: Dictionary = {}
 var car: CarVisual
 var bindings: Array[Dictionary] = []
 
@@ -37,11 +38,49 @@ static func paint_finish(finish: ShaderMaterial, source: StandardMaterial3D) -> 
 	finish.set_shader_parameter("paint_clearcoat",source.clearcoat if source.clearcoat_enabled else 0.0)
 	finish.set_shader_parameter("paint_clearcoat_roughness",source.clearcoat_roughness)
 
+static func _panel_shader(finish: ShaderMaterial, enabled: bool) -> void:
+	var base: Shader = finish.shader
+	if base.has_meta("premium_livery_base"):
+		base = base.get_meta("premium_livery_base") as Shader
+	var target: Shader = base
+	if enabled:
+		if not premium_shaders.has(base):
+			var premium := Shader.new()
+			premium.code = base.code.replace("res://vehicle/livery_finish.gdshaderinc","res://vehicle/premium_livery_finish.gdshaderinc")
+			premium.set_meta("premium_livery_base",base)
+			premium_shaders[base] = premium
+		target = premium_shaders[base]
+	if finish.shader == target: return
+	# Shader changes reset material uniforms. Retain mesh frames, paint and the
+	# complete live wash state when crossing the premium/released boundary.
+	var values: Dictionary = {}
+	for uniform: Dictionary in finish.shader.get_shader_uniform_list():
+		values[uniform.name] = finish.get_shader_parameter(uniform.name)
+	finish.shader = target
+	for uniform: Dictionary in target.get_shader_uniform_list():
+		if values.has(uniform.name): finish.set_shader_parameter(uniform.name,values[uniform.name])
+
 static func uniforms(finish: ShaderMaterial, value: Dictionary, id: String, enabled: bool = true) -> void:
 	var decorated: bool = enabled and VehicleLivery.decorated(value,id)
+	var premium: Dictionary = LiveryCatalog.premium_pattern(str(value.pattern))
+	var is_panel: bool = decorated and not premium.is_empty() and premium.vehicle == id
+	_panel_shader(finish,is_panel)
 	finish.set_shader_parameter("graphics_enabled",decorated)
 	if not decorated: return
 	finish.set_shader_parameter("pattern_enabled",value.pattern != "plain")
+	if is_panel: finish.set_shader_parameter("panel_art",true)
+	if is_panel:
+		var full_color: bool = premium.get("kind","")=="full_color"
+		finish.set_shader_parameter("premium_full_color",full_color)
+		var bus_paint: bool = premium.get("collection_style","")=="diablo_rojo"
+		finish.set_shader_parameter("premium_bus_paint",bus_paint)
+		if bus_paint:
+			finish.set_shader_parameter("premium_bus_side",{"compact":Vector3(1.9,1.10,0.80),"kart":Vector3(1.5,0.50,0.38),"forklift":Vector3(2.35,1.65,1.15),"electric":Vector3(2.7,1.10,0.80),"hovercraft":Vector3(3.0,1.10,0.60),"super_rally":Vector3(2.5,1.10,0.80)}.get(id,Vector3(2.5,1.10,0.80)))
+		if full_color:
+			finish.set_shader_parameter("premium_illustration",LiveryCatalog.texture(value.pattern))
+			finish.set_shader_parameter("premium_side_scale",{"compact":2.8,"kart":1.6,"forklift":2.6,"electric":3.0,"hovercraft":3.0,"super_rally":3.1}.get(id,3.0))
+			finish.set_shader_parameter("premium_vehicle_kind",1 if id=="kart" else 2 if id=="hovercraft" else 3 if id=="forklift" else 0)
+		else: finish.set_shader_parameter("premium_illustration",null)
 	if value.pattern != "plain": finish.set_shader_parameter("livery_mask",LiveryCatalog.texture(value.pattern))
 	var atlas: Texture2D = LiveryCatalog.texture("stickers")
 	finish.set_shader_parameter("sticker_atlas",atlas)

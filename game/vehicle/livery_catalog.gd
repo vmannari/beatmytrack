@@ -3,6 +3,10 @@ extends RefCounted
 ## Original editable vector art; shared textures are loaded on demand.
 const ROOT: String = "res://assets/liveries/"
 static var patterns: Array = (preload("res://assets/liveries/catalog.json") as JSON).data
+# Authored review collection. Kept separate from the released coin catalogue.
+static var premium_patterns: Array = (preload("res://assets/liveries/diablo_v3/catalog.json") as JSON).data
+static var archived_premium_patterns: Array = (preload("res://assets/liveries/premium_v1/catalog.json") as JSON).data
+static var archived_artistic_patterns: Array = (preload("res://assets/liveries/artistic_v2/catalog.json") as JSON).data
 static var stickers: Array = (preload("res://assets/liveries/stickers.json") as JSON).data
 static var textures: Dictionary = {}
 static var mask_order: Array[String] = []
@@ -10,7 +14,25 @@ static var mask_order: Array[String] = []
 static func pattern_index(id: String) -> int:
 	for index: int in range(patterns.size()):
 		if patterns[index].id == id: return index
+	for index: int in range(archived_premium_patterns.size()):
+		if archived_premium_patterns[index].id == id: return patterns.size()+index
+	for index: int in range(premium_patterns.size()):
+		if premium_patterns[index].id == id: return patterns.size()+archived_premium_patterns.size()+archived_artistic_patterns.size()+index
+	for index: int in range(archived_artistic_patterns.size()):
+		if archived_artistic_patterns[index].id == id: return patterns.size()+archived_premium_patterns.size()+index
 	return -1
+
+static func premium_pattern(id: String) -> Dictionary:
+	for item: Dictionary in premium_patterns:
+		if item.id == id: return item
+	for item: Dictionary in archived_premium_patterns:
+		if item.id == id: return item
+	for item: Dictionary in archived_artistic_patterns:
+		if item.id == id: return item
+	return {}
+
+static func premium_for(vehicle: String) -> Array:
+	return premium_patterns.filter(func(item: Dictionary) -> bool: return item.vehicle == vehicle)
 
 static func sticker_index(id: String) -> int:
 	for index: int in range(stickers.size()):
@@ -19,7 +41,11 @@ static func sticker_index(id: String) -> int:
 
 static func texture(file: String) -> Texture2D:
 	if not textures.has(file):
-		textures[file] = load(ROOT + file + ".svg")
+		var premium: Dictionary = premium_pattern(file)
+		var path: String = ROOT+file+".svg"
+		if not premium.is_empty():
+			path = ROOT+str(premium.source) if premium.get("kind","")=="full_color" else ROOT+"premium_v1/"+file+".svg"
+		textures[file] = load(path)
 		if pattern_index(file) >= 0:
 			mask_order.append(file)
 			if mask_order.size() > 4: textures.erase(mask_order.pop_front())

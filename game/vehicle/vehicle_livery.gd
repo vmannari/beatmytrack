@@ -51,6 +51,9 @@ static func normalize(value: Dictionary, id: String) -> Dictionary:
 	if not valid(value): return defaults(id)
 	var current: Dictionary = value.duplicate(true)
 	current.version = VERSION
+	var premium: Dictionary = LiveryCatalog.premium_pattern(str(current.pattern))
+	if not premium.is_empty() and premium.vehicle != id:
+		current.pattern = "plain"
 	for surface: String in SURFACES:
 		if current.stickers[surface].id in RETIRED_STICKERS:
 			current.stickers[surface].id = "none"
@@ -64,6 +67,8 @@ static func valid_collection(value: Variant) -> bool:
 	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
 	for id: Variant in value:
 		if not id is String or id not in VehicleCatalog.ALL_IDS or not valid(value[id]): return false
+		var premium: Dictionary = LiveryCatalog.premium_pattern(str(value[id].pattern))
+		if not premium.is_empty() and premium.vehicle != id: return false
 	return true
 
 static func decorated(value: Dictionary, id: String) -> bool:

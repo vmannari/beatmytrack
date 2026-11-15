@@ -124,7 +124,7 @@ static func update_debris(parent: Node3D, state: VehicleState) -> void:
 			var row: Array = pieces[i]
 			var size := Vector3(float(row[8]),1,float(row[9]))
 			var height: float=0.023
-			if parent is NativeTrackVisual and parent.desert_relief != null: height += parent.desert_relief.height(Vector2(row[2],row[3]))
+			if "world_built" in parent and parent.desert_relief != null: height += parent.desert_relief.height(Vector2(row[2],row[3]))
 			var basis:=Basis(Vector3.UP,float(row[6]))
 			if kind>=BreakableProps.SNOW:
 				var age: float=maxf(0.0,float(row[10])-float(row[11]))

@@ -163,7 +163,7 @@ static func phases(pieces: Array, topology: Dictionary) -> Dictionary:
 		for index: int in queue: result[index]["desert_scale"] = scale
 	return result
 
-func emit(visual: NativeTrackVisual, tool: SurfaceTool, height: float = 0.012) -> int:
+func emit(visual: Node3D, tool: SurfaceTool, height: float = 0.012) -> int:
 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
 	if native != null and not visual._menu_slices:
 		var result: Dictionary = native.call("road_emit",clipping.triangles,points_by_triangle,phase_by_triangle,preload("res://track/geometry_acceleration.gd").blend_data(self),visual.theme_id,0,height,Geometry2D,tool,visual._cpu_cancelled)

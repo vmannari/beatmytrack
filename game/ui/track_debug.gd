@@ -28,7 +28,7 @@ func _draw() -> void:
 		for r: Array in layer:
 			if int(r[4]) < 0:
 				continue
-			var color: Color = NativeTrackVisual.COLORS[int(r[4])]
+			var color: Color = TrackTheme.PINE[int(r[4])]
 			if layer == track.deck_rectangles:
 				color = color.lightened(0.17)
 			draw_rect(Rect2(origin + Vector2(r[0], r[1]) * track.cell_size * zoom, Vector2(r[2], r[3]) * track.cell_size * zoom), color)

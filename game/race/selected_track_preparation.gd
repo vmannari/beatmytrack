@@ -6,7 +6,8 @@ static var discarded: Array = []
 static var cleanup_tree: SceneTree
 
 static func start(track: NativeTrack, entry: Dictionary, document: Dictionary, owner_tree: SceneTree) -> RefCounted:
-	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document),owner_tree)
+	var prepared: Dictionary = ROADS.prepare_worker(track)
+	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document,prepared),owner_tree)
 	ensure_cleanup(owner_tree)
 	return job
 
@@ -16,14 +17,14 @@ static func ensure_cleanup(owner_tree: SceneTree) -> void:
 		owner_tree.process_frame.connect(reap_discarded)
 		owner_tree.root.tree_exiting.connect(finish)
 
-static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary) -> Dictionary:
+static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary, prepared: Dictionary = {}) -> Dictionary:
 	var track: NativeTrack = selected
 	if track.metadata.get("metadata_only",false):
 		track = preload("res://backend/cloud_tracks.gd").compile_document(entry,document,cancelled)
 	if track == null or cancelled.call(): return {}
 	var receipt: Dictionary = {}
 	var disk_key: Array = ROADS.disk_key_for(track)
-	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
+	var packet: Dictionary = prepared if not prepared.is_empty() else ROADS.prepare(track,false,false,cancelled)
 	packet = ROADS.with_winter_cover(packet,track,cancelled)
 	if cancelled.call(): return {}
 	# Prime existing query/gate data and the bounded numeric support cache in

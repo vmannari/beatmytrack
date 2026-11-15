@@ -1,0 +1,1114 @@
+--- a/game/core/features/race.gd
++++ b/game/core/features/race.gd
+@@ -193,7 +193,7 @@
+ 		# Once the exact track is compiled, its presentation arrays can be built
+ 		# while an ordinary ticket request is in flight. Keep ticket issuance at
+ 		# the same point, and do not compete with an editor/save road builder.
+-		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and app.SELECTED_PREPARATION.ready_for_job() and NativeTrackVisual.race_roads_need_preparation(track):
++		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and app.SELECTED_PREPARATION.ready_for_job() and preload("res://track/track_visual_identity.gd").race_roads_need_preparation(track):
+ 			road_overlap = preload("res://race/road_ticket_overlap.gd").new()
+ 			road_overlap.attach(app._start_race_road_job(track),app.get_tree(),loading)
+ 		var issued: Dictionary = await app.cloud.ticket(track,false,attempt_vehicle,null,rivalry_issued) if not rivalry_issued.is_empty() else await app.cloud.ticket(track)
+@@ -234,7 +234,7 @@
+ 	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+ 	var prepared_roads: Dictionary = {}
+ 	var road_job: RefCounted = road_overlap.take() if road_overlap != null else null
+-	if road_job == null and NativeTrackVisual.race_roads_need_preparation(track):
++	if road_job == null and preload("res://track/track_visual_identity.gd").race_roads_need_preparation(track):
+ 		# Reap cancelled work, and share a save-time bake only when it has the
+ 		# exact same disk identity. Unrelated saved tracks must not delay a race.
+ 		var road_disk_key: Array = preload("res://editor/road_preparation.gd").disk_key_for(track)
+@@ -249,7 +249,7 @@
+ 				preload("res://race/selected_track_preparation.gd").cancel(road_job,app.get_tree())
+ 				return
+ 		prepared_roads = road_job.result if road_job.result is Dictionary else {}
+-		NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(prepared_roads.get("receipt",{}))
++		preload("res://track/road_mesh_disk_cache.gd").publish_arrays(prepared_roads.get("receipt",{}))
+ 		prepared_roads.erase("receipt")
+ 	app.returning_to_editor = from_editor
+ 	app.challenge_racing = rivalry_issued.has("challenge_code")
+@@ -551,7 +551,7 @@
+ 	app._close_race_loading()
+ 	app.root_ui.process_mode = app._practice_editor_context.mode
+ 	app._race_menu_visible(true)
+-	NativeTrackVisual.reserve_editor_sections()
++	load("res://track/native_track_visual.gd").reserve_editor_sections()
+ 	GameSoundtrack.instance().show_menu()
+ 	app._update_editor_issues()
+ 	app._lifecycle_changed()
+--- a/game/core/features/selected_track.gd
++++ b/game/core/features/selected_track.gd
+@@ -48,7 +48,7 @@
+ 	if app._selected_preparation_track.metadata.get("metadata_only",false) and source.is_empty():
+ 		app._cancel_selected_preparation(); return
+ 	var layout_ready: bool = app.SELECTED_PREPARATION.ready_for_job() and app._selected_preparation_track._race_gates.get("rules_key","") == RaceRules.KEY and app._selected_preparation_track._race_gates.get("notice_version",0) == TrackSession.NOTICE_LAYOUT_VERSION
+-	if not app._selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(app._selected_preparation_track) and layout_ready:
++	if not app._selected_preparation_track.metadata.get("metadata_only",false) and not preload("res://track/track_visual_identity.gd").race_roads_need_preparation(app._selected_preparation_track) and layout_ready:
+ 		app._cancel_selected_preparation(); return
+ 	app._selected_preparation_entry = entry.duplicate(true)
+ 	app._selected_preparation_source = source
+@@ -79,7 +79,7 @@
+ 	if ready != null:
+ 		if not result.get("winter_cover",{}).is_empty(): ready.editor_winter_cover = result.winter_cover
+ 		var receipt: Dictionary = result.get("receipt",{})
+-		if not receipt.is_empty(): NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(receipt)
++		if not receipt.is_empty(): preload("res://track/road_mesh_disk_cache.gd").publish_arrays(receipt)
+ 		if ready != app._selected_preparation_track:
+ 			for property: Dictionary in ready.get_property_list():
+ 				if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: app._selected_preparation_track.set(property.name,ready.get(property.name))
+@@ -90,7 +90,7 @@
+ 			app._ensure_track_catalog()
+ 			app.track_catalog.remember_track(app._selected_preparation_entry,app._selected_preparation_track)
+ 	else:
+-		NativeTrackVisual.ROAD_DISK_CACHE.discard_arrays(result.get("receipt",{}))
++		preload("res://track/road_mesh_disk_cache.gd").discard_arrays(result.get("receipt",{}))
+ 	app._selected_preparation_pending = false
+ 	app._selected_preparation_track = null
+ 	app._selected_preparation_browser = null
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -1082,7 +1082,7 @@
+ 	_presentation_has_water = native_track != null and (native_track.cells.has(3) or native_track.cells.has(6))
+ 	_refresh_render_scale()
+ 	if native_track != null:
+-		var visual := NativeTrackVisual.new()
++		var visual: Node3D = preload("res://track/prepared_race_world.gd").new()
+ 		world.add_child(visual)
+ 		visual.profile_build = profile_enabled
+ 		visual.preserve_relief_surfaces = true
+@@ -1103,7 +1103,23 @@
+ 		if bridge_presentation == null: bridge_presentation = BridgePresentation.new(native_track)
+ 		sim.prepare_ground(native_track,bridge_presentation)
+ 		visual.build_current = _preparation_is_current
+-		await visual.build(native_track, bridge_presentation, cooperative_preparation)
++		var restored: bool = await visual.restore(native_track, bridge_presentation, cooperative_preparation)
++		if not _preparation_is_current(): return
++		if not restored:
++			var builder: Node3D = load("res://track/native_track_visual.gd").new()
++			builder.profile_build = profile_enabled
++			builder.preserve_relief_surfaces = true
++			# Transfer the verified miss and its diagnostics; do not read it twice.
++			builder._world_disk_id = visual._world_disk_id
++			builder.build_costs = visual.build_costs
++			builder.race_road_packet = visual.race_road_packet
++			builder.cache_race_world = production_mode and not editor_test
++			builder.build_current = _preparation_is_current
++			world.remove_child(visual)
++			visual.free()
++			visual = builder
++			world.add_child(visual)
++			await visual.build(native_track, bridge_presentation, cooperative_preparation, false)
+ 		if not _preparation_is_current() or not visual.world_built: return
+ 		track_ground = visual
+ 	else:
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -77,7 +77,7 @@
+ 	var token: String = "%d-%d-%d" % [int(Time.get_unix_time_from_system()), OS.get_process_id(), get_instance_id()]
+ 	log_path = directory.path_join("race-" + token + ".json")
+ 	var track: NativeTrack = game.get("native_track")
+-	header = {"schema": 1, "engine": Engine.get_version_info().string, "os": OS.get_name(), "os_version": OS.get_version(), "model": OS.get_model_name(), "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "debug_build": OS.is_debug_build(), "track_id": track.identity if track != null else "playground", "track_hash": track.content_hash if track != null else "", "biome": str(track.metadata.get("theme", "pine")) if track != null else "pine", "car": str(game.get("vehicle_id")), "practice": bool(game.get("editor_test")) or bool(game.get("attempt_practice")), "physics": VehicleSimulation.PHYSICS_VERSION, "rules": RaceRules.KEY, "track_kit": NativeTrackVisual.VERSION, "threshold_ms": THRESHOLD_US / 1000, "history_frames": HISTORY_FRAMES, "stage_note": "Nested timings overlap; engine monitors may be delayed/debug-only; draw_boundary_ms is wall time between render signals, not GPU time. Previous draw and current callbacks share one interval."}
++	header = {"schema": 1, "engine": Engine.get_version_info().string, "os": OS.get_name(), "os_version": OS.get_version(), "model": OS.get_model_name(), "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "debug_build": OS.is_debug_build(), "track_id": track.identity if track != null else "playground", "track_hash": track.content_hash if track != null else "", "biome": str(track.metadata.get("theme", "pine")) if track != null else "pine", "car": str(game.get("vehicle_id")), "practice": bool(game.get("editor_test")) or bool(game.get("attempt_practice")), "physics": VehicleSimulation.PHYSICS_VERSION, "rules": RaceRules.KEY, "track_kit": preload("res://track/track_visual_identity.gd").VERSION, "threshold_ms": THRESHOLD_US / 1000, "history_frames": HISTORY_FRAMES, "stage_note": "Nested timings overlap; engine monitors may be delayed/debug-only; draw_boundary_ms is wall time between render signals, not GPU time. Previous draw and current callbacks share one interval."}
+ 	if detailed: _collect_render_items(game.get_node_or_null("World"))
+ 	header.detail = "full" if detailed else "compact"
+ 	header.render_items = _render_descriptors
+--- a/game/editor/cache_bytes.gd
++++ b/game/editor/cache_bytes.gd
+@@ -18,7 +18,7 @@
+ 	if value != null and not seen.has(value.get_instance_id()):
+ 		seen[value.get_instance_id()] = true; bytes += mesh(value)
+ 	if node is MultiMeshInstance3D and node.multimesh != null: bytes += node.multimesh.instance_count*96
+-	if node is NativeTrackVisual and node._editor_authored_batches != null:
++	if "_editor_authored_batches" in node and node._editor_authored_batches != null:
+ 		var batches: RefCounted = node._editor_authored_batches
+ 		# Active models remain referenced when the idle LRU is trimmed.
+ 		bytes += maxi(batches.model_bytes,batches.active_model_bytes)+batches.shared_vertex_bytes
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -68,7 +68,7 @@
+ 	button.button_pressed = chosen
+ 	button.pressed.connect(action)
+ 	EditorStyle.card(button,chosen)
+-	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
++	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+preload("res://track/track_visual_identity.gd").VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
+ 	var cached: Texture2D = _images.get(button._cache_key)
+ 	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
+ 	button._kind = kind; button._biome = biome; button._color = color
+--- a/game/editor/road_piece_work.gd
++++ b/game/editor/road_piece_work.gd
+@@ -37,7 +37,7 @@
+ 		var last := Vector2i(ceili((bounds.end.x+track.half_extent.x)/track.cell_size),ceili((track.half_extent.y-bounds.position.y)/track.cell_size))
+ 		for y: int in range(maxi(0,first.y),mini(track.grid_height,last.y+1)):
+ 			for x: int in range(maxi(0,first.x),mini(track.grid_width,last.x+1)): cells.append(1 if track.cells[y*track.grid_width+x] == 0 else 0)
+-	var key: String = "piece/"+SECTIONS.digest([NativeTrackVisual.VERSION,visual.theme_id,piece,geometry,joins,neighbours,ctx.phases.get(index,{}),ctx.raised,track.metadata.creator_document.get("surface","asphalt"),track.cell_size,cells,nearby_sites,piles])
++	var key: String = "piece/"+SECTIONS.digest([preload("res://track/track_visual_identity.gd").VERSION,visual.theme_id,piece,geometry,joins,neighbours,ctx.phases.get(index,{}),ctx.raised,track.metadata.creator_document.get("surface","asphalt"),track.cell_size,cells,nearby_sites,piles])
+ 	var cached: Variant = visual.road_sections.read(key)
+ 	if cached is Dictionary:
+ 		var chip_capacity: bool = banks.count == int(cached.input_chips) if cached.chip_saturated else banks.count+int(cached.chips) <= banks.CHIP_LIMIT
+--- a/game/editor/road_preparation.gd
++++ b/game/editor/road_preparation.gd
+@@ -2,6 +2,7 @@
+ ## CPU arrays only. GPU materials, textures and scene nodes publish on main.
+ const BUDGET: int = 32 * 1024 * 1024
+ static var entries: Array = []
++static var construction_script: Script
+ static var bytes: int = 0
+ static var gpu_bytes: int = 0
+ static var gpu_keys: Dictionary = {}
+@@ -62,9 +63,25 @@
+ 	if doc.get("theme",track.metadata.get("theme","pine")) == "desert":
+ 		road_cells.resize(track.cells.size())
+ 		for index: int in range(road_cells.size()): road_cells[index] = 1 if track.cells[index] == 0 else 0
+-	var geometry: Array = [load("res://editor/road_sections.gd").VERSION,NativeTrackVisual.VERSION,TrackTheme.normalized(str(track.metadata.get("theme","pine"))),doc.get("pieces",[]),doc.get("surface","asphalt"),doc.get("base_track",""),track.half_extent,track.cell_size,road_cells,track.kerbs.triangles]
++	var geometry: Array = [load("res://editor/road_sections.gd").VERSION,preload("res://track/track_visual_identity.gd").VERSION,TrackTheme.normalized(str(track.metadata.get("theme","pine"))),doc.get("pieces",[]),doc.get("surface","asphalt"),doc.get("base_track",""),track.half_extent,track.cell_size,road_cells,track.kerbs.triangles]
+ 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
+ 	return digest.finish().hex_encode()
++
++static func prepare_worker(track: NativeTrack, planning: bool = false) -> Dictionary:
++	# Called on main before starting a job: never initialize the heavy script
++	# graph concurrently on a worker. Pass verified CPU hits directly to it.
++	if not planning and not track.metadata.get("metadata_only",false):
++		if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
++		var key: String = key_for(track)
++		guard.lock()
++		for entry: Dictionary in entries:
++			if entry.key == key:
++				guard.unlock(); return entry.packet
++		guard.unlock()
++		var stored: Dictionary = preload("res://track/road_mesh_disk_cache.gd").read_arrays(disk_key_for(track),key)
++		if not stored.is_empty(): return stored
++	construction_script = load("res://track/native_track_visual.gd")
++	return {}
+ 
+ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable(), planning: bool = false, update: Dictionary = {}) -> Dictionary:
+ 	if cancelled.is_valid() and cancelled.call(): return {}
+@@ -77,9 +94,9 @@
+ 	var uploaded: bool = gpu_keys.has(key)
+ 	guard.unlock()
+ 	if cached_only or (uploaded and not force): return {"key":key,"parts":[],"metadata":{}}
+-	var stored: Dictionary = {} if planning else NativeTrackVisual.ROAD_DISK_CACHE.read_arrays(disk_key_for(track),key)
++	var stored: Dictionary = {} if planning else preload("res://track/road_mesh_disk_cache.gd").read_arrays(disk_key_for(track),key)
+ 	if not stored.is_empty(): return stored
+-	var builder := NativeTrackVisual.new()
++	var builder: Node3D = load("res://track/native_track_visual.gd").new()
+ 	builder.name = "RoadCPUBuilder"
+ 	builder.theme_id = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+ 	builder.colors = TrackTheme.palette(builder.theme_id)
+@@ -217,8 +234,8 @@
+ 		result[Mesh.ARRAY_COLOR] = colors
+ 	return result
+ 
+-static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
+-	var packet: Dictionary = with_winter_cover(prepare(track,true,false,cancelled),track,cancelled).duplicate()
++static func run(cancelled: Callable, track: NativeTrack, prepared: Dictionary = {}) -> Dictionary:
++	var packet: Dictionary = with_winter_cover(prepared if not prepared.is_empty() else prepare(track,true,false,cancelled),track,cancelled).duplicate()
+ 	var disk: GDScript = preload("res://track/road_mesh_disk_cache.gd")
+ 	var receipt: Dictionary = disk.stage_arrays(disk_key_for(track),packet,cancelled)
+ 	if cancelled.is_valid() and cancelled.call():
+@@ -241,4 +258,4 @@
+ 
+ static func disk_key_for(track: NativeTrack) -> Array:
+ 	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+-	return [track.content_hash,NativeTrackVisual.VERSION,theme,TrackTheme.palette(theme),true]
++	return [track.content_hash,preload("res://track/track_visual_identity.gd").VERSION,theme,TrackTheme.palette(theme),true]
+--- a/game/editor/road_preparation_job.gd
++++ b/game/editor/road_preparation_job.gd
+@@ -1,4 +1,5 @@
+ extends RefCounted
+ static func start(track: NativeTrack, owner_tree: SceneTree, planning: bool = false, previous: NativeTrack = null) -> RefCounted:
++	var prepared: Dictionary = preload("res://editor/road_preparation.gd").prepare_worker(track,planning)
+ 	if planning: return preload("res://editor/work_job.gd").start(preload("res://editor/road_preparation.gd").run_editor.bind(track,previous),owner_tree)
+-	return preload("res://editor/work_job.gd").start(preload("res://editor/road_preparation.gd").run.bind(track),owner_tree)
++	return preload("res://editor/work_job.gd").start(preload("res://editor/road_preparation.gd").run.bind(track,prepared),owner_tree)
+--- a/game/race/selected_track_preparation.gd
++++ b/game/race/selected_track_preparation.gd
+@@ -6,7 +6,8 @@
+ static var cleanup_tree: SceneTree
+ 
+ static func start(track: NativeTrack, entry: Dictionary, document: Dictionary, owner_tree: SceneTree) -> RefCounted:
+-	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document),owner_tree)
++	var prepared: Dictionary = ROADS.prepare_worker(track)
++	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document,prepared),owner_tree)
+ 	ensure_cleanup(owner_tree)
+ 	return job
+ 
+@@ -16,14 +17,14 @@
+ 		owner_tree.process_frame.connect(reap_discarded)
+ 		owner_tree.root.tree_exiting.connect(finish)
+ 
+-static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary) -> Dictionary:
++static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary, prepared: Dictionary = {}) -> Dictionary:
+ 	var track: NativeTrack = selected
+ 	if track.metadata.get("metadata_only",false):
+ 		track = preload("res://backend/cloud_tracks.gd").compile_document(entry,document,cancelled)
+ 	if track == null or cancelled.call(): return {}
+ 	var receipt: Dictionary = {}
+ 	var disk_key: Array = ROADS.disk_key_for(track)
+-	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
++	var packet: Dictionary = prepared if not prepared.is_empty() else ROADS.prepare(track,false,false,cancelled)
+ 	packet = ROADS.with_winter_cover(packet,track,cancelled)
+ 	if cancelled.call(): return {}
+ 	# Prime existing query/gate data and the bounded numeric support cache in
+--- a/game/track/breakable_prop_visual.gd
++++ b/game/track/breakable_prop_visual.gd
+@@ -124,7 +124,7 @@
+ 			var row: Array = pieces[i]
+ 			var size := Vector3(float(row[8]),1,float(row[9]))
+ 			var height: float=0.023
+-			if parent is NativeTrackVisual and parent.desert_relief != null: height += parent.desert_relief.height(Vector2(row[2],row[3]))
++			if "world_built" in parent and parent.desert_relief != null: height += parent.desert_relief.height(Vector2(row[2],row[3]))
+ 			var basis:=Basis(Vector3.UP,float(row[6]))
+ 			if kind>=BreakableProps.SNOW:
+ 				var age: float=maxf(0.0,float(row[10])-float(row[11]))
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -94,16 +94,16 @@
+ 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
+ 				asphalt.set_shader_parameter("road_color", palette[0])
+ 				asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+-				if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
++				if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",preload("res://track/track_visual_assets.gd").NIGHT_ASPHALT_WEAR)
+ 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
+-				asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
+-				asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
+-				if track.metadata.get("theme","pine") == "winter": asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
++				asphalt.set_shader_parameter("ice_albedo", preload("res://track/track_visual_assets.gd").WINTER_ICE)
++				asphalt.set_shader_parameter("ice_finish", preload("res://track/track_visual_assets.gd").WINTER_ICE_FINISH)
++				if track.metadata.get("theme","pine") == "winter": asphalt.set_shader_parameter("snow_albedo",preload("res://track/track_visual_assets.gd").WINTER_SNOW)
+ 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
+ 				asphalt.set_shader_parameter("packed_sand",track.metadata.get("theme","pine") == "desert")
+ 				asphalt.set_shader_parameter("raised_road_edge",road_surface.lift > 0.0)
+-				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+-				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
++				asphalt.set_shader_parameter("desert_road_albedo",preload("res://track/track_visual_assets.gd").DESERT_ROAD_ALBEDO)
++				asphalt.set_shader_parameter("desert_road_reference",preload("res://track/track_visual_assets.gd").desert_road_reference)
+ 				if theme in ["desert","night_city"] or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+ 				elif RenderingServer.get_current_rendering_method() == "gl_compatibility": SurfaceShaderVariants.specialize(asphalt,true,false)
+ 				mesh.material_override = asphalt
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -135,20 +135,20 @@
+ 		asphalt.set_shader_parameter("bridge_blend_mask",ImageTexture.create_from_image(material_blend))
+ 		asphalt.set_shader_parameter("bridge_map_extent",map_extent)
+ 	asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+-	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
++	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",preload("res://track/track_visual_assets.gd").NIGHT_ASPHALT_WEAR)
+ 	asphalt.set_shader_parameter("icy_road",theme == "winter")
+-	asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
+-	asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
++	asphalt.set_shader_parameter("ice_albedo", preload("res://track/track_visual_assets.gd").WINTER_ICE)
++	asphalt.set_shader_parameter("ice_finish", preload("res://track/track_visual_assets.gd").WINTER_ICE_FINISH)
+ 	if theme == "winter":
+-		asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
++		asphalt.set_shader_parameter("snow_albedo",preload("res://track/track_visual_assets.gd").WINTER_SNOW)
+ 		asphalt.set_shader_parameter("winter_bridge_width_data",true)
+ 	asphalt.set_shader_parameter("wet_road",theme == "storm")
+ 	asphalt.set_shader_parameter("packed_sand",theme == "desert")
+ 	asphalt.set_shader_parameter("raised_road_edge",road_lift > 0.0)
+-	asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+-	asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
++	asphalt.set_shader_parameter("desert_road_albedo",preload("res://track/track_visual_assets.gd").DESERT_ROAD_ALBEDO)
++	asphalt.set_shader_parameter("desert_road_reference",preload("res://track/track_visual_assets.gd").desert_road_reference)
+ 	if theme == "desert":
+-		asphalt.set_shader_parameter("desert_apron",NativeTrackVisual.DESERT_APRON)
++		asphalt.set_shader_parameter("desert_apron",preload("res://track/track_visual_assets.gd").DESERT_APRON)
+ 		asphalt.set_shader_parameter("desert_bridge_width_data",true)
+ 		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
+ 		SurfaceShaderVariants.specialize(asphalt)
+--- a/game/track/desert_dune_source_surface.gd
++++ b/game/track/desert_dune_source_surface.gd
+@@ -7,7 +7,7 @@
+ var conservative: Array[Rect2] = []
+ var input_triangles: int = 0
+ 
+-func prepare(visual: NativeTrackVisual) -> void:
++func prepare(visual: Node3D) -> void:
+ 	for node: Node in visual.get_children():
+ 		if not node is MeshInstance3D or node.mesh == null: continue
+ 		var material: ShaderMaterial = node.material_override as ShaderMaterial
+--- a/game/track/desert_road_relief.gd
++++ b/game/track/desert_road_relief.gd
+@@ -81,7 +81,7 @@
+ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
+ 	if sliced and not _current_node(node): return
+ 	var installer: Node = node
+-	while installer != null and not installer is NativeTrackVisual: installer = installer.get_parent()
++	while installer != null and not "world_built" in installer: installer = installer.get_parent()
+ 	var race_install: bool = sliced and installer != null and installer.preserve_relief_surfaces
+ 	if node is Node3D and node.has_meta("prop_origin"):
+ 		# Movable props remain rigid; their presenter owns subsequent support.
+@@ -204,7 +204,7 @@
+ 	if not is_instance_valid(node) or not node.is_inside_tree(): return false
+ 	var ancestor: Node = node
+ 	while ancestor != null:
+-		if ancestor is NativeTrackVisual and ancestor.build_current.is_valid() and not ancestor._build_is_current(): return false
++		if "world_built" in ancestor and ancestor.build_current.is_valid() and not ancestor._build_is_current(): return false
+ 		ancestor = ancestor.get_parent()
+ 	return true
+ 
+--- a/game/track/desert_road_union.gd
++++ b/game/track/desert_road_union.gd
+@@ -163,7 +163,7 @@
+ 		for index: int in queue: result[index]["desert_scale"] = scale
+ 	return result
+ 
+-func emit(visual: NativeTrackVisual, tool: SurfaceTool, height: float = 0.012) -> int:
++func emit(visual: Node3D, tool: SurfaceTool, height: float = 0.012) -> int:
+ 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+ 	if native != null and not visual._menu_slices:
+ 		var result: Dictionary = native.call("road_emit",clipping.triangles,points_by_triangle,phase_by_triangle,preload("res://track/geometry_acceleration.gd").blend_data(self),visual.theme_id,0,height,Geometry2D,tool,visual._cpu_cancelled)
+--- a/game/track/desert_sand_wind.gd
++++ b/game/track/desert_sand_wind.gd
+@@ -38,7 +38,7 @@
+ var lift_elapsed: float = 0.0
+ var previous_lift: float = 0.0
+ 
+-func configure(data: NativeTrack, visual: NativeTrackVisual = null) -> void:
++func configure(data: NativeTrack, visual: Node3D = null) -> void:
+ 	track = data
+ 	enabled = data != null and data.metadata.get("theme", "pine") == "desert"
+ 	visible = enabled
+--- a/game/track/grass_tufts.gd
++++ b/game/track/grass_tufts.gd
+@@ -15,8 +15,8 @@
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/grass_tuft.gdshader")
+ 	material.set_shader_parameter("ground_tint",tint)
+-	material.set_shader_parameter("grass_macro_mask",NativeTrackVisual.GRASS_MACRO)
+-	material.set_shader_parameter("painted_grass_texture",NativeTrackVisual.GRASS_ALBEDO)
++	material.set_shader_parameter("grass_macro_mask",preload("res://track/track_visual_assets.gd").GRASS_MACRO)
++	material.set_shader_parameter("painted_grass_texture",preload("res://track/track_visual_assets.gd").GRASS_ALBEDO)
+ 	var meshes: Array[ArrayMesh] = []
+ 	for variant: int in range(5): meshes.append(_mesh(variant))
+ 	var extent: Vector2 = track.half_extent
+--- a/game/track/hazard_visual.gd
++++ b/game/track/hazard_visual.gd
+@@ -77,8 +77,8 @@
+ 		material.shader = preload("res://track/jump_earth.gdshader")
+ 		material.set_shader_parameter("sand_profile",sand)
+ 		material.set_shader_parameter("earth_color",TrackTheme.DESERT[0] if sand else Color("89734f"))
+-		material.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+-		material.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
++		material.set_shader_parameter("desert_road_albedo",preload("res://track/track_visual_assets.gd").DESERT_ROAD_ALBEDO)
++		material.set_shader_parameter("desert_road_reference",preload("res://track/track_visual_assets.gd").desert_road_reference)
+ 	mesh.material_override = material
+ 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	parent.add_child(mesh)
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -1,17 +1,11 @@
+ class_name NativeTrackVisual
+-extends Node3D
++extends "res://track/prepared_race_world.gd"
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-220-finite-join-caps"
+ const VERTEX_PACKING = preload("res://rendering/mesh_vertex_packing.gd")
+-var scenery_lods: bool = true # False is an offline full-detail comparison control.
+-var piece_road_materials: bool = false
+-var desert_relief: RefCounted
+ const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+-var _suppress_night_fx: bool=false
+-var ground_support: RefCounted
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -48,35 +42,14 @@
+ const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
+ const NIGHT_TILE_SIZE: float = 16.0
+ const NIGHT_ROAD_GROUP_SIZE: float = 16.0
+-var partition_night_ground: bool = true
+-var partition_static_meshes: bool = true
+-var uniform_terrain_regions: bool = true
+-var _menu_slices: bool = false
+-var profile_build: bool = false
+-var build_costs: Dictionary = {}
+-var build_stage: String = "initial"
+-var preserve_relief_surfaces: bool = false
+-var build_current: Callable
+-
+-func _build_is_current() -> bool:
+-	return is_inside_tree() and (not build_current.is_valid() or build_current.call())
++
+ 
+ func _cpu_cancelled() -> bool:
+ 	return build_current.is_valid() and not build_current.call()
+-var _slice_started: int = 0
+-var theme_id: String = "pine"
+-var editor_preview: bool = false
+ var planning_roads: bool = false
+ var editor_road_update: Dictionary = {}
+ var editor_previous_track: NativeTrack
+ var editor_dirty_tiles: Dictionary = {}
+-var colors: Array[Color] = []
+-var tyre_instances: MultiMeshInstance3D
+-var _tyre_positions := PackedVector2Array()
+-var _tyre_spins: Array[float] = []
+-var light_instances: Array[Node3D] = []
+-var _prop_draw_states: Array[Dictionary] = []
+-var scenic_count: int = 0
+ var editor_objects: NativeTrackVisual
+ var editor_cover: NativeTrackVisual
+ var editor_scenery: NativeTrackVisual
+@@ -101,15 +74,8 @@
+ const INSTALL_VERTEX_BUDGET: int = 24576
+ var _prepared_road_parts: Array = []
+ var prepare_editor_roads: bool = true
+-var race_road_packet: Dictionary = {}
+ const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
+ var cache_road_meshes: bool = true
+-var persist_road_meshes: bool = true
+-var cache_race_world: bool = false
+-var persist_race_world: bool = true
+-var _world_disk_id: String = ""
+-var world_built: bool = false
+-const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
+ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+ const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+ const ROAD_CACHE_MAX_ENTRIES: int = 8
+@@ -155,7 +121,7 @@
+ 	material.set_shader_parameter("grass_normal",GRASS_NORMAL)
+ 
+ 
+-func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
++func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false, restore_cached: bool = true) -> void:
+ 	ground_support = bridge.road_surface
+ 	world_built = false
+ 	_menu_slices = menu_slices
+@@ -169,7 +135,7 @@
+ 	var world_options: Array = [scenery_lods,piece_road_materials,preserve_relief_surfaces,_suppress_night_fx,VisualGeometry.optimize_model_geometry]
+ 	world_key.append(world_options)
+ 	var reuse_world: bool = cache_race_world and not editor_preview
+-	if reuse_world:
++	if reuse_world and restore_cached:
+ 		var identity_started: int = Time.get_ticks_usec() if profile_build else 0
+ 		_world_disk_id = ""
+ 		if persist_race_world and persist_road_meshes:
+@@ -1972,39 +1938,10 @@
+ 
+ 
+ func _scenery_sites(track: NativeTrack, stride: int) -> Array[Vector2i]:
+-	var ordered: Array[Vector3i] = []
+-	for y: int in range(stride,track.grid_height-stride,stride):
+-		for x: int in range(stride,track.grid_width-stride,stride):
+-			var seed_value: int = (x*73856093 ^ y*19349663)&0x7fffffff
+-			if track.cells[y*track.grid_width+x] not in [1,7] or seed_value%3 == 0: continue
+-			var priority: int = ((seed_value^(seed_value>>16))*0x45d9f3b)&0x7fffffff
+-			priority = ((priority^(priority>>16))*0x45d9f3b)&0x7fffffff
+-			ordered.append(Vector3i(priority^(priority>>16),x,y))
+-	ordered.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
+-		if a.x != b.x: return a.x < b.x
+-		if a.y != b.y: return a.y < b.y
+-		return a.z < b.z)
+-	var sites: Array[Vector2i] = []
+-	for value: Vector3i in ordered: sites.append(Vector2i(value.y,value.z))
+-	return sites
+-
++	return preload("res://track/scenery_placement.gd").sites(track,stride)
+ 
+ func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
+-	var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
+-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+-		if point.distance_to(Vector2(object.position[0],object.position[1])) < radius+3.0: return false
+-	# Check the whole square footprint, including bridges. A tree must never
+-	# hide a corner, gate, ramp or native barrier. Low cover remains passable.
+-	var extent: int = ceili(radius / track.cell_size)
+-	if cell.x < extent or cell.y < extent or cell.x + extent >= track.grid_width or cell.y + extent >= track.grid_height:
+-		return false
+-	for y: int in range(cell.y - extent, cell.y + extent + 1):
+-		for x: int in range(cell.x - extent, cell.x + extent + 1):
+-			var index: int = y * track.grid_width + x
+-			if track.cells[index] not in [1, 7] or track.deck_cells[index] >= 0:
+-				return false
+-	return true
+-
++	return preload("res://track/scenery_placement.gd").clear(track,cell,radius)
+ 
+ func _build_placed_objects(track: NativeTrack) -> void:
+ 	ContactShading.build_props(self,track)
+@@ -2347,28 +2284,6 @@
+ 	if not node_name.is_empty(): instance.name = node_name
+ 	add_child(instance)
+ 
+-func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
+-	if tyre_instances == null: return
+-	if _tyre_positions.size() != origins.size():
+-		_tyre_positions.resize(origins.size())
+-		_tyre_spins.resize(origins.size())
+-		_tyre_spins.fill(NAN)
+-	for i: int in range(origins.size()):
+-		var p: Vector2 = origins[i]
+-		var spin: float = 0.0
+-		if i < state.loose_tyres.size():
+-			var tyre: Array = state.loose_tyres[i]
+-			p = Vector2(tyre[0],tyre[1])
+-			spin = tyre[4]
+-		# Only presentation data is cached. Reset and moving tyres still upload
+-		# their exact transforms; resting stacks do not dirty the GPU buffer.
+-		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
+-		_tyre_positions[i] = p
+-		_tyre_spins[i] = spin
+-		var pose: Transform3D = Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*(0.014+(ground_support.ground(p) if ground_support != null else 0.0)+(desert_relief.height(p) if desert_relief != null else 0.0)))
+-		if tyre_instances.has_method("set_pose"): tyre_instances.set_pose(i,pose)
+-		else: tyre_instances.multimesh.set_instance_transform(i,pose)
+-	if tyre_instances.has_method("flush"): tyre_instances.flush()
+ 
+ func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
+ 	tool.generate_normals()
+@@ -2381,28 +2296,6 @@
+ 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 	mesh.material_override = material
+ 	parent.add_child(mesh)
+-
+-func update_light_props(state: VehicleState) -> void:
+-	_prop_draw_states.resize(light_instances.size())
+-	for index: int in range(light_instances.size()):
+-		var node: Node3D = light_instances[index]
+-		var origin: Vector3 = node.get_meta("prop_origin",node.position)
+-		var row: Array = state.light_props[index] if index < state.light_props.size() else [origin.x,-origin.z,0.0,0.0,0.0]
+-		var integrity: float = float(state.prop_destruction[index][0]) if index < state.prop_destruction.size() else 1.0
+-		var previous: Dictionary = _prop_draw_states[index]
+-		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
+-		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
+-		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
+-		var base_height: float=origin.y if node.has_meta("burning_barrel_scale") else node.position.y
+-		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else base_height-0.014),-float(row[1]))
+-		if desert_relief != null: at.y += desert_relief.height(Vector2(row[0],row[1]))
+-		if node.position != at: node.position = at
+-		if node.has_meta("burning_barrel_scale"): BurningBarrelVisual.present(node,row,at.y-0.014)
+-		elif node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
+-		else: node.rotation.z = float(row[4])*0.9
+-	var fire: NightPropEffects=get_node_or_null("NightPropEffects")
+-	if fire!=null: fire.sync_barrels(light_instances,state)
+-	BreakablePropVisual.update_debris(self,state)
+ 
+ 
+ func _build_kerbs(track: NativeTrack, prepared_arrays: Array = []) -> void:
+@@ -2503,9 +2396,6 @@
+ 	add_child(mesh)
+ 
+ 
+-func _menu_yield_due() -> bool:
+-	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000
+-
+ 
+ static var _winter_drift_noise: FastNoiseLite = _make_winter_drift_noise()
+ static var _winter_pack_noise: FastNoiseLite = _make_winter_pack_noise()
+@@ -2740,10 +2630,3 @@
+ 				tool.set_uv(Vector2(0.65,0.0))
+ 				tool.set_uv2(Vector2.ZERO)
+ 				tool.add_vertex(point)
+-
+-func _yield_build() -> bool:
+-	if not _build_is_current(): return false
+-	if _menu_yield_due():
+-		await get_tree().process_frame
+-		_slice_started = Time.get_ticks_usec()
+-	return _build_is_current()
+--- a/game/track/night_prop_effects.gd
++++ b/game/track/night_prop_effects.gd
+@@ -11,7 +11,7 @@
+ var warm_lights: Array[OmniLight3D]=[]
+ var barrel_poses: Dictionary={}
+ 
+-static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
++static func build(kit: Node3D, objects: Array) -> NightPropEffects:
+ 	var old: Node=kit.get_node_or_null("NightPropEffects")
+ 	if old!=null: kit.remove_child(old); old.queue_free()
+ 	if kit.theme_id!="night_city" or kit._capture_editor_prop_arrays or kit._suppress_night_fx: return null
+@@ -146,7 +146,7 @@
+ 		var scale: float=float(source.scale)
+ 		var tilt: float=float(row[4]) if row.size()==BurningBarrel.ROW_SIZE else 0.0
+ 		var ground: float=pose.origin.y-(0.55*absf(cos(tilt))+0.515*absf(sin(tilt)))*scale-0.014
+-		var kit: NativeTrackVisual=get_parent()
++		var kit: Node3D=get_parent()
+ 		if kit.ground_support!=null and row.size()==BurningBarrel.ROW_SIZE:
+ 			var p:=Vector2(float(row[11]),float(row[12]))+Vector2.from_angle(float(row[13]))*0.65*scale
+ 			ground=kit.ground_support.ground(p)
+--- a/game/track/road_cache_bakes.gd
++++ b/game/track/road_cache_bakes.gd
+@@ -15,17 +15,17 @@
+ 	if tree == null:
+ 		# Register WorkJob's join before our final receipt cleanup.
+ 		active_key = ROADS.disk_key_for(track)
+-		job = preload("res://editor/work_job.gd").start(run.bind(track),owner_tree)
++		job = preload("res://editor/work_job.gd").start(run.bind(track,ROADS.prepare_worker(track)),owner_tree)
+ 		tree = owner_tree
+ 		tree.process_frame.connect(poll)
+ 		tree.root.tree_exiting.connect(finish)
+ 	elif job == null:
+ 		active_key = ROADS.disk_key_for(track)
+-		job = preload("res://editor/work_job.gd").start(run.bind(track),owner_tree)
++		job = preload("res://editor/work_job.gd").start(run.bind(track,ROADS.prepare_worker(track)),owner_tree)
+ 	else: pending_track = track
+ 
+-static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
+-	var packet: Dictionary = ROADS.prepare(track,true,false,cancelled)
++static func run(cancelled: Callable, track: NativeTrack, prepared: Dictionary = {}) -> Dictionary:
++	var packet: Dictionary = prepared if not prepared.is_empty() else ROADS.prepare(track,true,false,cancelled)
+ 	var receipt: Dictionary = DISK.stage_arrays(ROADS.disk_key_for(track),packet,cancelled)
+ 	if cancelled.call(): DISK.discard_arrays(receipt); return {}
+ 	return receipt
+--- a/game/track/road_fringe_mesh.gd
++++ b/game/track/road_fringe_mesh.gd
+@@ -13,7 +13,7 @@
+ 			points.append(path)
+ 			settings.append(cache)
+ 
+-func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
++func emit(visual: Node3D, tool: SurfaceTool) -> int:
+ 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+ 	if native != null and not visual._menu_slices:
+ 		var blend: Dictionary = {}
+--- a/game/track/winter_scenery.gd
++++ b/game/track/winter_scenery.gd
+@@ -20,7 +20,7 @@
+ static func mesh_for(kind: String, length: float = -1.0, lods: bool = true) -> ArrayMesh:
+ 	var cache_key: String = kind+":"+str(length)+":"+str(lods)
+ 	if meshes.has(cache_key): return meshes[cache_key]
+-	var kit := NativeTrackVisual.new()
++	var kit: Node3D = load("res://track/native_track_visual.gd").new()
+ 	kit.theme_id = "pine"
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -68,7 +68,7 @@
+ 		node.name = "Winter_" + kind
+ 		var instances := MultiMesh.new()
+ 		instances.transform_format = MultiMesh.TRANSFORM_3D
+-		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)),parent.scenery_lods and not parent.editor_preview if parent is NativeTrackVisual else true)
++		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)),parent.scenery_lods and not parent.editor_preview if "world_built" in parent else true)
+ 		instances.instance_count = poses.size()
+ 		for i: int in range(poses.size()): instances.set_instance_transform(i,poses[i])
+ 		node.multimesh = instances
+@@ -91,7 +91,7 @@
+ 		append_pose(groups,str(object.kind),Vector2(object.position[0],object.position[1]),scale,deg_to_rad(float(object.get("rotation",0.0))),float(object.length)/scale if object.has("length") else -1.0)
+ 	batch(parent,groups)
+ 
+-static func build_cover(parent: NativeTrackVisual, track: NativeTrack) -> void:
++static func build_cover(parent: Node3D, track: NativeTrack) -> void:
+ 	var data: Dictionary = track.editor_winter_cover if not track.editor_winter_cover.is_empty() else cover_data(track)
+ 	batch(parent,data.groups)
+ 	parent.set_meta("winter_cover_count",data.count)
+@@ -111,14 +111,13 @@
+ 
+ static func cover_data(track: NativeTrack, cancelled: Callable = Callable(), prepared_markers: Variant = null) -> Dictionary:
+ 	# CPU placements only; editor compilation prepares these off the input thread.
+-	var sampler := NativeTrackVisual.new()
+ 	var groups: Dictionary = {}
+-	var sites: Array[Vector2i] = sampler._scenery_sites(track,maxi(1,ceili(5.5/track.cell_size)))
++	var sites: Array[Vector2i] = preload("res://track/scenery_placement.gd").sites(track,maxi(1,ceili(5.5/track.cell_size)))
+ 	var count: int = 0
+ 	for cell: Vector2i in sites:
+ 		if count >= 180: break
+-		if cancelled.is_valid() and cancelled.call(): sampler.free(); return {}
+-		if not sampler._cover_clear(track,cell,1.8): continue
++		if cancelled.is_valid() and cancelled.call(): return {}
++		if not preload("res://track/scenery_placement.gd").clear(track,cell,1.8): continue
+ 		var seed: int = (cell.x*73856093 ^ cell.y*19349663)&0x7fffffff
+ 		var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
+ 		var kind: String = "rock" if seed%4 == 0 else "twig" if seed%4 == 1 else "bush"
+@@ -127,7 +126,6 @@
+ 		count += 1
+ 	var markers: Array[Dictionary] = marker_sites(track,cancelled) if prepared_markers == null else prepared_markers
+ 	for marker: Dictionary in markers: append_pose(groups,"marker",marker.position,1.0,0.0)
+-	sampler.free()
+ 	return {"groups":groups,"count":count,"markers":markers.size()}
+ 
+ static func marker_sites(track: NativeTrack, cancelled: Callable = Callable()) -> Array[Dictionary]:
+--- a/game/track/winter_snow_wind.gd
++++ b/game/track/winter_snow_wind.gd
+@@ -193,7 +193,7 @@
+ func _bind_surfaces() -> void:
+ 	if not enabled or not is_instance_valid(bank_visual): return
+ 	# Let prepared-world recording finish before installing run-owned finishes.
+-	if bank_visual is NativeTrackVisual and not (bank_visual as NativeTrackVisual).world_built: return
++	if "world_built" in bank_visual and not bank_visual.world_built: return
+ 	# Native roads/bridges arrive as prepared children. After the sliced build,
+ 	# stable worlds validate retained bindings/count without scene traversal.
+ 	var count: int = bank_visual.get_child_count()
+@@ -316,7 +316,7 @@
+ 	material.shader = preload("res://track/winter_snow_wind.gdshader")
+ 	material.set_shader_parameter("bank", bank)
+ 	material.set_shader_parameter("flow_texture", load("res://assets/textures/winter_wind_flow_v1.png"))
+-	material.set_shader_parameter("snow_albedo", NativeTrackVisual.WINTER_SNOW)
++	material.set_shader_parameter("snow_albedo", preload("res://track/track_visual_assets.gd").WINTER_SNOW)
+ 	node.material_override = material
+ 	add_child(node)
+ 	return node
+--- a/game/ui/track_debug.gd
++++ b/game/ui/track_debug.gd
+@@ -28,7 +28,7 @@
+ 		for r: Array in layer:
+ 			if int(r[4]) < 0:
+ 				continue
+-			var color: Color = NativeTrackVisual.COLORS[int(r[4])]
++			var color: Color = TrackTheme.PINE[int(r[4])]
+ 			if layer == track.deck_rectangles:
+ 				color = color.lightened(0.17)
+ 			draw_rect(Rect2(origin + Vector2(r[0], r[1]) * track.cell_size * zoom, Vector2(r[2], r[3]) * track.cell_size * zoom), color)
+--- a/game/ui/track_showroom.gd
++++ b/game/ui/track_showroom.gd
+@@ -27,7 +27,7 @@
+ 	if DisplayServer.get_name() == "headless":
+ 		ready_for_display = true
+ 		return
+-	var key: String = track.content_hash+":"+NativeTrackVisual.VERSION+":"+str(Vector2i(size))
++	var key: String = track.content_hash+":"+preload("res://track/track_visual_identity.gd").VERSION+":"+str(Vector2i(size))
+ 	if _images.has(key):
+ 		_show_image(_images[key])
+ 		return
+@@ -52,7 +52,7 @@
+ 	light.shadow_enabled = true
+ 	light.directional_shadow_max_distance = 160
+ 	world.add_child(light)
+-	var visual := NativeTrackVisual.new()
++	var visual: Node3D = load("res://track/native_track_visual.gd").new()
+ 	visual.cache_race_world = true
+ 	world.add_child(visual)
+ 	await visual.build(track,BridgePresentation.new(track),true)
+--- /dev/null
++++ b/game/track/prepared_race_world.gd
+@@ -0,0 +1,122 @@
++extends Node3D
++## Installed prepared world; no procedural geometry construction.
++const VERSION: String = preload("res://track/track_visual_identity.gd").VERSION
++const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
++var scenery_lods: bool = true # False is an offline full-detail comparison control.
++var piece_road_materials: bool = false
++var desert_relief: RefCounted
++var ground_support: RefCounted
++var _suppress_night_fx: bool=false
++var partition_night_ground: bool = true
++var partition_static_meshes: bool = true
++var uniform_terrain_regions: bool = true
++var _menu_slices: bool = false
++var profile_build: bool = false
++var build_costs: Dictionary = {}
++var build_stage: String = "initial"
++var preserve_relief_surfaces: bool = false
++var build_current: Callable
++var _slice_started: int = 0
++var theme_id: String = "pine"
++var editor_preview: bool = false
++var colors: Array[Color] = []
++var tyre_instances: MultiMeshInstance3D
++var _tyre_positions := PackedVector2Array()
++var _tyre_spins: Array[float] = []
++var light_instances: Array[Node3D] = []
++var _prop_draw_states: Array[Dictionary] = []
++var scenic_count: int = 0
++var race_road_packet: Dictionary = {}
++var persist_road_meshes: bool = true
++var cache_race_world: bool = false
++var persist_race_world: bool = true
++var _world_disk_id: String = ""
++var world_built: bool = false
++
++func _build_is_current() -> bool:
++	return is_inside_tree() and (not build_current.is_valid() or build_current.call())
++
++func _menu_yield_due() -> bool:
++	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000
++
++func _yield_build() -> bool:
++	if not _build_is_current(): return false
++	if _menu_yield_due():
++		await get_tree().process_frame
++		_slice_started = Time.get_ticks_usec()
++	return _build_is_current()
++
++func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
++	if tyre_instances == null: return
++	if _tyre_positions.size() != origins.size():
++		_tyre_positions.resize(origins.size())
++		_tyre_spins.resize(origins.size())
++		_tyre_spins.fill(NAN)
++	for i: int in range(origins.size()):
++		var p: Vector2 = origins[i]
++		var spin: float = 0.0
++		if i < state.loose_tyres.size():
++			var tyre: Array = state.loose_tyres[i]
++			p = Vector2(tyre[0],tyre[1])
++			spin = tyre[4]
++		# Only presentation data is cached. Reset and moving tyres still upload
++		# their exact transforms; resting stacks do not dirty the GPU buffer.
++		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
++		_tyre_positions[i] = p
++		_tyre_spins[i] = spin
++		var pose: Transform3D = Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*(0.014+(ground_support.ground(p) if ground_support != null else 0.0)+(desert_relief.height(p) if desert_relief != null else 0.0)))
++		if tyre_instances.has_method("set_pose"): tyre_instances.set_pose(i,pose)
++		else: tyre_instances.multimesh.set_instance_transform(i,pose)
++	if tyre_instances.has_method("flush"): tyre_instances.flush()
++
++func update_light_props(state: VehicleState) -> void:
++	_prop_draw_states.resize(light_instances.size())
++	for index: int in range(light_instances.size()):
++		var node: Node3D = light_instances[index]
++		var origin: Vector3 = node.get_meta("prop_origin",node.position)
++		var row: Array = state.light_props[index] if index < state.light_props.size() else [origin.x,-origin.z,0.0,0.0,0.0]
++		var integrity: float = float(state.prop_destruction[index][0]) if index < state.prop_destruction.size() else 1.0
++		var previous: Dictionary = _prop_draw_states[index]
++		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
++		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
++		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
++		var base_height: float=origin.y if node.has_meta("burning_barrel_scale") else node.position.y
++		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else base_height-0.014),-float(row[1]))
++		if desert_relief != null: at.y += desert_relief.height(Vector2(row[0],row[1]))
++		if node.position != at: node.position = at
++		if node.has_meta("burning_barrel_scale"): BurningBarrelVisual.present(node,row,at.y-0.014)
++		elif node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
++		else: node.rotation.z = float(row[4])*0.9
++	var fire: NightPropEffects=get_node_or_null("NightPropEffects")
++	if fire!=null: fire.sync_barrels(light_instances,state)
++	BreakablePropVisual.update_debris(self,state)
++
++func restore(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> bool:
++	ground_support = bridge.road_surface
++	world_built = false
++	_menu_slices = menu_slices
++	_slice_started = Time.get_ticks_usec() if menu_slices else 0
++	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
++	desert_relief = bridge.visual_relief
++	colors = TrackTheme.palette(theme_id)
++	set_meta("spatial_mask_budget_bytes",track.cells.size()*(20 if desert_relief != null else 16))
++	var visual_version: String = VERSION if partition_static_meshes and uniform_terrain_regions else VERSION+"/"+str(partition_static_meshes)+"/"+str(uniform_terrain_regions)
++	var world_key: Array = [track.content_hash,visual_version,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
++	var world_options: Array = [scenery_lods,piece_road_materials,preserve_relief_surfaces,_suppress_night_fx,VisualGeometry.optimize_model_geometry]
++	world_key.append(world_options)
++	var reuse_world: bool = cache_race_world and not editor_preview
++	if reuse_world:
++		var identity_started: int = Time.get_ticks_usec() if profile_build else 0
++		_world_disk_id = ""
++		if persist_race_world and persist_road_meshes:
++			var disk = load("res://track/prepared_world_disk_cache.gd")
++			_world_disk_id = await disk.identity_cooperative(world_key,world_options,self) if _menu_slices else disk.identity(world_key,world_options)
++		if _menu_slices and not _build_is_current(): return false
++		if profile_build: build_costs.world_disk_identity_us = Time.get_ticks_usec()-identity_started
++		var restored: bool = await PREPARED_WORLDS.restore_cooperative(world_key,self) if _menu_slices else PREPARED_WORLDS.restore(world_key,self)
++		if _menu_slices and not _build_is_current(): return false
++		if restored:
++			race_road_packet = {}
++			world_built = true
++			return true
++	return false
+--- /dev/null
++++ b/game/track/track_visual_identity.gd
+@@ -0,0 +1,18 @@
++extends RefCounted
++const VERSION: String = "track-kit-220-finite-join-caps"
++const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
++static func race_roads_need_preparation(track: NativeTrack) -> bool:
++	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return false
++	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
++	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
++	var builder: Script = ResourceLoader.get_cached_ref("res://track/native_track_visual.gd") if ResourceLoader.has_cached("res://track/native_track_visual.gd") else null
++	var roads: Array = builder.get("_road_mesh_cache") if builder != null else []
++	for entry: Dictionary in roads:
++		if entry.key == key: return false
++	var world_key: Array = [track.content_hash,VERSION,ContactShading.VERSION,CreatorPropVisual.VERSION,theme,TrackTheme.palette(theme),true]
++	world_key.append([true,false,true,false,VisualGeometry.optimize_model_geometry])
++	for entry: Dictionary in PREPARED_WORLDS.entries:
++		if entry.key == world_key: return false
++	# Production disk hits use verified numeric arrays on the CPU worker.
++	# Legacy resource artifacts are disposable and rebuild once.
++	return true
+--- /dev/null
++++ b/game/track/track_visual_assets.gd
+@@ -0,0 +1,56 @@
++extends RefCounted
++## Shared artwork; no geometry-builder dependencies.
++static var SURFACE_FACTORS: Texture2D:
++	get: return _texture("res://assets/textures/surface_factors_v1.png")
++static var WINTER_ICE: Texture2D:
++	get: return _texture("res://assets/textures/winter_ice_v1.png")
++static var WINTER_ICE_FINISH: Texture2D:
++	get: return _texture("res://assets/textures/winter_ice_seam_finish_v4.png")
++static var WINTER_SNOW: Texture2D:
++	get: return _texture("res://assets/textures/winter_snow_v1.png")
++const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
++static var GRASS_TEXTURE: Texture2D:
++	get: return _texture("res://assets/textures/painted_grass_v1.png")
++static var GRASS_ALBEDO: Texture2D:
++	get: return _texture("res://assets/textures/meadow_grass_v2.png")
++static var GRASS_MACRO: Texture2D:
++	get: return _texture("res://assets/textures/grass_macro_mask.png")
++static var GRASS_NORMAL: Texture2D:
++	get: return _texture("res://assets/textures/grass_normal.png")
++static var DUNE_FACTORS: Texture2D:
++	get: return _texture("res://assets/textures/desert_dunes_v1.png")
++static var DESERT_APRON: Texture2D:
++	get: return _texture("res://assets/textures/desert_apron_v1.png")
++static var DUNE_ALBEDO: Texture2D:
++	get: return _texture("res://assets/textures/desert_sand_v2.png")
++static var DESERT_ROAD_ALBEDO: Texture2D:
++	get: return _texture("res://assets/textures/desert_compacted_road_v3.png")
++static var NIGHT_GROUND_ALBEDO: Texture2D:
++	get: return _texture("res://assets/textures/night_industrial_ground_v1.png")
++static var NIGHT_ASPHALT_WEAR: Texture2D:
++	get: return _texture("res://assets/textures/night_asphalt_wear_v1.png")
++static var _reference_ready: bool = false
++static var _reference: Vector2
++static var desert_road_reference: Vector2:
++	get:
++		if not _reference_ready:
++			_reference = _desert_road_reference()
++			_reference_ready = true
++		return _reference
++
++static func _desert_road_reference() -> Vector2:
++	var artwork: Image = DESERT_ROAD_ALBEDO.get_image()
++	if artwork.is_compressed(): artwork.decompress()
++	var reference := Vector2.ZERO
++	for y: int in range(32):
++		for x: int in range(32):
++			var color: Color = artwork.get_pixel((x*artwork.get_width()+artwork.get_width()/2)/32,(y*artwork.get_height()+artwork.get_height()/2)/32)
++			var linear: Color = color.srgb_to_linear()
++			reference += Vector2(color.r*0.2126+color.g*0.7152+color.b*0.0722,linear.r*0.2126+linear.g*0.7152+linear.b*0.0722)
++	return reference/1024.0
++
++
++static var _textures: Dictionary = {}
++static func _texture(path: String) -> Texture2D:
++	if not _textures.has(path): _textures[path] = load(path)
++	return _textures[path]
+--- /dev/null
++++ b/game/track/scenery_placement.gd
+@@ -0,0 +1,37 @@
++extends RefCounted
++## Deterministic CPU placement shared by construction and race preparation.
++static func sites(track: NativeTrack, stride: int) -> Array[Vector2i]:
++	var ordered: Array[Vector3i] = []
++	for y: int in range(stride,track.grid_height-stride,stride):
++		for x: int in range(stride,track.grid_width-stride,stride):
++			var seed_value: int = (x*73856093 ^ y*19349663)&0x7fffffff
++			if track.cells[y*track.grid_width+x] not in [1,7] or seed_value%3 == 0: continue
++			var priority: int = ((seed_value^(seed_value>>16))*0x45d9f3b)&0x7fffffff
++			priority = ((priority^(priority>>16))*0x45d9f3b)&0x7fffffff
++			ordered.append(Vector3i(priority^(priority>>16),x,y))
++	ordered.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
++		if a.x != b.x: return a.x < b.x
++		if a.y != b.y: return a.y < b.y
++		return a.z < b.z)
++	var sites: Array[Vector2i] = []
++	for value: Vector3i in ordered: sites.append(Vector2i(value.y,value.z))
++	return sites
++
++
++static func clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
++	var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
++	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
++		if point.distance_to(Vector2(object.position[0],object.position[1])) < radius+3.0: return false
++	# Check the whole square footprint, including bridges. A tree must never
++	# hide a corner, gate, ramp or native barrier. Low cover remains passable.
++	var extent: int = ceili(radius / track.cell_size)
++	if cell.x < extent or cell.y < extent or cell.x + extent >= track.grid_width or cell.y + extent >= track.grid_height:
++		return false
++	for y: int in range(cell.y - extent, cell.y + extent + 1):
++		for x: int in range(cell.x - extent, cell.x + extent + 1):
++			var index: int = y * track.grid_width + x
++			if track.cells[index] not in [1, 7] or track.deck_cells[index] >= 0:
++				return false
++	return true
++
++
+--- /dev/null
++++ b/game/tests/test_race_runtime_dependencies.gd
+@@ -0,0 +1,38 @@
++extends SceneTree
++## Must run in a fresh process: preloading the builder would hide regressions.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("FAIL ",label)
++
++func run() -> void:
++	for path: String in ["res://core/features/race.gd","res://core/game.tscn","res://race/selected_track_preparation.gd"]:
++		var resource: Resource = load(path)
++		check(resource != null,path+" loads")
++		check(not ResourceLoader.has_cached("res://track/native_track_visual.gd"),path+" excludes construction")
++	var document: Dictionary = load("res://editor/track_document.gd").create_default()
++	document.theme = "winter"
++	var track: Variant = load("res://editor/track_compiler.gd").compile(document)
++	var winter: Script = load("res://track/winter_scenery.gd")
++	var placements: Dictionary = winter.cover_data(track)
++	check(not placements.is_empty(),"Winter CPU cover prepared")
++	check(not ResourceLoader.has_cached("res://track/native_track_visual.gd"),"Winter placements exclude construction")
++	var runtime: Node3D = load("res://track/prepared_race_world.gd").new()
++	root.add_child(runtime)
++	var bridge: Variant = load("res://track/bridge_presentation.gd").new(track)
++	check(not await runtime.restore(track,bridge,true),"missing artifact requests fallback")
++	check(not runtime.world_built and runtime.get_child_count() == 0,"miss leaves no partially built world")
++	check(not ResourceLoader.has_cached("res://track/native_track_visual.gd"),"miss detection excludes construction")
++	runtime.free()
++	# Loading the fallback afterward must preserve deterministic CPU placements.
++	var builder: Node3D = load("res://track/native_track_visual.gd").new()
++	var sites: Array = load("res://track/scenery_placement.gd").sites(track,3)
++	check(sites == builder._scenery_sites(track,3),"shared placement ordering")
++	check(placements == winter.cover_data(track),"cover independent of builder initialization")
++	builder.free()
++	print("RACE_RUNTIME_DEPENDENCIES: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- a/game/tests/test_prepared_world_disk_cache.gd
++++ b/game/tests/test_prepared_world_disk_cache.gd
+@@ -112,9 +112,9 @@
+ 	print("WORLD_DISK_ROW ",JSON.stringify(rows[-1]))
+ 	# Re-admission exercises serialized resources even in the writing process.
+ 	visual.free(); await process_frame; WORLDS.trim_cache()
+-	var restored := NativeTrackVisual.new(); restored.cache_race_world = true; restored.profile_build = true; restored.preserve_relief_surfaces = true
++	var restored: Node3D = preload("res://track/prepared_race_world.gd").new(); restored.cache_race_world = true; restored.profile_build = true; restored.preserve_relief_surfaces = true
+ 	root.add_child(restored)
+-	began = Time.get_ticks_usec(); await restored.build(track,bridge,true)
++	began = Time.get_ticks_usec(); await restored.restore(track,bridge,true)
+ 	check(restored.world_built and restored.build_costs.get("world_disk_hit",false),theme+" serialized world installs")
+ 	holder = WORLDS.entries[-1].scene.instantiate()
+ 	var serialized: Variant = node_signature(holder); holder.free()
+@@ -122,8 +122,8 @@
+ 		printerr("WORLD_DIFF ",theme," ",first_difference(original,serialized,"world"))
+ 	check(hash_value(serialized) == signature,theme+" serialized snapshot matches exact fresh scene")
+ 	if DisplayServer.get_name() != "headless": await compare_views(original_scene,WORLDS.entries[-1].scene,theme)
+-	var again := NativeTrackVisual.new(); again.cache_race_world = true; again.preserve_relief_surfaces = true
+-	root.add_child(again); await again.build(track,bridge,true)
++	var again: Node3D = preload("res://track/prepared_race_world.gd").new(); again.cache_race_world = true; again.preserve_relief_surfaces = true
++	root.add_child(again); await again.restore(track,bridge,true)
+ 	var first_multi: Array[Node] = restored.find_children("*","MultiMeshInstance3D",true,false)
+ 	var second_multi: Array[Node] = again.find_children("*","MultiMeshInstance3D",true,false)
+ 	check(first_multi.size() == second_multi.size(),theme+" all mutable instance groups restored")
+@@ -304,8 +304,8 @@
+ 	check(DISK.writes == before_writes and DISK.hits == before_hits and DISK.pending_writes.is_empty(),"unqualified path performs no persistent world IO")
+ 	check(DISK.source_key.is_empty(),"unqualified path skips first source fingerprint")
+ 	var source: PackedScene = WORLDS.entries[-1].scene
+-	var again := NativeTrackVisual.new(); again.cache_race_world = true; again.preserve_relief_surfaces = true; root.add_child(again)
+-	await again.build(track,bridge,true)
++	var again: Node3D = preload("res://track/prepared_race_world.gd").new(); again.cache_race_world = true; again.preserve_relief_surfaces = true; root.add_child(again)
++	await again.restore(track,bridge,true)
+ 	check(again.world_built and WORLDS.entries[-1].scene == source,"unqualified path retains existing RAM reuse")
+ 	if DisplayServer.get_name() != "headless": await compare_views(source,WORLDS.entries[-1].scene,"unsupported-"+theme)
+ 	visual.free(); again.free(); WORLDS.trim_cache(); await process_frame
+--- a/game/tests/profile_loading_fixes.gd
++++ b/game/tests/profile_loading_fixes.gd
+@@ -79,6 +79,8 @@
+ 		check(game.sim.state.tick == 0 and game.countdown_ticks == 360,"tick zero and complete countdown on reveal")
+ 		check(game.track_session.target_laps == 5,"five-lap contract retained")
+ 		var row: Dictionary = {"cycle":cycle,"ready_ms":elapsed,
++			"builder_loaded":ResourceLoader.has_cached("res://track/native_track_visual.gd"),
++			"runtime_script":game.track_ground.get_script().resource_path,
+ 			"scene_to_ready_ms":(Time.get_ticks_usec()-session_began)/1000.0,
+ 			"base_hits":counter("res://vehicle/modular_car_base.gd","hits")-base_before,
+ 			"feature_load_ms":app.feature_load_ms.duplicate(true),
+@@ -94,6 +96,10 @@
+ 			await process_frame
+ 		row["world_costs"] = game.track_ground.build_costs.duplicate(true)
+ 		row["world_disk_hits"] = disk.hits
++		if cycle == 0 and "--require-runtime-hit" in OS.get_cmdline_user_args():
++			check(not row.builder_loaded,"prepared race never loads the track builder")
++			check(row.runtime_script == "res://track/prepared_race_world.gd","prepared race uses runtime world")
++			check(row.world_costs.get("world_disk_hit",false),"fresh process restores a verified disk world")
+ 		began = Time.get_ticks_usec()
+ 		await app._retry_race(true)
+ 		row["retry_ms"] = (Time.get_ticks_usec()-began)/1000.0

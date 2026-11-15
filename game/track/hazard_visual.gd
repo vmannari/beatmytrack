@@ -77,8 +77,8 @@ static func build(parent: Node3D, object: Dictionary) -> void:
 		material.shader = preload("res://track/jump_earth.gdshader")
 		material.set_shader_parameter("sand_profile",sand)
 		material.set_shader_parameter("earth_color",TrackTheme.DESERT[0] if sand else Color("89734f"))
-		material.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
-		material.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+		material.set_shader_parameter("desert_road_albedo",preload("res://track/track_visual_assets.gd").DESERT_ROAD_ALBEDO)
+		material.set_shader_parameter("desert_road_reference",preload("res://track/track_visual_assets.gd").desert_road_reference)
 	mesh.material_override = material
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mesh)

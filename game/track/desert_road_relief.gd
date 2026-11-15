@@ -81,7 +81,7 @@ func reuse_from(root: Node3D, previous: RefCounted) -> void:
 func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 	if sliced and not _current_node(node): return
 	var installer: Node = node
-	while installer != null and not installer is NativeTrackVisual: installer = installer.get_parent()
+	while installer != null and not "world_built" in installer: installer = installer.get_parent()
 	var race_install: bool = sliced and installer != null and installer.preserve_relief_surfaces
 	if node is Node3D and node.has_meta("prop_origin"):
 		# Movable props remain rigid; their presenter owns subsequent support.
@@ -204,7 +204,7 @@ func _current_node(node: Node) -> bool:
 	if not is_instance_valid(node) or not node.is_inside_tree(): return false
 	var ancestor: Node = node
 	while ancestor != null:
-		if ancestor is NativeTrackVisual and ancestor.build_current.is_valid() and not ancestor._build_is_current(): return false
+		if "world_built" in ancestor and ancestor.build_current.is_valid() and not ancestor._build_is_current(): return false
 		ancestor = ancestor.get_parent()
 	return true
 

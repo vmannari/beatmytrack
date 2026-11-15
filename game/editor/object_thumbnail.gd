@@ -68,7 +68,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	button.button_pressed = chosen
 	button.pressed.connect(action)
 	EditorStyle.card(button,chosen)
-	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
+	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+preload("res://track/track_visual_identity.gd").VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
 	var cached: Texture2D = _images.get(button._cache_key)
 	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
 	button._kind = kind; button._biome = biome; button._color = color

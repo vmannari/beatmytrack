@@ -186,7 +186,8 @@ static func begin_capture(world: Node3D, view: Viewport, camera: Camera3D) -> Di
 
 static func finish_capture(ticket: Dictionary, world: Node3D, view: Viewport, camera: Camera3D) -> void:
 	if ticket.is_empty() or ticket.epoch != generation or ticket.context != context(view,world,camera): return
+	var materials: Dictionary = {}
 	for sample: Dictionary in ticket.samples:
 		var node: Object = sample.node.get_ref()
-		if is_instance_valid(node) and node.is_visible_in_tree() and receipt_key(node,ticket.context) == sample.key:
+		if is_instance_valid(node) and node.is_visible_in_tree() and receipt_key(node,ticket.context,materials) == sample.key:
 			complete(ticket.context,sample.key,ticket.epoch)

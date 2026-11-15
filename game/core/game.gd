@@ -1082,7 +1082,7 @@ func _build_ground(world: Node3D) -> void:
 	_presentation_has_water = native_track != null and (native_track.cells.has(3) or native_track.cells.has(6))
 	_refresh_render_scale()
 	if native_track != null:
-		var visual := NativeTrackVisual.new()
+		var visual: Node3D = preload("res://track/prepared_race_world.gd").new()
 		world.add_child(visual)
 		visual.profile_build = profile_enabled
 		visual.preserve_relief_surfaces = true
@@ -1103,7 +1103,23 @@ func _build_ground(world: Node3D) -> void:
 		if bridge_presentation == null: bridge_presentation = BridgePresentation.new(native_track)
 		sim.prepare_ground(native_track,bridge_presentation)
 		visual.build_current = _preparation_is_current
-		await visual.build(native_track, bridge_presentation, cooperative_preparation)
+		var restored: bool = await visual.restore(native_track, bridge_presentation, cooperative_preparation)
+		if not _preparation_is_current(): return
+		if not restored:
+			var builder: Node3D = load("res://track/native_track_visual.gd").new()
+			builder.profile_build = profile_enabled
+			builder.preserve_relief_surfaces = true
+			# Transfer the verified miss and its diagnostics; do not read it twice.
+			builder._world_disk_id = visual._world_disk_id
+			builder.build_costs = visual.build_costs
+			builder.race_road_packet = visual.race_road_packet
+			builder.cache_race_world = production_mode and not editor_test
+			builder.build_current = _preparation_is_current
+			world.remove_child(visual)
+			visual.free()
+			visual = builder
+			world.add_child(visual)
+			await visual.build(native_track, bridge_presentation, cooperative_preparation, false)
 		if not _preparation_is_current() or not visual.world_built: return
 		track_ground = visual
 	else:

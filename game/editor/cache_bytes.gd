@@ -18,7 +18,7 @@ static func scene(node: Node, seen: Dictionary = {}, excluded: Dictionary = {}) 
 	if value != null and not seen.has(value.get_instance_id()):
 		seen[value.get_instance_id()] = true; bytes += mesh(value)
 	if node is MultiMeshInstance3D and node.multimesh != null: bytes += node.multimesh.instance_count*96
-	if node is NativeTrackVisual and node._editor_authored_batches != null:
+	if "_editor_authored_batches" in node and node._editor_authored_batches != null:
 		var batches: RefCounted = node._editor_authored_batches
 		# Active models remain referenced when the idle LRU is trimmed.
 		bytes += maxi(batches.model_bytes,batches.active_model_bytes)+batches.shared_vertex_bytes

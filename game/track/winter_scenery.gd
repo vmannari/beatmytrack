@@ -20,7 +20,7 @@ static func material() -> StandardMaterial3D:
 static func mesh_for(kind: String, length: float = -1.0, lods: bool = true) -> ArrayMesh:
 	var cache_key: String = kind+":"+str(length)+":"+str(lods)
 	if meshes.has(cache_key): return meshes[cache_key]
-	var kit := NativeTrackVisual.new()
+	var kit: Node3D = load("res://track/native_track_visual.gd").new()
 	kit.theme_id = "pine"
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -68,7 +68,7 @@ static func batch(parent: Node3D, groups: Dictionary) -> void:
 		node.name = "Winter_" + kind
 		var instances := MultiMesh.new()
 		instances.transform_format = MultiMesh.TRANSFORM_3D
-		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)),parent.scenery_lods and not parent.editor_preview if parent is NativeTrackVisual else true)
+		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)),parent.scenery_lods and not parent.editor_preview if "world_built" in parent else true)
 		instances.instance_count = poses.size()
 		for i: int in range(poses.size()): instances.set_instance_transform(i,poses[i])
 		node.multimesh = instances
@@ -91,7 +91,7 @@ static func build_authored(parent: Node3D, track: NativeTrack) -> void:
 		append_pose(groups,str(object.kind),Vector2(object.position[0],object.position[1]),scale,deg_to_rad(float(object.get("rotation",0.0))),float(object.length)/scale if object.has("length") else -1.0)
 	batch(parent,groups)
 
-static func build_cover(parent: NativeTrackVisual, track: NativeTrack) -> void:
+static func build_cover(parent: Node3D, track: NativeTrack) -> void:
 	var data: Dictionary = track.editor_winter_cover if not track.editor_winter_cover.is_empty() else cover_data(track)
 	batch(parent,data.groups)
 	parent.set_meta("winter_cover_count",data.count)
@@ -111,14 +111,13 @@ static func prepare_cover(track: NativeTrack, cache: Dictionary, cancelled: Call
 
 static func cover_data(track: NativeTrack, cancelled: Callable = Callable(), prepared_markers: Variant = null) -> Dictionary:
 	# CPU placements only; editor compilation prepares these off the input thread.
-	var sampler := NativeTrackVisual.new()
 	var groups: Dictionary = {}
-	var sites: Array[Vector2i] = sampler._scenery_sites(track,maxi(1,ceili(5.5/track.cell_size)))
+	var sites: Array[Vector2i] = preload("res://track/scenery_placement.gd").sites(track,maxi(1,ceili(5.5/track.cell_size)))
 	var count: int = 0
 	for cell: Vector2i in sites:
 		if count >= 180: break
-		if cancelled.is_valid() and cancelled.call(): sampler.free(); return {}
-		if not sampler._cover_clear(track,cell,1.8): continue
+		if cancelled.is_valid() and cancelled.call(): return {}
+		if not preload("res://track/scenery_placement.gd").clear(track,cell,1.8): continue
 		var seed: int = (cell.x*73856093 ^ cell.y*19349663)&0x7fffffff
 		var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
 		var kind: String = "rock" if seed%4 == 0 else "twig" if seed%4 == 1 else "bush"
@@ -127,7 +126,6 @@ static func cover_data(track: NativeTrack, cancelled: Callable = Callable(), pre
 		count += 1
 	var markers: Array[Dictionary] = marker_sites(track,cancelled) if prepared_markers == null else prepared_markers
 	for marker: Dictionary in markers: append_pose(groups,"marker",marker.position,1.0,0.0)
-	sampler.free()
 	return {"groups":groups,"count":count,"markers":markers.size()}
 
 static func marker_sites(track: NativeTrack, cancelled: Callable = Callable()) -> Array[Dictionary]:

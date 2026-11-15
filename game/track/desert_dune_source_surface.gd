@@ -7,7 +7,7 @@ var cells: Dictionary = {}
 var conservative: Array[Rect2] = []
 var input_triangles: int = 0
 
-func prepare(visual: NativeTrackVisual) -> void:
+func prepare(visual: Node3D) -> void:
 	for node: Node in visual.get_children():
 		if not node is MeshInstance3D or node.mesh == null: continue
 		var material: ShaderMaterial = node.material_override as ShaderMaterial

@@ -6,7 +6,7 @@ func run_prepare_selected_event(app: Node, kind: String, page: Control, entry: D
 	Event.prepare(app,kind,page,entry,source)
 
 func run_selected_event_track(app: Node, entry: Dictionary) -> NativeTrack:
-	return app.selected_track if Event.matches(app.selected_track,entry) else app.cloud.presentation_track(entry)
+	return Event.track_for(app,entry)
 
 func run_prepare_selected_track(app: Node, track: NativeTrack, browser: TrackBrowser) -> void:
 	if app.screen != "tracks" or app.selected_track != track or app.cloud_starting or is_instance_valid(app.game): return
@@ -48,7 +48,7 @@ func run_begin_selected_geometry(app: Node, generation: int, entry: Dictionary, 
 	if app._selected_preparation_track.metadata.get("metadata_only",false) and source.is_empty():
 		app._cancel_selected_preparation(); return
 	var layout_ready: bool = app.SELECTED_PREPARATION.ready_for_job() and app._selected_preparation_track._race_gates.get("rules_key","") == RaceRules.KEY and app._selected_preparation_track._race_gates.get("notice_version",0) == TrackSession.NOTICE_LAYOUT_VERSION
-	if not app._selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(app._selected_preparation_track) and layout_ready:
+	if not app._selected_preparation_track.metadata.get("metadata_only",false) and not preload("res://track/track_visual_identity.gd").race_roads_need_preparation(app._selected_preparation_track) and layout_ready:
 		app._cancel_selected_preparation(); return
 	app._selected_preparation_entry = entry.duplicate(true)
 	app._selected_preparation_source = source
@@ -79,7 +79,7 @@ func run_poll_selected_preparation(app: Node) -> void:
 	if ready != null:
 		if not result.get("winter_cover",{}).is_empty(): ready.editor_winter_cover = result.winter_cover
 		var receipt: Dictionary = result.get("receipt",{})
-		if not receipt.is_empty(): NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(receipt)
+		if not receipt.is_empty(): preload("res://track/road_mesh_disk_cache.gd").publish_arrays(receipt)
 		if ready != app._selected_preparation_track:
 			for property: Dictionary in ready.get_property_list():
 				if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: app._selected_preparation_track.set(property.name,ready.get(property.name))
@@ -90,7 +90,7 @@ func run_poll_selected_preparation(app: Node) -> void:
 			app._ensure_track_catalog()
 			app.track_catalog.remember_track(app._selected_preparation_entry,app._selected_preparation_track)
 	else:
-		NativeTrackVisual.ROAD_DISK_CACHE.discard_arrays(result.get("receipt",{}))
+		preload("res://track/road_mesh_disk_cache.gd").discard_arrays(result.get("receipt",{}))
 	app._selected_preparation_pending = false
 	app._selected_preparation_track = null
 	app._selected_preparation_browser = null

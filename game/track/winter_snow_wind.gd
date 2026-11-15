@@ -193,7 +193,7 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: 
 func _bind_surfaces() -> void:
 	if not enabled or not is_instance_valid(bank_visual): return
 	# Let prepared-world recording finish before installing run-owned finishes.
-	if bank_visual is NativeTrackVisual and not (bank_visual as NativeTrackVisual).world_built: return
+	if "world_built" in bank_visual and not bank_visual.world_built: return
 	# Native roads/bridges arrive as prepared children. After the sliced build,
 	# stable worlds validate retained bindings/count without scene traversal.
 	var count: int = bank_visual.get_child_count()
@@ -316,7 +316,7 @@ func _batch(label: String, count: int, bank: bool) -> MultiMeshInstance3D:
 	material.shader = preload("res://track/winter_snow_wind.gdshader")
 	material.set_shader_parameter("bank", bank)
 	material.set_shader_parameter("flow_texture", load("res://assets/textures/winter_wind_flow_v1.png"))
-	material.set_shader_parameter("snow_albedo", NativeTrackVisual.WINTER_SNOW)
+	material.set_shader_parameter("snow_albedo", preload("res://track/track_visual_assets.gd").WINTER_SNOW)
 	node.material_override = material
 	add_child(node)
 	return node

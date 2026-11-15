@@ -1,17 +1,11 @@
 class_name NativeTrackVisual
-extends Node3D
+extends "res://track/prepared_race_world.gd"
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-220-finite-join-caps"
 const VERTEX_PACKING = preload("res://rendering/mesh_vertex_packing.gd")
-var scenery_lods: bool = true # False is an offline full-detail comparison control.
-var piece_road_materials: bool = false
-var desert_relief: RefCounted
 const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
 const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
 const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
-var _suppress_night_fx: bool=false
-var ground_support: RefCounted
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
@@ -48,35 +42,14 @@ const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
 const NIGHT_TILE_SIZE: float = 16.0
 const NIGHT_ROAD_GROUP_SIZE: float = 16.0
-var partition_night_ground: bool = true
-var partition_static_meshes: bool = true
-var uniform_terrain_regions: bool = true
-var _menu_slices: bool = false
-var profile_build: bool = false
-var build_costs: Dictionary = {}
-var build_stage: String = "initial"
-var preserve_relief_surfaces: bool = false
-var build_current: Callable
 
-func _build_is_current() -> bool:
-	return is_inside_tree() and (not build_current.is_valid() or build_current.call())
 
 func _cpu_cancelled() -> bool:
 	return build_current.is_valid() and not build_current.call()
-var _slice_started: int = 0
-var theme_id: String = "pine"
-var editor_preview: bool = false
 var planning_roads: bool = false
 var editor_road_update: Dictionary = {}
 var editor_previous_track: NativeTrack
 var editor_dirty_tiles: Dictionary = {}
-var colors: Array[Color] = []
-var tyre_instances: MultiMeshInstance3D
-var _tyre_positions := PackedVector2Array()
-var _tyre_spins: Array[float] = []
-var light_instances: Array[Node3D] = []
-var _prop_draw_states: Array[Dictionary] = []
-var scenic_count: int = 0
 var editor_objects: NativeTrackVisual
 var editor_cover: NativeTrackVisual
 var editor_scenery: NativeTrackVisual
@@ -101,15 +74,8 @@ var road_reuses: int = 0
 const INSTALL_VERTEX_BUDGET: int = 24576
 var _prepared_road_parts: Array = []
 var prepare_editor_roads: bool = true
-var race_road_packet: Dictionary = {}
 const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
 var cache_road_meshes: bool = true
-var persist_road_meshes: bool = true
-var cache_race_world: bool = false
-var persist_race_world: bool = true
-var _world_disk_id: String = ""
-var world_built: bool = false
-const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
 const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
 const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
 const ROAD_CACHE_MAX_ENTRIES: int = 8
@@ -155,7 +121,7 @@ func _bind_grass(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("grass_normal",GRASS_NORMAL)
 
 
-func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
+func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false, restore_cached: bool = true) -> void:
 	ground_support = bridge.road_surface
 	world_built = false
 	_menu_slices = menu_slices
@@ -169,7 +135,7 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	var world_options: Array = [scenery_lods,piece_road_materials,preserve_relief_surfaces,_suppress_night_fx,VisualGeometry.optimize_model_geometry]
 	world_key.append(world_options)
 	var reuse_world: bool = cache_race_world and not editor_preview
-	if reuse_world:
+	if reuse_world and restore_cached:
 		var identity_started: int = Time.get_ticks_usec() if profile_build else 0
 		_world_disk_id = ""
 		if persist_race_world and persist_road_meshes:
@@ -1972,39 +1938,10 @@ func _desert_twig(tool: SurfaceTool, a: Vector3, b: Vector3, start_radius: float
 
 
 func _scenery_sites(track: NativeTrack, stride: int) -> Array[Vector2i]:
-	var ordered: Array[Vector3i] = []
-	for y: int in range(stride,track.grid_height-stride,stride):
-		for x: int in range(stride,track.grid_width-stride,stride):
-			var seed_value: int = (x*73856093 ^ y*19349663)&0x7fffffff
-			if track.cells[y*track.grid_width+x] not in [1,7] or seed_value%3 == 0: continue
-			var priority: int = ((seed_value^(seed_value>>16))*0x45d9f3b)&0x7fffffff
-			priority = ((priority^(priority>>16))*0x45d9f3b)&0x7fffffff
-			ordered.append(Vector3i(priority^(priority>>16),x,y))
-	ordered.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
-		if a.x != b.x: return a.x < b.x
-		if a.y != b.y: return a.y < b.y
-		return a.z < b.z)
-	var sites: Array[Vector2i] = []
-	for value: Vector3i in ordered: sites.append(Vector2i(value.y,value.z))
-	return sites
-
+	return preload("res://track/scenery_placement.gd").sites(track,stride)
 
 func _cover_clear(track: NativeTrack, cell: Vector2i, radius: float) -> bool:
-	var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
-		if point.distance_to(Vector2(object.position[0],object.position[1])) < radius+3.0: return false
-	# Check the whole square footprint, including bridges. A tree must never
-	# hide a corner, gate, ramp or native barrier. Low cover remains passable.
-	var extent: int = ceili(radius / track.cell_size)
-	if cell.x < extent or cell.y < extent or cell.x + extent >= track.grid_width or cell.y + extent >= track.grid_height:
-		return false
-	for y: int in range(cell.y - extent, cell.y + extent + 1):
-		for x: int in range(cell.x - extent, cell.x + extent + 1):
-			var index: int = y * track.grid_width + x
-			if track.cells[index] not in [1, 7] or track.deck_cells[index] >= 0:
-				return false
-	return true
-
+	return preload("res://track/scenery_placement.gd").clear(track,cell,radius)
 
 func _build_placed_objects(track: NativeTrack) -> void:
 	ContactShading.build_props(self,track)
@@ -2347,28 +2284,6 @@ func _commit(tool: SurfaceTool, color: Color, node_name: String = "") -> void:
 	if not node_name.is_empty(): instance.name = node_name
 	add_child(instance)
 
-func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
-	if tyre_instances == null: return
-	if _tyre_positions.size() != origins.size():
-		_tyre_positions.resize(origins.size())
-		_tyre_spins.resize(origins.size())
-		_tyre_spins.fill(NAN)
-	for i: int in range(origins.size()):
-		var p: Vector2 = origins[i]
-		var spin: float = 0.0
-		if i < state.loose_tyres.size():
-			var tyre: Array = state.loose_tyres[i]
-			p = Vector2(tyre[0],tyre[1])
-			spin = tyre[4]
-		# Only presentation data is cached. Reset and moving tyres still upload
-		# their exact transforms; resting stacks do not dirty the GPU buffer.
-		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
-		_tyre_positions[i] = p
-		_tyre_spins[i] = spin
-		var pose: Transform3D = Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*(0.014+(ground_support.ground(p) if ground_support != null else 0.0)+(desert_relief.height(p) if desert_relief != null else 0.0)))
-		if tyre_instances.has_method("set_pose"): tyre_instances.set_pose(i,pose)
-		else: tyre_instances.multimesh.set_instance_transform(i,pose)
-	if tyre_instances.has_method("flush"): tyre_instances.flush()
 
 func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
 	tool.generate_normals()
@@ -2381,28 +2296,6 @@ func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = material
 	parent.add_child(mesh)
-
-func update_light_props(state: VehicleState) -> void:
-	_prop_draw_states.resize(light_instances.size())
-	for index: int in range(light_instances.size()):
-		var node: Node3D = light_instances[index]
-		var origin: Vector3 = node.get_meta("prop_origin",node.position)
-		var row: Array = state.light_props[index] if index < state.light_props.size() else [origin.x,-origin.z,0.0,0.0,0.0]
-		var integrity: float = float(state.prop_destruction[index][0]) if index < state.prop_destruction.size() else 1.0
-		var previous: Dictionary = _prop_draw_states[index]
-		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
-		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
-		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
-		var base_height: float=origin.y if node.has_meta("burning_barrel_scale") else node.position.y
-		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else base_height-0.014),-float(row[1]))
-		if desert_relief != null: at.y += desert_relief.height(Vector2(row[0],row[1]))
-		if node.position != at: node.position = at
-		if node.has_meta("burning_barrel_scale"): BurningBarrelVisual.present(node,row,at.y-0.014)
-		elif node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
-		else: node.rotation.z = float(row[4])*0.9
-	var fire: NightPropEffects=get_node_or_null("NightPropEffects")
-	if fire!=null: fire.sync_barrels(light_instances,state)
-	BreakablePropVisual.update_debris(self,state)
 
 
 func _build_kerbs(track: NativeTrack, prepared_arrays: Array = []) -> void:
@@ -2502,9 +2395,6 @@ func _build_snow_banks(track: NativeTrack) -> void:
 	mesh.mesh = tool.commit()
 	add_child(mesh)
 
-
-func _menu_yield_due() -> bool:
-	return _menu_slices and Time.get_ticks_usec()-_slice_started >= 6000
 
 
 static var _winter_drift_noise: FastNoiseLite = _make_winter_drift_noise()
@@ -2740,10 +2630,3 @@ func _winter_deposit_lobe(tool: SurfaceTool, anchor: Vector2, outward: Vector2, 
 				tool.set_uv(Vector2(0.65,0.0))
 				tool.set_uv2(Vector2.ZERO)
 				tool.add_vertex(point)
-
-func _yield_build() -> bool:
-	if not _build_is_current(): return false
-	if _menu_yield_due():
-		await get_tree().process_frame
-		_slice_started = Time.get_ticks_usec()
-	return _build_is_current()

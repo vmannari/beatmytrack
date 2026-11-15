@@ -11,7 +11,7 @@ var surfaces: Array[ShaderMaterial]=[]
 var warm_lights: Array[OmniLight3D]=[]
 var barrel_poses: Dictionary={}
 
-static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+static func build(kit: Node3D, objects: Array) -> NightPropEffects:
 	var old: Node=kit.get_node_or_null("NightPropEffects")
 	if old!=null: kit.remove_child(old); old.queue_free()
 	if kit.theme_id!="night_city" or kit._capture_editor_prop_arrays or kit._suppress_night_fx: return null
@@ -146,7 +146,7 @@ func sync_barrels(nodes: Array, state: VehicleState) -> void:
 		var scale: float=float(source.scale)
 		var tilt: float=float(row[4]) if row.size()==BurningBarrel.ROW_SIZE else 0.0
 		var ground: float=pose.origin.y-(0.55*absf(cos(tilt))+0.515*absf(sin(tilt)))*scale-0.014
-		var kit: NativeTrackVisual=get_parent()
+		var kit: Node3D=get_parent()
 		if kit.ground_support!=null and row.size()==BurningBarrel.ROW_SIZE:
 			var p:=Vector2(float(row[11]),float(row[12]))+Vector2.from_angle(float(row[13]))*0.65*scale
 			ground=kit.ground_support.ground(p)

@@ -112,9 +112,9 @@ func exercise(theme: String) -> void:
 	print("WORLD_DISK_ROW ",JSON.stringify(rows[-1]))
 	# Re-admission exercises serialized resources even in the writing process.
 	visual.free(); await process_frame; WORLDS.trim_cache()
-	var restored := NativeTrackVisual.new(); restored.cache_race_world = true; restored.profile_build = true; restored.preserve_relief_surfaces = true
+	var restored: Node3D = preload("res://track/prepared_race_world.gd").new(); restored.cache_race_world = true; restored.profile_build = true; restored.preserve_relief_surfaces = true
 	root.add_child(restored)
-	began = Time.get_ticks_usec(); await restored.build(track,bridge,true)
+	began = Time.get_ticks_usec(); await restored.restore(track,bridge,true)
 	check(restored.world_built and restored.build_costs.get("world_disk_hit",false),theme+" serialized world installs")
 	holder = WORLDS.entries[-1].scene.instantiate()
 	var serialized: Variant = node_signature(holder); holder.free()
@@ -122,8 +122,8 @@ func exercise(theme: String) -> void:
 		printerr("WORLD_DIFF ",theme," ",first_difference(original,serialized,"world"))
 	check(hash_value(serialized) == signature,theme+" serialized snapshot matches exact fresh scene")
 	if DisplayServer.get_name() != "headless": await compare_views(original_scene,WORLDS.entries[-1].scene,theme)
-	var again := NativeTrackVisual.new(); again.cache_race_world = true; again.preserve_relief_surfaces = true
-	root.add_child(again); await again.build(track,bridge,true)
+	var again: Node3D = preload("res://track/prepared_race_world.gd").new(); again.cache_race_world = true; again.preserve_relief_surfaces = true
+	root.add_child(again); await again.restore(track,bridge,true)
 	var first_multi: Array[Node] = restored.find_children("*","MultiMeshInstance3D",true,false)
 	var second_multi: Array[Node] = again.find_children("*","MultiMeshInstance3D",true,false)
 	check(first_multi.size() == second_multi.size(),theme+" all mutable instance groups restored")
@@ -304,8 +304,8 @@ func unsupported_renderer(theme: String = "pine") -> void:
 	check(DISK.writes == before_writes and DISK.hits == before_hits and DISK.pending_writes.is_empty(),"unqualified path performs no persistent world IO")
 	check(DISK.source_key.is_empty(),"unqualified path skips first source fingerprint")
 	var source: PackedScene = WORLDS.entries[-1].scene
-	var again := NativeTrackVisual.new(); again.cache_race_world = true; again.preserve_relief_surfaces = true; root.add_child(again)
-	await again.build(track,bridge,true)
+	var again: Node3D = preload("res://track/prepared_race_world.gd").new(); again.cache_race_world = true; again.preserve_relief_surfaces = true; root.add_child(again)
+	await again.restore(track,bridge,true)
 	check(again.world_built and WORLDS.entries[-1].scene == source,"unqualified path retains existing RAM reuse")
 	if DisplayServer.get_name() != "headless": await compare_views(source,WORLDS.entries[-1].scene,"unsupported-"+theme)
 	visual.free(); again.free(); WORLDS.trim_cache(); await process_frame

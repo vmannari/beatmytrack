@@ -2,6 +2,7 @@ extends RefCounted
 ## CPU arrays only. GPU materials, textures and scene nodes publish on main.
 const BUDGET: int = 32 * 1024 * 1024
 static var entries: Array = []
+static var construction_script: Script
 static var bytes: int = 0
 static var gpu_bytes: int = 0
 static var gpu_keys: Dictionary = {}
@@ -62,9 +63,25 @@ static func key_for(track: NativeTrack) -> String:
 	if doc.get("theme",track.metadata.get("theme","pine")) == "desert":
 		road_cells.resize(track.cells.size())
 		for index: int in range(road_cells.size()): road_cells[index] = 1 if track.cells[index] == 0 else 0
-	var geometry: Array = [load("res://editor/road_sections.gd").VERSION,NativeTrackVisual.VERSION,TrackTheme.normalized(str(track.metadata.get("theme","pine"))),doc.get("pieces",[]),doc.get("surface","asphalt"),doc.get("base_track",""),track.half_extent,track.cell_size,road_cells,track.kerbs.triangles]
+	var geometry: Array = [load("res://editor/road_sections.gd").VERSION,preload("res://track/track_visual_identity.gd").VERSION,TrackTheme.normalized(str(track.metadata.get("theme","pine"))),doc.get("pieces",[]),doc.get("surface","asphalt"),doc.get("base_track",""),track.half_extent,track.cell_size,road_cells,track.kerbs.triangles]
 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
 	return digest.finish().hex_encode()
+
+static func prepare_worker(track: NativeTrack, planning: bool = false) -> Dictionary:
+	# Called on main before starting a job: never initialize the heavy script
+	# graph concurrently on a worker. Pass verified CPU hits directly to it.
+	if not planning and not track.metadata.get("metadata_only",false):
+		if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
+		var key: String = key_for(track)
+		guard.lock()
+		for entry: Dictionary in entries:
+			if entry.key == key:
+				guard.unlock(); return entry.packet
+		guard.unlock()
+		var stored: Dictionary = preload("res://track/road_mesh_disk_cache.gd").read_arrays(disk_key_for(track),key)
+		if not stored.is_empty(): return stored
+	construction_script = load("res://track/native_track_visual.gd")
+	return {}
 
 static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable(), planning: bool = false, update: Dictionary = {}) -> Dictionary:
 	if cancelled.is_valid() and cancelled.call(): return {}
@@ -77,9 +94,9 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 	var uploaded: bool = gpu_keys.has(key)
 	guard.unlock()
 	if cached_only or (uploaded and not force): return {"key":key,"parts":[],"metadata":{}}
-	var stored: Dictionary = {} if planning else NativeTrackVisual.ROAD_DISK_CACHE.read_arrays(disk_key_for(track),key)
+	var stored: Dictionary = {} if planning else preload("res://track/road_mesh_disk_cache.gd").read_arrays(disk_key_for(track),key)
 	if not stored.is_empty(): return stored
-	var builder := NativeTrackVisual.new()
+	var builder: Node3D = load("res://track/native_track_visual.gd").new()
 	builder.name = "RoadCPUBuilder"
 	builder.theme_id = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
 	builder.colors = TrackTheme.palette(builder.theme_id)
@@ -217,8 +234,8 @@ static func unpack_intermediate(arrays: Array, decode_normals: bool) -> Array:
 		result[Mesh.ARRAY_COLOR] = colors
 	return result
 
-static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
-	var packet: Dictionary = with_winter_cover(prepare(track,true,false,cancelled),track,cancelled).duplicate()
+static func run(cancelled: Callable, track: NativeTrack, prepared: Dictionary = {}) -> Dictionary:
+	var packet: Dictionary = with_winter_cover(prepared if not prepared.is_empty() else prepare(track,true,false,cancelled),track,cancelled).duplicate()
 	var disk: GDScript = preload("res://track/road_mesh_disk_cache.gd")
 	var receipt: Dictionary = disk.stage_arrays(disk_key_for(track),packet,cancelled)
 	if cancelled.is_valid() and cancelled.call():
@@ -241,4 +258,4 @@ static func with_winter_cover(packet: Dictionary, track: NativeTrack, cancelled:
 
 static func disk_key_for(track: NativeTrack) -> Array:
 	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
-	return [track.content_hash,NativeTrackVisual.VERSION,theme,TrackTheme.palette(theme),true]
+	return [track.content_hash,preload("res://track/track_visual_identity.gd").VERSION,theme,TrackTheme.palette(theme),true]

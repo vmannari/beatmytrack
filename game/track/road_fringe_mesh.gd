@@ -13,7 +13,7 @@ func add(vertices: Array[Vector2], across: Array[float], path: PackedVector2Arra
 			points.append(path)
 			settings.append(cache)
 
-func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
+func emit(visual: Node3D, tool: SurfaceTool) -> int:
 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
 	if native != null and not visual._menu_slices:
 		var blend: Dictionary = {}

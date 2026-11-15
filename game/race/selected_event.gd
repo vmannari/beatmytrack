@@ -9,6 +9,9 @@ static func identity(entry: Dictionary) -> Array:
 static func matches(track: NativeTrack, entry: Dictionary) -> bool:
 	return track != null and identity(track.metadata.get("cloud_entry",{})) == identity(entry)
 
+static func track_for(app: Node, entry: Dictionary) -> NativeTrack:
+	return app.selected_track if matches(app.selected_track,entry) else app.cloud.presentation_track(entry)
+
 static func pin(app: Node, kind: String, page: Control) -> Array:
 	if kind == "daily": return [page._server_now/86400,page._ends_at,identity(page.entry)]
 	return rivalry_pin(app,app.rivalry_track) if kind == "rivalry" else []

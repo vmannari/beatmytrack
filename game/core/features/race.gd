@@ -193,7 +193,7 @@ func run_start_race(app: Node, track: NativeTrack, from_editor: bool, offline_on
 		# Once the exact track is compiled, its presentation arrays can be built
 		# while an ordinary ticket request is in flight. Keep ticket issuance at
 		# the same point, and do not compete with an editor/save road builder.
-		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and app.SELECTED_PREPARATION.ready_for_job() and NativeTrackVisual.race_roads_need_preparation(track):
+		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and app.SELECTED_PREPARATION.ready_for_job() and preload("res://track/track_visual_identity.gd").race_roads_need_preparation(track):
 			road_overlap = preload("res://race/road_ticket_overlap.gd").new()
 			road_overlap.attach(app._start_race_road_job(track),app.get_tree(),loading)
 		var issued: Dictionary = await app.cloud.ticket(track,false,attempt_vehicle,null,rivalry_issued) if not rivalry_issued.is_empty() else await app.cloud.ticket(track)
@@ -234,7 +234,7 @@ func run_start_race(app: Node, track: NativeTrack, from_editor: bool, offline_on
 	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	var prepared_roads: Dictionary = {}
 	var road_job: RefCounted = road_overlap.take() if road_overlap != null else null
-	if road_job == null and NativeTrackVisual.race_roads_need_preparation(track):
+	if road_job == null and preload("res://track/track_visual_identity.gd").race_roads_need_preparation(track):
 		# Reap cancelled work, and share a save-time bake only when it has the
 		# exact same disk identity. Unrelated saved tracks must not delay a race.
 		var road_disk_key: Array = preload("res://editor/road_preparation.gd").disk_key_for(track)
@@ -249,7 +249,7 @@ func run_start_race(app: Node, track: NativeTrack, from_editor: bool, offline_on
 				preload("res://race/selected_track_preparation.gd").cancel(road_job,app.get_tree())
 				return
 		prepared_roads = road_job.result if road_job.result is Dictionary else {}
-		NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(prepared_roads.get("receipt",{}))
+		preload("res://track/road_mesh_disk_cache.gd").publish_arrays(prepared_roads.get("receipt",{}))
 		prepared_roads.erase("receipt")
 	app.returning_to_editor = from_editor
 	app.challenge_racing = rivalry_issued.has("challenge_code")
@@ -551,7 +551,7 @@ func run_resume_practice_editor(app: Node) -> bool:
 	app._close_race_loading()
 	app.root_ui.process_mode = app._practice_editor_context.mode
 	app._race_menu_visible(true)
-	NativeTrackVisual.reserve_editor_sections()
+	load("res://track/native_track_visual.gd").reserve_editor_sections()
 	GameSoundtrack.instance().show_menu()
 	app._update_editor_issues()
 	app._lifecycle_changed()

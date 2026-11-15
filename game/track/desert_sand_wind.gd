@@ -38,7 +38,7 @@ var lift_history := PackedFloat32Array()
 var lift_elapsed: float = 0.0
 var previous_lift: float = 0.0
 
-func configure(data: NativeTrack, visual: NativeTrackVisual = null) -> void:
+func configure(data: NativeTrack, visual: Node3D = null) -> void:
 	track = data
 	enabled = data != null and data.metadata.get("theme", "pine") == "desert"
 	visible = enabled

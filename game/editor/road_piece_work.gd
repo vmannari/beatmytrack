@@ -37,7 +37,7 @@ static func prepare(visual: NativeTrackVisual, track: NativeTrack, index: int, c
 		var last := Vector2i(ceili((bounds.end.x+track.half_extent.x)/track.cell_size),ceili((track.half_extent.y-bounds.position.y)/track.cell_size))
 		for y: int in range(maxi(0,first.y),mini(track.grid_height,last.y+1)):
 			for x: int in range(maxi(0,first.x),mini(track.grid_width,last.x+1)): cells.append(1 if track.cells[y*track.grid_width+x] == 0 else 0)
-	var key: String = "piece/"+SECTIONS.digest([NativeTrackVisual.VERSION,visual.theme_id,piece,geometry,joins,neighbours,ctx.phases.get(index,{}),ctx.raised,track.metadata.creator_document.get("surface","asphalt"),track.cell_size,cells,nearby_sites,piles])
+	var key: String = "piece/"+SECTIONS.digest([preload("res://track/track_visual_identity.gd").VERSION,visual.theme_id,piece,geometry,joins,neighbours,ctx.phases.get(index,{}),ctx.raised,track.metadata.creator_document.get("surface","asphalt"),track.cell_size,cells,nearby_sites,piles])
 	var cached: Variant = visual.road_sections.read(key)
 	if cached is Dictionary:
 		var chip_capacity: bool = banks.count == int(cached.input_chips) if cached.chip_saturated else banks.count+int(cached.chips) <= banks.CHIP_LIMIT

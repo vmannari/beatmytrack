@@ -79,6 +79,8 @@ func run() -> void:
 		check(game.sim.state.tick == 0 and game.countdown_ticks == 360,"tick zero and complete countdown on reveal")
 		check(game.track_session.target_laps == 5,"five-lap contract retained")
 		var row: Dictionary = {"cycle":cycle,"ready_ms":elapsed,
+			"builder_loaded":ResourceLoader.has_cached("res://track/native_track_visual.gd"),
+			"runtime_script":game.track_ground.get_script().resource_path,
 			"scene_to_ready_ms":(Time.get_ticks_usec()-session_began)/1000.0,
 			"base_hits":counter("res://vehicle/modular_car_base.gd","hits")-base_before,
 			"feature_load_ms":app.feature_load_ms.duplicate(true),
@@ -94,6 +96,10 @@ func run() -> void:
 			await process_frame
 		row["world_costs"] = game.track_ground.build_costs.duplicate(true)
 		row["world_disk_hits"] = disk.hits
+		if cycle == 0 and "--require-runtime-hit" in OS.get_cmdline_user_args():
+			check(not row.builder_loaded,"prepared race never loads the track builder")
+			check(row.runtime_script == "res://track/prepared_race_world.gd","prepared race uses runtime world")
+			check(row.world_costs.get("world_disk_hit",false),"fresh process restores a verified disk world")
 		began = Time.get_ticks_usec()
 		await app._retry_race(true)
 		row["retry_ms"] = (Time.get_ticks_usec()-began)/1000.0

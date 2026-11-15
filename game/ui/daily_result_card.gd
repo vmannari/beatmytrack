@@ -4,7 +4,9 @@ signal standings_requested
 const Progress = preload("res://persistence/daily_progress.gd")
 const Medal = preload("res://ui/daily_medal.gd")
 const Rules = preload("res://race/daily_elimination.gd")
+const MenuCache = preload("res://persistence/daily_menu_cache.gd")
 const NEARBY_LIMIT: int = 6
+const FRESH_MSEC: int = 30000
 var client: Node
 var cloud: Node
 var records: LocalRecords
@@ -31,6 +33,7 @@ var _rows: VBoxContainer
 var _loading: bool = false
 var _failed: bool = false
 var _retry: Button
+var _request_key: String = ""
 
 func _ready() -> void:
 	name = "DailyRacePanel"
@@ -139,25 +142,44 @@ func configure(next_day: int, next_version: String, end: int) -> void:
 	day = next_day
 	version = next_version
 	ends_at = end
-	refresh()
+	ensure_fresh()
 
 func refresh() -> void:
-	_serial += 1
-	summary = {}
-	_loading = not preview and not version.is_empty() and client != null
-	_failed = false
+	_refresh(true)
+
+func ensure_fresh() -> void:
+	_refresh(false)
+
+func _refresh(force: bool) -> void:
 	result = Progress.best(Progress.load_entries(records),day,version,vehicle)
 	# The service client outlives menu pages. Reuse only this exact account,
 	# event, car and local comparison; elapsed time fences the UTC boundary.
 	var cache_key: String = _scope()+str([records.path if records != null else "",result.get("best_ms",0),NEARBY_LIMIT])
+	# Activation/configuration can arrive several times during one page slide.
+	# Keep the original request and its retry clock for this exact comparison.
+	if not force and _loading and _request_key == cache_key: return
+	var had_failure: bool = _failed
+	_serial += 1
+	_request_key = cache_key
+	summary = {}
+	_loading = not preview and not version.is_empty() and client != null
+	_failed = false
 	var cache: Dictionary = client.get_meta("daily_card_standings",{}) if is_instance_valid(client) else {}
 	var cached: Dictionary = cache.get(cache_key,{})
+	var restored_from_disk: bool = false
+	if cached.is_empty():
+		var restored: Dictionary = MenuCache.read(records,cache_key,"standings")
+		if not restored.is_empty() and _valid(restored):
+			cached = {"data":restored,"sample_msec":Time.get_ticks_msec()}
+			restored_from_disk = true
 	if not cached.is_empty():
 		var elapsed: int = maxi(0,Time.get_ticks_msec()-int(cached.sample_msec))/1000
 		if int(cached.data.server_now)+elapsed < ends_at and _valid(cached.data):
 			summary = cached.data.duplicate(true)
+	if not force and not had_failure and not restored_from_disk and not summary.is_empty() and Time.get_ticks_msec() >= int(cached.sample_msec) and Time.get_ticks_msec()-int(cached.sample_msec) < FRESH_MSEC:
+		_loading = false
 	_render()
-	if preview or version.is_empty() or client == null: return
+	if not _loading: return
 	var serial: int = _serial
 	var scope: String = _scope()
 	var page_limit: int = NEARBY_LIMIT+(0 if result.is_empty() else 1)
@@ -181,6 +203,7 @@ func refresh() -> void:
 		cache[cache_key] = {"data":summary.duplicate(true),"sample_msec":Time.get_ticks_msec()}
 		while cache.size() > 24: cache.erase(cache.keys()[0])
 		client.set_meta("daily_card_standings",cache)
+		MenuCache.write(records,cache_key,"standings",summary)
 	else:
 		_failed = true
 	_render()

@@ -1,0 +1,450 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1614,7 +1614,8 @@
+ 	_feature_resource("res://core/features/selected_track.gd").run_prepare_selected_event(self,kind,page,entry,source)
+ 
+ func _selected_event_track(entry: Dictionary) -> NativeTrack:
+-	return _feature_resource("res://core/features/selected_track.gd").run_selected_event_track(self,entry)
++	# Selecting presentation must not initialize the background compiler.
++	return load("res://race/selected_event.gd").track_for(self,entry)
+ 
+ func _selected_preparation_obsolete(generation: int) -> bool:
+ 	return _feature_resource("res://core/features/selected_track.gd").run_selected_preparation_obsolete(self ,generation)
+diff --git a/game/core/features/daily.gd b/game/core/features/daily.gd
+--- a/game/core/features/daily.gd
++++ b/game/core/features/daily.gd
+@@ -24,7 +24,13 @@
+ 		MenuCache.erase(app.records,scope,"track"))
+ 	page.mode_requested.connect(app._request_race_mode)
+ 	page.vehicle_selected.connect(app._select_vehicle)
+-	page.preparation_requested.connect(func(entry: Dictionary) -> void: app._prepare_selected_event("daily",page,entry))
++	page.preparation_requested.connect(func(entry: Dictionary) -> void:
++		# Speculation must not initialize the race/editor script graph while
++		# the page is drawing. A first race loads it behind the loading cover;
++		# subsequent visits can still use the existing exact-event CPU worker.
++		for path: String in ["res://core/features/selected_track.gd","res://race/selected_track_preparation.gd","res://track/native_track_visual.gd"]:
++			if not ResourceLoader.has_cached(path): return
++		app._prepare_selected_event("daily",page,entry))
+ 	page.race_requested.connect(func(entry: Dictionary) -> void:
+ 		app.selected_track = app._selected_event_track(entry)
+ 		app._start_race(app.selected_track,false,false,{},null,{"day":int(entry.daily_day),"version_id":str(entry.version_id)}))
+diff --git a/game/core/features/selected_track.gd b/game/core/features/selected_track.gd
+--- a/game/core/features/selected_track.gd
++++ b/game/core/features/selected_track.gd
+@@ -6,7 +6,7 @@
+ 	Event.prepare(app,kind,page,entry,source)
+ 
+ func run_selected_event_track(app: Node, entry: Dictionary) -> NativeTrack:
+-	return app.selected_track if Event.matches(app.selected_track,entry) else app.cloud.presentation_track(entry)
++	return Event.track_for(app,entry)
+ 
+ func run_prepare_selected_track(app: Node, track: NativeTrack, browser: TrackBrowser) -> void:
+ 	if app.screen != "tracks" or app.selected_track != track or app.cloud_starting or is_instance_valid(app.game): return
+diff --git a/game/race/selected_event.gd b/game/race/selected_event.gd
+--- a/game/race/selected_event.gd
++++ b/game/race/selected_event.gd
+@@ -8,6 +8,9 @@
+ 
+ static func matches(track: NativeTrack, entry: Dictionary) -> bool:
+ 	return track != null and identity(track.metadata.get("cloud_entry",{})) == identity(entry)
++
++static func track_for(app: Node, entry: Dictionary) -> NativeTrack:
++	return app.selected_track if matches(app.selected_track,entry) else app.cloud.presentation_track(entry)
+ 
+ static func pin(app: Node, kind: String, page: Control) -> Array:
+ 	if kind == "daily": return [page._server_now/86400,page._ends_at,identity(page.entry)]
+diff --git a/game/ui/garage_preloader.gd b/game/ui/garage_preloader.gd
+--- a/game/ui/garage_preloader.gd
++++ b/game/ui/garage_preloader.gd
+@@ -301,6 +301,9 @@
+ 
+ func _picture_script_ready() -> bool:
+ 	if Pictures != null: return true
++	# Daily has no Garage preview consumer. Keep first-use picture/model
++	# imports for an explicit Garage entry or another eligible menu page.
++	if is_instance_valid(app) and app.screen == "daily" and _picture_waiters == 0: return false
+ 	# Wait until the first menu has drawn and deliberate input has settled.
+ 	# Requiring another screen to load CarVisual first left initial-menu idle
+ 	# preparation permanently disabled after the menu-shell split.
+diff --git a/game/tests/profile_daily_page_stutter.gd b/game/tests/profile_daily_page_stutter.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_daily_page_stutter.gd
+@@ -0,0 +1,134 @@
++extends SceneTree
++## Actual App, page and selected-event worker; local fixture transport only.
++const Fixture = preload("res://tests/test_daily_page_loading.gd")
++var app: Node
++var frames: Array[float] = []
++var samples: Array[Dictionary] = []
++var last_frame: int = 0
++var phase: String = "startup"
++var output: String
++var draw_began: int = 0
++
++class ProfileApp extends "res://core/app.gd":
++	func _wake_optional_work() -> void:
++		super._wake_optional_work()
++		if OS.get_environment("BMT_DAILY_STUTTER_NO_GARAGE") == "1" and is_instance_valid(_garage_preloader):
++			_garage_preloader.set_process(false)
++	func _process(delta: float) -> void:
++		var began: int = Time.get_ticks_usec()
++		super._process(delta)
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		if elapsed > 5: print("DAILY_SPAN app_process ",elapsed)
++	func _feature_resource(path: String) -> Object:
++		var began: int = Time.get_ticks_usec()
++		var feature: Object = super._feature_resource(path)
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		if elapsed > 2: print("DAILY_SPAN feature ",path," ",elapsed)
++		return feature
++	func _ensure_track_catalog() -> void:
++		var began: int = Time.get_ticks_usec()
++		super._ensure_track_catalog()
++		print("DAILY_SPAN ensure_catalog ",(Time.get_ticks_usec()-began)/1000.0)
++	func _prepare_selected_event(kind: String, page: Control, entry: Dictionary, source: Dictionary = {}) -> void:
++		var began: int = Time.get_ticks_usec()
++		super._prepare_selected_event(kind,page,entry,source)
++		print("DAILY_SPAN prepare_event ",(Time.get_ticks_usec()-began)/1000.0)
++	func _poll_selected_preparation() -> void:
++		var began: int = Time.get_ticks_usec()
++		super._poll_selected_preparation()
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		if elapsed > 2: print("DAILY_SPAN poll_preparation ",elapsed)
++
++class LocalCloud extends "res://backend/cloud_tracks.gd":
++	func download_document(_entry: Dictionary, _cancelled: Callable = Callable()) -> Dictionary:
++		await get_tree().process_frame
++		return JSON.parse_string(FileAccess.get_file_as_string("res://resources/creator_tracks/lantern_village.json"))
++
++func _initialize() -> void: run.call_deferred()
++
++func frame() -> void:
++	var now: int = Time.get_ticks_usec()
++	if last_frame > 0:
++		var elapsed: float = (now-last_frame)/1000.0
++		frames.append(elapsed)
++		if elapsed > 30: print("DAILY_FRAME ",phase," ",elapsed)
++	last_frame = now
++
++func draw_started() -> void:
++	draw_began = Time.get_ticks_usec()
++	var before_draw: float = (draw_began-last_frame)/1000.0
++	if before_draw > 20: print("DAILY_BEFORE_DRAW ",phase," ",before_draw)
++
++func draw_finished() -> void:
++	var elapsed: float = (Time.get_ticks_usec()-draw_began)/1000.0
++	if elapsed > 20: print("DAILY_DRAW ",phase," ",elapsed)
++
++func sample(label: String, milliseconds: int) -> void:
++	phase = label
++	frames.clear()
++	last_frame = Time.get_ticks_usec()
++	var deadline: int = Time.get_ticks_msec()+milliseconds
++	while Time.get_ticks_msec() < deadline: await process_frame
++	var sorted: Array[float] = frames.duplicate()
++	sorted.sort()
++	var row: Dictionary = {"phase":label,"frames":sorted.size(),"max_ms":sorted[-1],"p95_ms":sorted[int(sorted.size()*0.95)],"over_30ms":frames.filter(func(ms: float) -> bool: return ms > 30).size()}
++	samples.append(row)
++	print("DAILY_SAMPLE ",JSON.stringify(row))
++
++func run() -> void:
++	create_timer(120).timeout.connect(func() -> void: push_error("Daily stutter deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_DAILY_STUTTER_OUTPUT")
++	root.size = Vector2i(1280,720)
++	app = ProfileApp.new()
++	var directory: String = "user://daily-stutter-"+TrackLibrary.unique_id()
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var feed := Fixture.Feed.new()
++	root.add_child(feed)
++	app.online.client = feed
++	var cloud := LocalCloud.new()
++	cloud.client = feed
++	cloud.root_override = directory.path_join("cloud")
++	app.add_child(cloud)
++	app.cloud = cloud
++	var feature: Node = load("res://../build/daily-page-stutter-20261115/daily.gd").new()
++	app.add_child(feature)
++	app._feature_resources["res://core/features/daily.gd"] = feature
++	app._garage_preloader.set_process(false)
++	process_frame.connect(frame)
++	RenderingServer.frame_pre_draw.connect(draw_started)
++	RenderingServer.frame_post_draw.connect(draw_finished)
++	phase = "cold_entry"
++	last_frame = Time.get_ticks_usec()
++	var began: int = Time.get_ticks_usec()
++	app._show_screen("daily")
++	print("DAILY_SPAN show_screen ",(Time.get_ticks_usec()-began)/1000.0)
++	await sample("cold_entry",5000)
++	var page: Node = app.content.find_child("TrackOfDayPage",true,false)
++	if page == null or page.entry.is_empty() or page._race_panel.summary.is_empty():
++		push_error("Daily page did not load"); quit(1); return
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(output.path_join("ready.png"))
++	for index: int in range(3):
++		phase = "activate"
++		began = Time.get_ticks_usec()
++		page.activate()
++		print("DAILY_SPAN activate ",(Time.get_ticks_usec()-began)/1000.0)
++		await sample("activate%d" % index,600)
++	phase = "refresh"
++	page._race_panel.refresh()
++	await sample("refresh",1000)
++	FileAccess.open(output.path_join("frames.json"),FileAccess.WRITE).store_string(JSON.stringify(samples,"\t"))
++	process_frame.disconnect(frame)
++	RenderingServer.frame_pre_draw.disconnect(draw_started)
++	RenderingServer.frame_post_draw.disconnect(draw_finished)
++	app.queue_free()
++	feed.queue_free()
++	for index: int in range(24): await process_frame
++	quit()
+diff --git a/game/tests/profile_daily_page_stutter.gd.uid b/game/tests/profile_daily_page_stutter.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_daily_page_stutter.gd.uid
+@@ -0,0 +1 @@
++uid://byx53uutiteqc
+diff --git a/game/tests/test_daily_page_stutter.gd b/game/tests/test_daily_page_stutter.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_page_stutter.gd
+@@ -0,0 +1,107 @@
++extends SceneTree
++## Real Daily composition: cold browsing, first-tap handoff and warm CPU work.
++const Probe = preload("res://tests/profile_daily_page_stutter.gd")
++const Fixture = preload("res://tests/test_daily_page_loading.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++
++class DailyApp extends "res://core/app.gd":
++	var preparation_calls: int = 0
++	var handoffs: Array[Dictionary] = []
++	func _prepare_selected_event(kind: String, page: Control, entry: Dictionary, source: Dictionary = {}) -> void:
++		preparation_calls += 1
++		super._prepare_selected_event(kind,page,entry,source)
++	func _start_race(track: NativeTrack, _editor: bool, _offline: bool = false, _issued: Dictionary = {}, _loading: RaceLoading = null, daily: Dictionary = {}) -> void:
++		handoffs.append({"track":track,"daily":daily})
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func wait_page(page: Node) -> void:
++	var deadline: int = Time.get_ticks_msec()+10000
++	while (page._busy or page._race_panel._loading) and Time.get_ticks_msec() < deadline: await process_frame
++	check(not page.entry.is_empty() and not page._race_panel.summary.is_empty(),"Daily content and standings finish")
++
++func run() -> void:
++	create_timer(90).timeout.connect(func() -> void: push_error("Daily stutter regression deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	VehicleCatalog.selected = "compact"
++	root.size = Vector2i(1280,720)
++	app = DailyApp.new()
++	var directory: String = "user://daily-stutter-regression-"+TrackLibrary.unique_id()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var feed := Fixture.Feed.new()
++	root.add_child(feed)
++	app.online.client = feed
++	var cloud := Probe.LocalCloud.new()
++	cloud.client = feed
++	cloud.root_override = directory.path_join("cloud")
++	app.add_child(cloud)
++	app.cloud = cloud
++	var feature: Node = load("res://../build/daily-page-stutter-20261115/daily.gd").new()
++	app.add_child(feature)
++	app._feature_resources["res://core/features/daily.gd"] = feature
++	for path: String in ["res://core/features/selected_track.gd","res://race/selected_track_preparation.gd","res://track/native_track_visual.gd"]:
++		check(not ResourceLoader.has_cached(path),"cold fixture starts without "+path)
++	app._show_screen("daily")
++	var page: Node = app.content.find_child("TrackOfDayPage",true,false)
++	await wait_page(page)
++	await create_timer(0.85).timeout
++	check(app._garage_preloader.Pictures == null,"Daily idle leaves unused Garage picture code unloaded")
++	check(not ResourceLoader.has_cached("res://ui/garage_preview_cache.gd"),"Daily idle does not initialize the Garage picture/model graph")
++	check(app.preparation_calls == 0 and not app._selected_preparation_pending,"cold Daily browsing does not initialize speculative compilation")
++	for path: String in ["res://core/features/selected_track.gd","res://race/selected_track_preparation.gd","res://track/native_track_visual.gd"]:
++		check(not ResourceLoader.has_cached(path),"displaying Daily does not load "+path)
++	# Selecting the exact metadata object is also cheap before the loading cover.
++	var selected: NativeTrack = app._selected_event_track(page.entry)
++	check(selected.metadata.get("metadata_only",false),"cold handoff selects presentation without compiling")
++	check(not ResourceLoader.has_cached("res://core/features/selected_track.gd"),"cold handoff keeps compiler feature lazy")
++	app.selected_track = selected
++	check(app._selected_event_track(page.entry) == selected,"exact selected event reuses its object")
++	var changed: Dictionary = page.entry.duplicate(true)
++	changed.content_hash = "b".repeat(64)
++	check(app._selected_event_track(changed) != selected,"changed content cannot reuse the old object")
++	feed.held = true
++	page._request_race()
++	check(page._busy and app.handoffs.is_empty(),"first race tap still waits for fresh authority")
++	feed.held = false
++	feed.released.emit()
++	await wait_page(page)
++	check(app.handoffs.size() == 1 and app.handoffs[0].track == selected,"fresh cold race hands off the exact selected metadata object")
++	check(app.handoffs[0].daily == {"day":Fixture.DAY,"version_id":Fixture.VERSION},"first race preserves the exact Daily limits request")
++	check(app.preparation_calls == 0,"fresh metadata response still avoids cold speculation")
++	# Explicit race/Free Race initialization primes these resources. A partial
++	# graph must remain insufficient, since the remaining import can still stall.
++	var feature_script: Script = load("res://core/features/selected_track.gd")
++	page.preparation_requested.emit(page.entry)
++	check(app.preparation_calls == 0,"partially loaded feature does not trigger remaining imports")
++	var worker_script: Script = load("res://race/selected_track_preparation.gd")
++	page.preparation_requested.emit(page.entry)
++	check(app.preparation_calls == 0,"worker without construction code does not trigger its import")
++	var builder_script: Script = load("res://track/native_track_visual.gd")
++	check(feature_script != null and worker_script != null and builder_script != null,"explicit race initialization primes all preparation code")
++	page.preparation_requested.emit(page.entry)
++	check(app.preparation_calls == 1 and app._selected_preparation_pending,"warm Daily still queues its existing selected-event worker")
++	var generation: int = app._selected_preparation_generation
++	page.preparation_requested.emit(page.entry)
++	check(app._selected_preparation_generation == generation,"warm repeated presentation still coalesces work")
++	var deadline: int = Time.get_ticks_msec()+45000
++	while app._selected_preparation_pending and Time.get_ticks_msec() < deadline: await process_frame
++	check(not app._selected_preparation_pending and not selected.metadata.get("metadata_only",false),"warm worker hydrates the exact selected object")
++	check(app._selected_event_track(page.entry) == selected,"warm event handoff reuses completed geometry")
++	app._garage_preloader._sync_pictures()
++	check(app._garage_preloader.Pictures != null,"explicit Garage picture demand can still initialize on Daily")
++	app.queue_free()
++	feed.queue_free()
++	for index: int in range(30): await process_frame
++	print("DAILY_PAGE_STUTTER: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_daily_page_stutter.gd.uid b/game/tests/test_daily_page_stutter.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_page_stutter.gd.uid
+@@ -0,0 +1 @@
++uid://dvitrer5xrs3r
+diff --git a/scripts/run_daily_page_stutter.py b/scripts/run_daily_page_stutter.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/run_daily_page_stutter.py
+@@ -0,0 +1,113 @@
++"""Run offline Daily frame probes/checks with private data and the pinned engine."""
++import argparse
++import json
++import os
++import subprocess
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++BUILD = ROOT / "build/daily-page-stutter-20261115"
++OUT = ROOT / "docs/evidence/daily-page-stutter-2026-11-15"
++
++
++def instrument(control):
++    base = OUT / "before" if control else ROOT
++    cache_probe = '''extends RefCounted
++const Cache = preload("res://persistence/daily_menu_cache.gd")
++static func read(records: LocalRecords, scope: String, kind: String) -> Dictionary:
++    var began: int = Time.get_ticks_usec()
++    var value: Dictionary = Cache.read(records,scope,kind)
++    print("DAILY_SPAN cache_read ",kind," ",(Time.get_ticks_usec()-began)/1000.0)
++    return value
++static func write(records: LocalRecords, scope: String, kind: String, data: Dictionary) -> void:
++    var began: int = Time.get_ticks_usec()
++    Cache.write(records,scope,kind,data)
++    print("DAILY_SPAN cache_write ",kind," ",(Time.get_ticks_usec()-began)/1000.0)
++static func erase(records: LocalRecords, scope: String, kind: String) -> void:
++    var began: int = Time.get_ticks_usec()
++    Cache.erase(records,scope,kind)
++    print("DAILY_SPAN cache_erase ",kind," ",(Time.get_ticks_usec()-began)/1000.0)
++'''
++    (BUILD / "daily_menu_cache.gd").write_text(cache_probe, encoding="utf-8")
++    sources = {
++        "game/ui/daily_result_card.gd": ["_ready", "_render", "_render_rows"],
++        "game/ui/daily_week.gd": ["refresh"],
++        "game/ui/track_of_day_page.gd": ["_ready", "_arrange", "_show_track", "_update_week"],
++    }
++    for path, methods in sources.items():
++        source = (base / path).read_text(encoding="utf-8")
++        for method in methods:
++            signature = f"func {method}() -> void:"
++            source = source.replace(signature, f"func _probe{method}() -> void:")
++            source += (
++                f"\n{signature}\n\tvar began: int = Time.get_ticks_usec()\n"
++                f"\t_probe{method}()\n"
++                f'\tprint("DAILY_SPAN {Path(path).stem}.{method} ", '
++                "(Time.get_ticks_usec()-began)/1000.0)\n"
++            )
++        for child in sources:
++            if child != path:
++                source = source.replace("res://" + child.removeprefix("game/"),
++                                        "res://../build/daily-page-stutter-20261115/" + Path(child).name)
++        source = source.replace("res://persistence/daily_menu_cache.gd",
++                                "res://../build/daily-page-stutter-20261115/daily_menu_cache.gd")
++        (BUILD / Path(path).name).write_text(source, encoding="utf-8")
++    source = (base / "game/core/features/daily.gd").read_text(encoding="utf-8")
++    source = source.replace("res://ui/track_of_day_page.gd",
++                            "res://../build/daily-page-stutter-20261115/track_of_day_page.gd")
++    source = source.replace("res://persistence/daily_menu_cache.gd",
++                            "res://../build/daily-page-stutter-20261115/daily_menu_cache.gd")
++    (BUILD / "daily.gd").write_text(source, encoding="utf-8")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("label")
++    parser.add_argument("script", nargs="?", default="res://tests/profile_daily_page_stutter.gd")
++    parser.add_argument("--renderer", default="gl_compatibility")
++    parser.add_argument("--control", action="store_true")
++    parser.add_argument("--no-garage", action="store_true")
++    args = parser.parse_args()
++    OUT.mkdir(parents=True, exist_ok=True)
++    BUILD.mkdir(parents=True, exist_ok=True)
++    instrument(args.control)
++    profile = BUILD / args.label
++    for folder in ("roaming", "local"):
++        (profile / folder).mkdir(parents=True, exist_ok=True)
++    output = OUT / args.label
++    output.mkdir(exist_ok=True)
++    env = dict(os.environ, APPDATA=str(profile / "roaming"), LOCALAPPDATA=str(profile / "local"),
++               BMT_API_URL="", BMT_DEV_AUTH_KEY="", BMT_DAILY_PAGE_OUTPUT=str(output),
++               BMT_DAILY_STUTTER_OUTPUT=str(output),
++               BMT_DAILY_STUTTER_NO_GARAGE="1" if args.no_garage else "0")
++    command = ["C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe", "--path",
++               str(ROOT / "game"), "--audio-driver", "Dummy", "--position", "10000,10000",
++               "--script", args.script]
++    command += ["--headless"] if args.renderer == "headless" else ["--rendering-method", args.renderer]
++    started = time.monotonic()
++    log_path = OUT / (args.label + ".log")
++    reason = None
++    with log_path.open("w", encoding="utf-8") as log:
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++        while process.poll() is None:
++            time.sleep(0.2)
++            content = log_path.read_text(encoding="utf-8", errors="replace")
++            if "SCRIPT ERROR:" in content or time.monotonic() - started > 180:
++                reason = "script error" if "SCRIPT ERROR:" in content else "timeout"
++                process.kill()
++                break
++        code = process.wait()
++    content = log_path.read_text(encoding="utf-8", errors="replace")
++    errors = [line for line in content.splitlines() if line.startswith(("ERROR:", "SCRIPT ERROR:"))
++              and line != "ERROR: Failed to read the root certificate store."]
++    report = {"command": command, "exit_code": code, "seconds": time.monotonic()-started,
++              "errors": errors, "stop_reason": reason}
++    (OUT / (args.label + "-receipt.json")).write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++    print(json.dumps(report, indent=2))
++    print("\n".join(content.splitlines()[-22:]))
++    return int(code != 0 or bool(errors) or reason is not None)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

@@ -75,7 +75,16 @@ func _ready() -> void:
 	if not _restore_cached_track() and not page_preview: refresh()
 
 func _restore_cached_track() -> bool:
-	var cached_entry: Dictionary = cached_state.get("entry",{})
+	var value: Variant = cached_state.get("entry",{})
+	if not value is Dictionary: return false
+	var cached_entry: Dictionary = value
+	for field: String in ["id","track_id","version_id","content_hash","name","creator","theme"]:
+		if not cached_entry.get(field) is String: return false
+	if not cached_entry.get("points") is Array: return false
+	for point: Variant in cached_entry.points:
+		if not point is Array or point.size() != 2: return false
+		for coordinate: Variant in point:
+			if not (coordinate is int or coordinate is float) or not is_finite(float(coordinate)): return false
 	var ends: int = int(cached_state.get("ends_at",0))
 	var now: int = int(cached_state.get("server_now",0))
 	var sampled: int = int(cached_state.get("sample_msec",0))
@@ -317,7 +326,7 @@ func activate() -> void:
 	_race_panel.preview = false
 	_race_panel.vehicle = VehicleCatalog.selected
 	if not entry.is_empty():
-		_race_panel.refresh()
+		_race_panel.ensure_fresh()
 		_update_week()
 	if entry.is_empty() and not _busy: refresh()
 

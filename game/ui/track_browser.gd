@@ -277,6 +277,13 @@ func _update_list_extent() -> void:
 
 func _render_list(reconcile: bool = false) -> void:
 	if not list_open or not is_instance_valid(list_grid): return
+	# Column anchoring only protects a scrolled view. At the beginning, pack
+	# actual tracks from the first slot, including after returning from eviction.
+	if track_list.scroll_vertical == 0 and (_window_shift != 0 or _list_column_offset != 0):
+		_window_shift = 0
+		_list_column_offset = 0
+		_update_list_extent()
+		reconcile = true
 	var first_row: int = maxi(0,floori(track_list.scroll_vertical/_list_stride.y)-1)
 	var first: int = first_row*_list_columns
 	var end: int = mini(_page_total()+_list_column_offset,first+(ceili(track_list.size.y/_list_stride.y)+3)*_list_columns)
@@ -529,12 +536,14 @@ func _sync_cloud_catalog() -> bool:
 
 var _window_generation: int = -1
 var _window_shift: int = 0
+var _window_coordinate_shift: int = 0
 var _list_column_offset: int = 0
 
 func _sync_discovery_window() -> void:
 	if cloud == null or not cloud.paged_discovery_available():
 		_window_generation = -1
 		_window_shift = 0
+		_window_coordinate_shift = 0
 		_list_column_offset = 0
 		return
 	if not is_instance_valid(cloud.discovery_pages): return
@@ -542,6 +551,7 @@ func _sync_discovery_window() -> void:
 	if _window_generation != int(window.generation):
 		_window_generation = int(window.generation)
 		_window_shift = 0
+		_window_coordinate_shift = int(window.coordinate_shift)
 		_list_column_offset = 0
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = 0
@@ -559,14 +569,20 @@ func _sync_discovery_window() -> void:
 		if positions.has(version):
 			shift = int(positions[version])-index
 			break
-	_window_shift += shift
+	# Restoring an earlier cursor page must keep the current view anchored so
+	# backward prefetch fills its reserve and stops. Ordinary updates at the
+	# beginning stay packed from the first track.
+	var restoring_previous: bool = int(window.coordinate_shift) > _window_coordinate_shift
+	_window_coordinate_shift = int(window.coordinate_shift)
+	var at_list_start: bool = track_list.scroll_vertical == 0 and not restoring_previous
+	_window_shift = 0 if at_list_start else _window_shift+shift
 	if shift != 0:
 		var new_offset: int = posmod(-_window_shift,_list_columns)
 		var list_shift: int = shift+new_offset-_list_column_offset
 		_list_column_offset = new_offset
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = maxi(0,gallery.scroll_horizontal+shift*tile_stride)
-		track_list.scroll_vertical = maxi(0,track_list.scroll_vertical+int(list_shift/_list_columns)*int(_list_stride.y))
+		track_list.scroll_vertical = 0 if at_list_start else maxi(0,track_list.scroll_vertical+int(list_shift/_list_columns)*int(_list_stride.y))
 		_tile_start = -1
 		_list_start = -1
 

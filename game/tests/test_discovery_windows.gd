@@ -71,6 +71,17 @@ func check(value: bool, label: String) -> void:
 	checks += 1
 	if not value: failures += 1; push_error(label)
 
+func list_origin_checks(browser: TrackBrowser, label: String) -> void:
+	check(browser.track_list.scroll_vertical == 0,label+": list stays at its beginning")
+	check(browser.list_grid.get_children().all(func(child: Node) -> bool: return child is TrackTile),label+": first row contains tracks without empty slots")
+	var first: TrackTile
+	for child: Node in browser.list_grid.get_children():
+		if child is TrackTile:
+			first = child
+			break
+	check(first != null and first.entry.id == browser.matches[0].id,label+": first loaded track leads the list")
+	check(first != null and first.position.is_equal_approx(Vector2.ZERO) and browser.list_grid.position.is_equal_approx(Vector2.ZERO),label+": first track starts at the top-left")
+
 func capture(label: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	await create_timer(0.2).timeout
@@ -163,6 +174,17 @@ func run() -> void:
 	check(browser.gallery_content.custom_minimum_size.x < 301*browser.tile_stride,"browser extent follows the local window")
 	check(browser.count_label.text.contains("loaded") and not browser.count_label.text.contains("5000"),"browser labels loaded cards without inventing an exact total")
 	await capture("window-list")
+	# Same-generation authority updates used to preserve the surviving cards'
+	# columns even at scroll zero, leaving an empty area before the first track.
+	client.missing_card = 0
+	await pages._fetch(0)
+	for _frame: int in range(6): await process_frame
+	list_origin_checks(browser,"first track removed")
+	await capture("origin-first-removed")
+	client.missing_card = -1
+	await pages._fetch(0)
+	for _frame: int in range(6): await process_frame
+	list_origin_checks(browser,"first track restored")
 	browser._select(entry)
 	for _frame: int in range(5): await process_frame
 	await capture("window-gallery")
@@ -194,6 +216,33 @@ func run() -> void:
 			check(browser.track_list.scroll_vertical == expected_y,"eviction preserves the card screen row")
 		await process_frame
 	check(browser._window_shift < 0 and pages.total <= 300,"live browser follows rebased bounded extent")
+	# Padding is useful while preserving a deep visible row, but scrolling back
+	# to the beginning must put the first available track in the first column.
+	browser.page_preview = true
+	while pages.loading: await process_frame
+	browser.track_list.scroll_vertical = 0
+	for _frame: int in range(6): await process_frame
+	list_origin_checks(browser,"return to beginning after eviction")
+	await capture("origin-after-eviction")
+	for dimensions: Vector2i in [Vector2i(2408,1137),Vector2i(1280,720),Vector2i(960,540)]:
+		root.size = dimensions
+		browser.size = dimensions
+		for _frame: int in range(6): await process_frame
+		list_origin_checks(browser,"resized beginning "+str(dimensions))
+		await capture("origin-%dx%d" % [dimensions.x,dimensions.y])
+	# Fetching preceding pages keeps the current tracks anchored, then stops
+	# once the reserve is filled instead of draining all earlier pages at rest.
+	browser.page_preview = false
+	browser._cloud_changed()
+	var previous_reads: int = client.requests.size()
+	browser.track_list.scroll_vertical = 0
+	browser._render_list(true)
+	for _frame: int in range(60): await process_frame
+	print("BACKWARD_RESERVE: ",client.requests.size()-previous_reads," reads")
+	check(client.requests.size()-previous_reads <= 6,"returning to the loaded beginning fetches only a bounded backward reserve")
+	previous_reads = client.requests.size()
+	for _frame: int in range(12): await process_frame
+	check(not pages.loading and client.requests.size() == previous_reads,"backward prefetch stops without another scroll")
 	browser.page_preview = true
 	while pages.loading: await process_frame
 	await cloud.query_discovery({"sort":"name"},[],[],true)

@@ -246,7 +246,7 @@ func _notification(what: int) -> void:
 		editor_memory.pressure_requested = true
 		editor_memory.next_sample = 0
 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:
-		if is_instance_valid(canvas) and canvas.active_pointer != -99: canvas.cancel_gesture()
+		if is_instance_valid(canvas) and canvas.active_pointer != -99: canvas.cancel_gesture(false)
 		_flush_editor_writes()
 		_publishing_slots_foreground = false
 		if race_ad_breaks != null:
@@ -768,6 +768,9 @@ func _show_screen(next: String) -> void:
 	settings.custom_minimum_size = Vector2(54,54)
 	settings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nav.add_child(settings)
+	var menu_header: Node = preload("res://ui/garage_header.gd").new()
+	menu_header.app = self
+	nav.add_child(menu_header)
 	layout.add_child(HSeparator.new())
 	content = VBoxContainer.new()
 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -793,7 +796,13 @@ func _show_screen(next: String) -> void:
 		menu_body.add_child(content)
 		menu_body_slot.resized.connect(_layout_menu_body)
 		_layout_menu_body()
-	else: layout.add_child(content)
+	else:
+		# Wide page content must not stretch the shared navigation off-screen.
+		var page_slot := Control.new()
+		page_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		layout.add_child(page_slot)
+		MenuStyle.fill(content)
+		page_slot.add_child(content)
 	match screen:
 		"drafts": _drafts()
 		"biome": _choose_biome()
@@ -1290,11 +1299,7 @@ func _commit_menu_neighbor(direction: int) -> void:
 		_stamp_creator()
 		history.clear()
 		redo_history.clear()
-	for id: String in ["tracks", "create", "garage", "store"]:
-		var tab: Button = root_ui.find_child("Tab_" + id, true, false)
-		var selected: bool = (id == "tracks" and screen in ["tracks", "rivalry"]) or (id == "create" and screen == "biome") or id == screen
-		tab.add_theme_stylebox_override("normal", MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
-		tab.add_theme_color_override("font_color", MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+	root_ui.find_child("GarageHeaderWallet",true,false).refresh()
 	var browser: Control = menu_body.find_child("TrackBrowser", true, false)
 	if browser != null:
 		browser_state = browser.state
@@ -1614,7 +1619,8 @@ func _prepare_selected_event(kind: String, page: Control, entry: Dictionary, sou
 	_feature_resource("res://core/features/selected_track.gd").run_prepare_selected_event(self,kind,page,entry,source)
 
 func _selected_event_track(entry: Dictionary) -> NativeTrack:
-	return _feature_resource("res://core/features/selected_track.gd").run_selected_event_track(self,entry)
+	# Selecting presentation must not initialize the background compiler.
+	return load("res://race/selected_event.gd").track_for(self,entry)
 
 func _selected_preparation_obsolete(generation: int) -> bool:
 	return _feature_resource("res://core/features/selected_track.gd").run_selected_preparation_obsolete(self ,generation)
@@ -2188,13 +2194,16 @@ func _header_car_capture_allowed(_vehicle: String) -> bool:
 	if not _header_car_work_allowed() or not _initial_menu_presented or editor_memory.pressure_requested: return false
 	if is_instance_valid(header_car_cache) and header_car_cache.capture_active() and _header_capture_navigation != _navigation_generation: return false
 	if menu_page_motion != null and menu_page_motion.is_running(): return false
-	if not is_instance_valid(_garage_preloader) or not _garage_preloader.presentation_idle(): return false
+	if not is_instance_valid(_garage_preloader) or not _garage_preloader.presentation_idle(100 if screen == "garage" else -1): return false
 	if is_instance_valid(_garage_preloader.picture_service) and _garage_preloader.picture_service.renderer != null: return false
 	if is_instance_valid(_garage_preloader.studio): return false
 	if screen in ["account","tracks","rivalry","challenges","settings","profile"]:
 		return not is_instance_valid(_retained_garage) or not _retained_garage.is_visible_in_tree()
-	# A paint save already updates the live car. Keep it visible and interactive;
-	# optional header rendering waits until the Garage has left the screen.
+	# Paint and parts commit exact saved looks. Refresh their shared picture in
+	# the current workshop once the gesture ends, without waiting for navigation.
+	if screen == "garage" and is_instance_valid(_retained_garage):
+		var page: Control = _retained_garage
+		return page.section in ["cars","customise","tuning"] and not page.showroom.preparing and (page._menu_motion == null or not page._menu_motion.is_running())
 	return false
 
 func _header_car_capture_started(_vehicle: String) -> void:

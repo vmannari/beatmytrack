@@ -3,6 +3,8 @@
 . (Join-Path $PSScriptRoot 'garage_preview_identity.ps1')
 . (Join-Path $PSScriptRoot 'prepared_asset_identity.ps1')
 function Test-GaragePreviewSource([string]$Relative) {
+    # Selection portraits are derived UI output, never inputs to a room capture.
+    if ($Relative -match '^game/assets/garage/selection_portraits_v1/') { return $false }
     # Match the native preview baker's conservative model/room dependencies.
     # Menu layout, translations, backend and build metadata do not repaint a car.
     if ($Relative -match '^game/(vehicle/|assets/(garage/|liveries/)|resources/(cars/|[^/]+\.tres$))' -or
@@ -12,7 +14,7 @@ function Test-GaragePreviewSource([string]$Relative) {
         'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_thumbnail_studio.gd', 'game/ui/garage_car_cache.gd',
         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
-        'game/ui/garage_mesh_cleanup.gd', 'game/rendering/mesh_vertex_packing.gd',
+        'game/ui/garage_mesh_cleanup.gd', 'game/ui/garage_mesh_reduction.gd', 'game/rendering/mesh_vertex_packing.gd',
         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
         'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd',
         'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',

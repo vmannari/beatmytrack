@@ -380,6 +380,8 @@ function Export-Android {
 	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')
 	if ($LASTEXITCODE) { throw 'Garage preview assets are stale or missing. Bake native previews before exporting.' }
+	& python (Join-Path $PSScriptRoot 'check_garage_selection_pictures.py')
+	if ($LASTEXITCODE) { throw 'Garage selection portraits are stale or missing. Bake the native selection portraits before exporting.' }
     Test-AndroidTools
     Prepare-AndroidGradle
     Invoke-Validation

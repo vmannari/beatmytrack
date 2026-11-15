@@ -1,0 +1,237 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-SPEAKERS-RESTORED-20261115 -->
++## Garage speakers restored after simplification (2026-11-15)
++GSP01-GSP03: Owner reports vanished speakers. Two protected source volumes restore complete cabinet/woofer/tweeter faces inside existing material batches at every detail level. Workshop17304, platform1816, total19134(+478; still -38.43% versus31075); no extra draw groups. Original404 faces each across34 master/LOD comparisons pass37/0 each desktop renderer; old scene rejects37/34. Retained integrity494/0, source/layout/budget82/0, parser577/0, eight native paired captures, receiving90/0 and reflection/120-frame rotation146/0 each pass. Closing1300-input fence stable; workshop29-source, six-photo174-source, six portraits25418-input and12 imports pass. All557 car outputs and modular geometry keys exact. Seven-source normalized checkpoint exact both directions; retention32.75GiB remains recent/protected, no task pin. Early concurrent identity rewrite, raw-PNG warnings and Mobile rotation two-object/one-resource shutdown diagnostic retained; no FPS/load/device claim. [Changes, before/after views, commands, checkpoint and limits](docs/GARAGE_SPEAKERS_RESTORED_2026_11_15.md). Reload/owner appearance remains; no phone/export/backend/deployment/owner-save/process or main-index action.
++<!-- /GARAGE-SPEAKERS-RESTORED-20261115 -->
++
+ <!-- RALLY-LAMP-STYLE-20261115 -->
+ ## Rally lamps return to the preferred reflector style (2026-11-15)
+ RLS01-RLS04: owner prefers the earlier lamps. Unchanged clear fluted-glass shader, recessed silver dish, bright bulb cap and round dark shade restore that character while retaining smooth rims and the refined grille. Lamps1312tri versus earlier1384/opaque960; whole Rally16213 (+352 versus opaque15861, -15.00% restored19074), fitted24010/full100356. Two exact non-lamp frame migrations preserve grille/body reductions; ten other stock/full GPU controls exact. Source6/0, prepared30/0, retained grille274/0, Rally modules1441/0/shared Challenger consumer1436/0, daylight24pairs101/0/night8pairs37/0, App8/0/icons496/0 each desktop renderer, driving72/0/parser577/0 and full551-resource2267/0 pass. Transparent optics/two surfaces and9672 stock buffer bytes return as the appearance tradeoff. Two Garage/one header images,3 imports,6-photo174-source catalogue and18700-input fence pass; seven other keys exact. Challenger geometry unmodified; shared conservative source rule requires cache-only refresh. Three-way comparison and source-only exact checkpoint retained; standard retention applied, concurrent work/index preserved. Reload/owner visual acceptance remains; no device/FPS/export/backend/deployment/owner-save/process or main-index action. [Style, views, commands and limits](docs/RALLY_LAMP_STYLE_2026_11_15.md).
+--- a/game/ui/garage_record_station.gd
++++ b/game/ui/garage_record_station.gd
+@@ -125,7 +125,11 @@
+ 	for x: float in [-0.20,0.20]:
+ 		GarageEnvironment.box(player,Vector3(x,0.045,0.199),Vector3(0.040,0.022,0.018),brass)
+ 	# Compact matched speakers with separate cone, surround and tweeter.
++	var speaker_bounds: Array[AABB]=[]
+ 	for x: float in [-0.86,0.86]:
++		# Protect the complete cabinet and drivers within the shared material
++		# batches, including every distance LOD. No extra draw groups are needed.
++		speaker_bounds.append(AABB(Vector3(x-0.135,0.89,-0.128),Vector3(0.27,0.40,0.308)).grow(0.0002))
+ 		GarageEnvironment.box(station,Vector3(x,1.09,0.04),Vector3(0.27,0.40,0.28),wood)
+ 		GarageEnvironment.box(station,Vector3(x,1.09,-0.106),Vector3(0.24,0.37,0.014),dark)
+ 		for dx: float in [-0.102,0.102]:
+@@ -134,6 +138,7 @@
+ 		for spec: Vector2 in [Vector2(1.035,0.087),Vector2(1.215,0.035)]:
+ 			_driver(station,Vector3(x,spec.x,-0.115),spec.y,metal,dark,cone)
+ 		GarageEnvironment.box(station,Vector3(x,0.926,-0.116),Vector3(0.032,0.006,0.003),brass)
++	station.set_meta("garage_reduction_protected_bounds",speaker_bounds)
+ 	var sleeves := Node3D.new()
+ 	# A tabletop record crate, with solid slatted returns and an open hand slot.
+ 	var crate_center := Vector3(0.43,0.94,0)
+--- a/game/ui/garage_mesh_reduction.gd
++++ b/game/ui/garage_mesh_reduction.gd
+@@ -37,15 +37,39 @@
+ 		else: result.encode_u32(at*stride,remap[indices[at]])
+ 	return result
+ 
+-static func plan(mesh: ArrayMesh,keep: bool=false) -> Dictionary:
++static func _protected_indices(selected: PackedInt32Array,original: PackedInt32Array,inside: PackedByteArray) -> PackedInt32Array:
++	if inside.is_empty(): return selected
++	var result:=PackedInt32Array()
++	# Remove collapsed faces touching a protected object before restoring its
++	# exact original faces. This also prevents overlaps and cross-object bridges.
++	for at: int in range(0,selected.size(),3):
++		if not (inside[selected[at]] or inside[selected[at+1]] or inside[selected[at+2]]):
++			result.append_array(selected.slice(at,at+3))
++	for at: int in range(0,original.size(),3):
++		if inside[original[at]] and inside[original[at+1]] and inside[original[at+2]]:
++			result.append_array(original.slice(at,at+3))
++	return result
++
++static func plan(mesh: ArrayMesh,keep: bool=false,bounds: Array=[]) -> Dictionary:
+ 	var entry: Dictionary={"keep":keep,"surfaces":[]}
+ 	if keep or mesh.get_blend_shape_count()>0:
+ 		entry.keep=true;return entry
+-	for packet: Dictionary in mesh.get("_surfaces"):
++	var packets: Array=mesh.get("_surfaces")
++	for surface: int in range(packets.size()):
++		var packet: Dictionary=packets[surface]
+ 		if int(packet.format)&(Mesh.ARRAY_FORMAT_BONES|Mesh.ARRAY_FORMAT_WEIGHTS) or int(packet.primitive)!=Mesh.PRIMITIVE_TRIANGLES or not packet.has("index_data") or packet.index_data.is_empty():
+ 			entry.keep=true;entry.surfaces=[];return entry
+ 		var count: int=packet.vertex_count
+ 		var master: PackedInt32Array=_indices(packet.index_data,count)
++		var original: PackedInt32Array=master
++		var inside:=PackedByteArray()
++		if not bounds.is_empty():
++			inside.resize(count)
++			var vertices: PackedVector3Array=mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
++			for index: int in range(count):
++				for box: AABB in bounds:
++					if box.has_point(vertices[index]): inside[index]=1;break
++			if not inside.has(1): inside.clear()
+ 		var original_count: int=master.size()
+ 		var levels: Array=packet.get("lods",[])
+ 		var selected_size: float=0
+@@ -58,17 +82,36 @@
+ 		var retained: Array=[]
+ 		for at: int in range(0,levels.size(),2):
+ 			if float(levels[at])>selected_size:
+-				retained.append([float(levels[at]),_encoded(_indices(levels[at+1],count))])
+-		entry.surfaces.append({"vertices":count,"master":_encoded(master),"lods":retained})
++				retained.append([float(levels[at]),_encoded(_protected_indices(_indices(levels[at+1],count),original,inside))])
++		entry.surfaces.append({"vertices":count,"master":_encoded(_protected_indices(master,original,inside)),"lods":retained})
+ 	return entry
++
++static func _relative(node: Node,holder: Node) -> Transform3D:
++	var result:=Transform3D.IDENTITY
++	while node!=holder:
++		if node is Node3D: result=node.transform*result
++		node=node.get_parent()
++	return result
+ 
+ static func generate(holder: Node) -> Dictionary:
+ 	var result: Dictionary={"schema":SCHEMA,"engine":Engine.get_version_info().string,"target_fraction":0.5,"meshes":{}}
++	var bounds: Array=[]
++	for node: Node3D in holder.find_children("*","Node3D",true,false):
++		for box: AABB in node.get_meta("garage_reduction_protected_bounds",[]):
++			bounds.append(_relative(node,holder)*box)
++	var grouped: Dictionary={}
+ 	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
+ 		if not part.mesh is ArrayMesh: continue
+ 		var key: String=signature(part.mesh)
+-		var keep: bool=part.get_meta("garage_keep_detail",false)
+-		if not result.meshes.has(key) or keep: result.meshes[key]=plan(part.mesh,keep)
++		if not grouped.has(key): grouped[key]={"mesh":part.mesh,"keep":false,"bounds":[]}
++		grouped[key].keep=grouped[key].keep or part.get_meta("garage_keep_detail",false)
++		var inverse: Transform3D=_relative(part,holder).affine_inverse()
++		for box: AABB in bounds:
++			var local: AABB=inverse*box
++			if local.intersects(part.mesh.get_aabb()): grouped[key].bounds.append(local)
++	for key: String in grouped:
++		var group: Dictionary=grouped[key]
++		result.meshes[key]=plan(group.mesh,group.keep,group.bounds)
+ 	return result
+ 
+ static func _mesh(source: ArrayMesh,entry: Dictionary) -> ArrayMesh:
+--- /dev/null
++++ b/game/tests/test_garage_speakers.gd
+@@ -0,0 +1,61 @@
++extends SceneTree
++const Reducer=preload("res://ui/garage_mesh_reduction.gd")
++var checks: int=0
++var failures: int=0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks+=1
++	if not ok: failures+=1;printerr("GARAGE_SPEAKERS_FAIL ",label)
++
++func source_faces(mesh: Mesh,indices: PackedInt32Array,speaker: int) -> Dictionary:
++	var result: Dictionary={}
++	var points: PackedVector3Array=mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var x: float=-0.86 if speaker==0 else 0.86
++	var bounds:=AABB(Vector3(x-0.135,0.89,-0.128),Vector3(0.27,0.4,0.308)).grow(0.0001)
++	var station:=Transform3D(Basis(Vector3.UP,PI*0.5),Vector3(9.80,0,4.70)).affine_inverse()
++	for at: int in range(0,indices.size(),3):
++		var a: Vector3=points[indices[at]]
++		var b: Vector3=points[indices[at+1]]
++		var c: Vector3=points[indices[at+2]]
++		if bounds.has_point(station*a) and bounds.has_point(station*b) and bounds.has_point(station*c):
++			var key: String=var_to_bytes(PackedVector3Array([a,b,c])).hex_encode()
++			result[key]=result.get(key,0)+1
++	return result
++
++func run() -> void:
++	var path: String=GarageEnvironment.PREPARED_ARCHITECTURE
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--candidate-room="): path=arg.trim_prefix("--candidate-room=")
++	var world:=Node3D.new();root.add_child(world)
++	var car: CarVisual=preload("res://tests/support/garage_architecture_car.gd").new();world.add_child(car)
++	GarageEnvironment.architecture_scene=null;Reducer.enabled=false
++	GarageEnvironment.build(world,car,false,false)
++	Reducer.enabled=true
++	var source: Node=GarageEnvironment.architecture_scene.instantiate()
++	var candidate: Node=load(path).instantiate()
++	var before: Array=source.find_children("*","MeshInstance3D",true,false)
++	var after: Array=candidate.find_children("*","MeshInstance3D",true,false)
++	check(before.size()==after.size(),"material batches/draw groups retained")
++	var totals: Array[int]=[0,0]
++	var levels_checked: int=0
++	for part: int in range(mini(before.size(),after.size())):
++		var original: Mesh=before[part].mesh
++		if not original is ArrayMesh: continue
++		var original_packet: Dictionary=original.get("_surfaces")[0]
++		var master: PackedInt32Array=Reducer._indices(original_packet.index_data,original_packet.vertex_count)
++		for speaker: int in range(2):
++			var expected: Dictionary=source_faces(original,master,speaker)
++			totals[speaker]+=expected.size()
++			if expected.is_empty(): continue
++			var mesh: ArrayMesh=after[part].mesh
++			var packet: Dictionary=mesh.get("_surfaces")[0]
++			var levels: Array=[0.0,packet.index_data];levels.append_array(packet.get("lods",[]))
++			for level: int in range(1,levels.size(),2):
++				var faces: Dictionary=source_faces(mesh,Reducer._indices(levels[level],packet.vertex_count),speaker)
++				check(faces==expected,"exact cabinet, woofer and tweeter faces at every level: speaker "+str(speaker)+" batch "+str(part)+" level "+str(level/2))
++				levels_checked+=1
++	for speaker: int in range(2): check(totals[speaker]>=200,"complete original speaker source fixture "+str(speaker))
++	print("GARAGE_SPEAKERS ",checks," checks, ",failures," failures; exact source faces=",totals," levels=",levels_checked)
++	source.free();candidate.free();world.free()
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_speakers.gd.uid
+@@ -0,0 +1 @@
++uid://74d8xxd5nidm
+--- /dev/null
++++ b/scripts/run_garage_speakers.py
+@@ -0,0 +1,8 @@
++"""Offline checks for the Garage speaker restoration."""
++import run_garage_first_entry as runner
++
++runner.OUT = runner.ROOT / "build/garage-speakers-fix-2026-11-15"
++runner.DEFAULT_SCRIPT = "res://tests/test_garage_speakers.gd"
++
++if __name__ == "__main__":
++    raise SystemExit(runner.main())
+--- /dev/null
++++ b/docs/GARAGE_SPEAKERS_RESTORED_2026_11_15.md
+@@ -0,0 +1,37 @@
++# Garage speakers restored — 15 November 2026
++
++**GSP01–GSP03:** The owner reports that the speakers vanished after applying the simplified Garage. The aggressive shared-material LODs removed cabinet and driver faces. Both speakers now retain their complete original source geometry at the master and every remaining distance level. The rest of the workshop remains reduced.
++
++The environment increases by **478 triangles**, from 18,656 to **19,134**: workshop 17,304, physical platform 1,816, floor/contact 14. This remains below the unchanged 20,000 budget and 38.43% below the prior 31,075 environment. No extra mesh instances or material batches/draw groups are introduced. All 557 checked car resources and all modular car geometry revisions remain exact.
++
++![Restored speakers in Compatibility](evidence/garage-speakers-fix-2026-11-15/native-gl-final/after/pair.png)
++
++![Previous reduced speakers](evidence/garage-speakers-fix-2026-11-15/native-gl-final/before/pair.png)
++
++`game/ui/garage_record_station.gd` declares the two small speaker volumes. The offline plan generator in `garage_mesh_reduction.gd` maps those volumes into each existing material batch. It removes collapsed faces touching a speaker and restores the exact original triangles, including every retained LOD. The encoded position/normal/tangent/UV/colour records remain original. Reused mesh instances combine their protection requirements. Normal entry still loads the prepared scene directly; runtime source fallback applies the stored index plan without simplification.
++
++The new `test_garage_speakers.gd` independently compares source-face multisets in both speakers against the published master and each LOD. Each speaker has 404 original faces across the protected material batches. The previous scene fails **34 of 37 checks**; the fixed candidate and final published scene pass **37/0**, including 34 master/LOD comparisons. The test also checks that material-batch counts remain unchanged. Existing recipe integrity passes **494/0**, and the unchanged geometry/layout/budget regression passes **82/0** with the new 19,134 total. No existing assertion or budget was weakened.
++
++Final native Compatibility and desktop Mobile each pass:
++
++- Speaker geometry regression: **37/0**.
++- Pair, left, right and distant before/after views: **8 captures**, all successful.
++- Actual receiving first Garage captures: **90/0**.
++- Existing real-reflection/lifecycle/120-frame rotation probe: **146/0**.
++
++Production parsing passes **577/0**. Its early receipt records a concurrent build-identity rewrite; final native runs record no input changes. The closing **1,300-input fence** is stable, and current asset checks pass: workshop exact scene/plan and **29 sources**, six catalogue pictures/**174 sources**, six selection portraits/**25,418 stable bake inputs**, and **12 current native PNG imports**. The existing portrait loader's raw-PNG export warnings remain in reflection logs. The Mobile reflection probe also reports two objects/one resource at shutdown after its 146 passing checks; this diagnostic is retained, with no teardown fix, portrait-loader change or export/device qualification claimed.
++
++The workshop scene, index recipe and provenance were actually rebuilt through the existing transaction. Standard identity generation, native catalogue/portrait rendering and private image imports refreshed the dependent outputs. No car geometry resource was rebuilt or merely restamped. Selected paired images, exact commands, run logs, output controls, source snapshots and the checked task-only patch are retained under `docs/evidence/garage-speakers-fix-2026-11-15`.
++
++The seven-file normalized source checkpoint applies and reverses exactly in a private fixture without using the shared index. Required retention ran with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean_build.ps1 -Apply`: 32.75 GiB remained, zero eligible entries removed, with recent/protected/locked output preventing the 20 GiB target. No task pin was created.
++
++Representative commands (the runner always wraps the pinned 4.7.2 engine with the crash-dialog guard, isolated storage, offline configuration and Dummy audio):
++
++```powershell
++python scripts/run_garage_speakers.py reject-old --headless --candidate-room=res://../build/garage-speakers-fix-2026-11-15/before/workshop_v1.scn
++python scripts/run_garage_speakers.py publish --headless --script res://tests/bake_garage_architecture.gd --output=res://assets/garage
++python scripts/run_garage_speakers.py published-budget --headless --script res://tests/test_garage_environment_budget.gd --reference-room=res://../build/garage-speakers-fix-2026-11-15/before/workshop_v1.scn
++python build/garage-speakers-fix-2026-11-15/finish.py
++```
++
++Reload the client for the prepared scene to replace the retained old Garage. Owner appearance and physical-device acceptance remain. No phone/device query or test, export, backend operation, deployment, owner-save/process action or main-index staging/commit was performed. This is a visible restoration with a small measured triangle cost; no FPS or loading-speed improvement is claimed.

@@ -73,8 +73,8 @@ static func build(root: Node3D) -> void:
 	GarageEnvironment.box(player,Vector3(0,0.010,-0.216),Vector3(0.55,0.008,0.003),brass)
 	for x: float in [-0.22,0.22]:
 		for z: float in [-0.15,0.15]: GarageFurnishings.tube(player,Vector3(x,-0.033,z),Vector3(x,-0.051,z),0.026,dark)
-	GarageFurnishings.tube(player,Vector3(-0.065,0.054,0),Vector3(-0.065,0.064,0),0.160,metal,64)
-	GarageFurnishings.tube(player,Vector3(-0.065,0.063,0),Vector3(-0.065,0.067,0),0.157,dark,64)
+	GarageFurnishings.tube(player,Vector3(-0.065,0.054,0),Vector3(-0.065,0.064,0),0.160,metal,48)
+	GarageFurnishings.tube(player,Vector3(-0.065,0.063,0),Vector3(-0.065,0.067,0),0.157,dark,48)
 	# A rolled platter lip catches the room light instead of a flat painted edge.
 	var platter_rim: MeshInstance3D = GarageFurnishings.lathe(player,Vector3(-0.065,0.060,0),[Vector2(0.155,0),Vector2(0.160,0.001),Vector2(0.161,0.004),Vector2(0.159,0.007),Vector2(0.155,0.008)],metal)
 	platter_rim.name = "GaragePlatterRim"
@@ -84,10 +84,10 @@ static func build(root: Node3D) -> void:
 	player.add_child(disc)
 	var vinyl := ShaderMaterial.new()
 	vinyl.shader = preload("res://ui/garage_vinyl.gdshader")
-	GarageFurnishings.tube(disc,Vector3(0,-0.002,0),Vector3(0,0.002,0),0.152,vinyl,64)
-	var label: MeshInstance3D = GarageFurnishings.tube(disc,Vector3(0,0.0022,0),Vector3(0,0.0028,0),0.047,GarageEnvironment.surface("recordlabel","dfbc72",0.03,0.60),48)
+	GarageFurnishings.tube(disc,Vector3(0,-0.002,0),Vector3(0,0.002,0),0.152,vinyl,48)
+	var label: MeshInstance3D = GarageFurnishings.tube(disc,Vector3(0,0.0022,0),Vector3(0,0.0028,0),0.047,GarageEnvironment.surface("recordlabel","dfbc72",0.03,0.60),32)
 	label.name = "GarageVinylLabel"
-	GarageFurnishings.tube(disc,Vector3(0,0.003,0),Vector3(0,0.010,0),0.003,metal,12)
+	GarageFurnishings.tube(disc,Vector3(0,0.003,0),Vector3(0,0.010,0),0.003,metal,8)
 	GarageEnvironment.box(disc,Vector3(0.024,0.0035,0),Vector3(0.011,0.001,0.009),dark)
 	# Tonearm with pivot, counterweight, bent tube and stylus cartridge.
 	GarageFurnishings.tube(player,Vector3(0.19,0.048,0.12),Vector3(0.19,0.088,0.12),0.020,metal)
@@ -98,17 +98,17 @@ static func build(root: Node3D) -> void:
 	GarageEnvironment.box(player,Vector3(0.049,0.065,-0.106),Vector3(0.013,0.004,0.011),brass)
 	# Turned alloy controls: dark skirt, machined rim, inset face and ivory marker.
 	for x: float in [0.18,0.235]:
-		GarageFurnishings.tube(player,Vector3(x,0.048,-0.163),Vector3(x,0.052,-0.163),0.021,dark,32)
+		GarageFurnishings.tube(player,Vector3(x,0.048,-0.163),Vector3(x,0.052,-0.163),0.021,dark,12)
 		GarageFurnishings.lathe(player,Vector3(x,0.052,-0.163),[Vector2(0.014,0),Vector2(0.016,0.002),Vector2(0.016,0.012),Vector2(0.014,0.015),Vector2(0.012,0.016)],metal)
-		GarageFurnishings.tube(player,Vector3(x,0.067,-0.163),Vector3(x,0.068,-0.163),0.013,deck,32)
+		GarageFurnishings.tube(player,Vector3(x,0.067,-0.163),Vector3(x,0.068,-0.163),0.013,deck,12)
 		GarageEnvironment.box(player,Vector3(x-0.004,0.0686,-0.169),Vector3(0.002,0.001,0.008),brass)
 	for x: float in [-0.245,-0.205]:
-		GarageFurnishings.tube(player,Vector3(x,0.047,-0.166),Vector3(x,0.051,-0.166),0.010,metal,24)
+		GarageFurnishings.tube(player,Vector3(x,0.047,-0.166),Vector3(x,0.051,-0.166),0.010,metal,8)
 	for x: float in [-0.254,0.254]:
 		for z: float in [-0.185,0.185]:
-			GarageFurnishings.tube(player,Vector3(x,0.046,z),Vector3(x,0.047,z),0.0038,metal,12)
+			GarageFurnishings.tube(player,Vector3(x,0.046,z),Vector3(x,0.047,z),0.0038,metal,4)
 	# One small amber pilot light, no extra light or animated material.
-	GarageFurnishings.tube(player,Vector3(-0.168,0.047,-0.166),Vector3(-0.168,0.049,-0.166),0.003,brass,12)
+	GarageFurnishings.tube(player,Vector3(-0.168,0.047,-0.166),Vector3(-0.168,0.049,-0.166),0.003,brass,4)
 	# Open cover is a framed smoked solid, clear of the left poster.
 	var lid := Node3D.new()
 	lid.position = Vector3(0,0.045,0.20)
@@ -125,15 +125,20 @@ static func build(root: Node3D) -> void:
 	for x: float in [-0.20,0.20]:
 		GarageEnvironment.box(player,Vector3(x,0.045,0.199),Vector3(0.040,0.022,0.018),brass)
 	# Compact matched speakers with separate cone, surround and tweeter.
+	var speaker_bounds: Array[AABB]=[]
 	for x: float in [-0.86,0.86]:
+		# Protect the complete cabinet and drivers within the shared material
+		# batches, including every distance LOD. No extra draw groups are needed.
+		speaker_bounds.append(AABB(Vector3(x-0.135,0.89,-0.128),Vector3(0.27,0.40,0.308)).grow(0.0002))
 		GarageEnvironment.box(station,Vector3(x,1.09,0.04),Vector3(0.27,0.40,0.28),wood)
 		GarageEnvironment.box(station,Vector3(x,1.09,-0.106),Vector3(0.24,0.37,0.014),dark)
 		for dx: float in [-0.102,0.102]:
 			for y: float in [0.927,1.253]:
-				GarageFurnishings.tube(station,Vector3(x+dx,y,-0.114),Vector3(x+dx,y,-0.117),0.003,metal,12)
+				GarageFurnishings.tube(station,Vector3(x+dx,y,-0.114),Vector3(x+dx,y,-0.117),0.003,metal,4)
 		for spec: Vector2 in [Vector2(1.035,0.087),Vector2(1.215,0.035)]:
 			_driver(station,Vector3(x,spec.x,-0.115),spec.y,metal,dark,cone)
 		GarageEnvironment.box(station,Vector3(x,0.926,-0.116),Vector3(0.032,0.006,0.003),brass)
+	station.set_meta("garage_reduction_protected_bounds",speaker_bounds)
 	var sleeves := Node3D.new()
 	# A tabletop record crate, with solid slatted returns and an open hand slot.
 	var crate_center := Vector3(0.43,0.94,0)

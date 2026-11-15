@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = "tests/bake_garage_architecture.gd"
 SCENE = "assets/garage/workshop_v1.scn"
+RECIPE = "assets/garage/workshop_v1.reduction.json"
+SCHEMA = "garage-mesh-reduction-1"
 
 
 def digest(path):
@@ -37,7 +39,15 @@ def check(root=ROOT):
             raise ValueError(f"Stale workshop source: {source}; rebake architecture")
     if digest(game / SCENE) != receipt.get("scene_sha256"):
         raise ValueError("Changed workshop scene; rebake architecture")
-    print(f"GARAGE_WORKSHOP: exact scene, {len(sources)} current source hashes")
+    reduction = receipt.get("reduction", {})
+    if (reduction.get("path") != RECIPE or reduction.get("schema") != SCHEMA
+            or reduction.get("sha256") != digest(game / RECIPE)):
+        raise ValueError("Changed or missing workshop reduction plan; rebake architecture")
+    plan = json.loads((game / RECIPE).read_text(encoding="utf-8"))
+    if (plan.get("schema") != SCHEMA or plan.get("engine") != receipt.get("engine")
+            or plan.get("sources") != sources or not plan.get("meshes")):
+        raise ValueError("Stale workshop reduction plan; rebake architecture")
+    print(f"GARAGE_WORKSHOP: exact scene and reduction plan, {len(sources)} current source hashes")
 
 
 if __name__ == "__main__":

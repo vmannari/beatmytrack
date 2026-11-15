@@ -1,5 +1,7 @@
 # Garage newspaper first load — 2026-11-14
 
+Follow-up: the owner reported a remaining story flash. The [actual Garage entry correction](GARAGE_NEWSPAPER_ENTRY_2026_11_14.md) covers expired cached editions before the first entry read, a path this original pass did not cover.
+
 The newspaper previously printed a local example story before its deferred account read started. The first account response then replaced that story. Rendering also marked the briefly displayed example as read.
 
 NPL01: `game/backend/news_client.gd` now tracks whether the current account/server has supplied a usable first edition. Existing stories become readable before a slow daily refresh request finishes. An initially empty edition stays pending while its daily generation is active; the existing bounded polling settles it. Completed empty editions and errors release the ordinary local fallback. Identity changes reset readiness, and existing epoch checks reject old responses.

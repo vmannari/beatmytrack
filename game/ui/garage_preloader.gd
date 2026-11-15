@@ -3,7 +3,7 @@ extends Node
 var Studio: Script:
 	get: return load("res://ui/garage_preloaded_studio.gd")
 var Pictures: Script
-const PICTURE_SCRIPT: String = "res://ui/garage_preview_cache.gd"
+const PICTURE_SCRIPT: String = "res://ui/garage_shared_pictures.gd"
 const ARCHITECTURE: String = "res://assets/garage/workshop_v1.scn"
 const MAX_PENDING: int=4
 var app: Node
@@ -59,6 +59,7 @@ func _sync_pictures() -> void:
 		picture_records.appearance_committed.connect(invalidate)
 		_pictures_dirty=true
 		picture_service=Pictures.new()
+		picture_service.header_cache=app.header_car_cache
 		picture_service.can_render=_pictures_allowed
 		add_child(picture_service)
 	if _pictures_dirty:
@@ -141,7 +142,7 @@ func _process(_delta: float) -> void:
 		if current!=_pin:
 			_reset()
 			_pin=current
-			_wanted.assign(["res://assets/garage/cars_v1/"+current.vehicle+".scn",ARCHITECTURE])
+			_wanted.assign(preload("res://ui/garage_studio_assets.gd").paths(current.vehicle,current.simple,current.parts))
 			if current.paint.pattern!="plain": _wanted.append(LiveryCatalog.ROOT+current.paint.pattern+".svg")
 			if current.paint.stickers.hood.id!="none" or current.paint.stickers.roof.id!="none": _wanted.append(LiveryCatalog.ROOT+"stickers.svg")
 	for path: String in _wanted:
@@ -188,9 +189,10 @@ func _allowed(for_render: bool=true) -> bool:
 	# wait for the full deliberate-input idle window after the menu is visible.
 	return _menu_drawn and Time.get_ticks_msec()-last_input>=(idle_ms if for_render else mini(idle_ms,150))
 
-func presentation_idle() -> bool:
+func presentation_idle(quiet_ms: int = -1) -> bool:
 	if not foreground or not _menu_drawn or not _touches.is_empty() or Input.is_anything_pressed(): return false
-	if Time.get_ticks_msec()-last_input<maxi(750,idle_ms): return false
+	var quiet: int = maxi(750,idle_ms) if quiet_ms < 0 else quiet_ms
+	if Time.get_ticks_msec()-last_input<quiet: return false
 	var focus: Control=get_viewport().gui_get_focus_owner()
 	return not focus is LineEdit and not focus is TextEdit
 
@@ -301,6 +303,9 @@ static func _retire(paths: Array[String],tree_ref: WeakRef) -> void:
 
 func _picture_script_ready() -> bool:
 	if Pictures != null: return true
+	# Daily has no Garage preview consumer. Keep first-use picture/model
+	# imports for an explicit Garage entry or another eligible menu page.
+	if is_instance_valid(app) and app.screen == "daily" and _picture_waiters == 0: return false
 	# Wait until the first menu has drawn and deliberate input has settled.
 	# Requiring another screen to load CarVisual first left initial-menu idle
 	# preparation permanently disabled after the menu-shell split.
@@ -308,5 +313,4 @@ func _picture_script_ready() -> bool:
 	# their existing workers after the presentation types are available.
 	if not presentation_idle(): return false
 	Pictures = load(PICTURE_SCRIPT)
-	Pictures.prefetch_catalogue(get_tree())
 	return true

@@ -184,9 +184,12 @@ func run() -> void:
 	check(loader.evicted and loader.studio==null and not loader.has_work(),"memory pressure releases and suppresses optional preload")
 	# Resource-only entry retains threaded reads through the normal constructor.
 	loader=await replace_loader(app)
+	# Begin at the resource-read phase. A fresh loader now waits for foreground
+	# idle before compiling its presentation script, independently of decoding.
+	loader.Pictures=load(loader.PICTURE_SCRIPT)
 	loader.foreground=false
 	deadline=Time.get_ticks_msec()+30000
-	var asset: String="res://assets/garage/cars_v1/compact.scn"
+	var asset: String=preload("res://ui/garage_studio_assets.gd").paths("compact",true,VehicleCustomisation.defaults())[0]
 	while not loader._resources.has(asset) and Time.get_ticks_msec()<deadline: await process_frame
 	check(loader.studio==null and loader._resources.has(asset),"asset decoding runs before native work is allowed")
 	var decoded: WeakRef=weakref(loader._resources[asset])

@@ -1,0 +1,75 @@
+from pathlib import Path
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+PROJECT=WORK/'snapshot/game'
+QUALIFIED=ROOT/'build/garage-25-2026-11-15/cache/game'
+assert QUALIFIED.is_dir()
+PROJECT.mkdir(parents=True,exist_ok=True)
+links=[]
+def link(target,source):
+    if not target.exists(): links.append(dict(link=str(target),target=str(source.resolve())))
+for source in (ROOT/'game').iterdir():
+    if source.name in ('.godot','android','assets','build','tmp','docs') or source.name.startswith('recordings-'): continue
+    target=PROJECT/source.name
+    if source.name in ('core','ui'):
+        shutil.copytree(source,target,dirs_exist_ok=True)
+    elif source.is_dir():
+        link(target,(QUALIFIED/source.name) if source.name in ('vehicle','resources') else source)
+    else:
+        shutil.copy2(source,target)
+# Preserve the actual qualified car program, data and cache namespace. Other
+# current menu code is identical across all experimental conditions.
+for name in ('core/build_identity.gd','ui/garage_car_cache.gd','ui/header_simple_cache.gd'):
+    shutil.copy2(QUALIFIED/name,PROJECT/name)
+assets=PROJECT/'assets';assets.mkdir(exist_ok=True)
+for source in (QUALIFIED/'assets').iterdir():
+    target=assets/source.name
+    if source.name!='garage':
+        if source.is_dir(): link(target,source)
+        else: shutil.copy2(source,target)
+        continue
+    target.mkdir(exist_ok=True)
+    for item in source.iterdir():
+        if item.name=='previews_v1':
+            shutil.copytree(ROOT/'game/assets/garage/previews_v1',target/item.name,dirs_exist_ok=True)
+        elif item.name.startswith('workshop_v1'):
+            shutil.copy2(ROOT/'game/assets/garage'/item.name,target/item.name)
+        elif item.is_dir(): link(target/item.name,item)
+        else: shutil.copy2(item,target/item.name)
+cache=PROJECT/'.godot';cache.mkdir(exist_ok=True)
+for name in ('global_script_class_cache.cfg','extension_list.cfg','uid_cache.bin'):
+    if (ROOT/'game/.godot'/name).exists(): shutil.copy2(ROOT/'game/.godot'/name,cache/name)
+link(cache/'imported',ROOT/'game/.godot/imported')
+for name in ('docs','native','scripts'): link(PROJECT.parent/name,ROOT/name)
+shutil.copy2(ROOT/'godot-version.txt',PROJECT.parent/'godot-version.txt')
+if links:
+    subprocess.run(['powershell','-NoProfile','-Command',
+      "$ErrorActionPreference='Stop'; foreach($item in (ConvertFrom-Json $env:BMT_GAIN_LINKS)) { New-Item -ItemType Junction -Path $item.link -Target $item.target | Out-Null }"],
+      env=dict(os.environ,BMT_GAIN_LINKS=json.dumps(links)),check=True)
+# One shared project and renderer cache for all variants. This probe has no
+# Garage/vehicle references before the measured navigation.
+probe=(ROOT/'game/tests/profile_garage_fast_entry.gd').read_text()
+needle='\tvar base: Script=load("res://vehicle/modular_car_base.gd")'
+extra='''\tstudio.invalidate_render();studio.reflections.request_draw()
+\tfor _draw: int in range(2):
+\t\tawait process_frame
+\t\tawait RenderingServer.frame_post_draw
+\treport.main_primitives=studio.showroom_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME)
+\treport.main_draws=studio.showroom_viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_DRAW_CALLS_IN_FRAME)
+\treport.reflection_primitives=[]
+\tfor capture: SubViewport in studio.reflections.views:
+\t\treport.reflection_primitives.append(capture.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE,Viewport.RENDER_INFO_PRIMITIVES_IN_FRAME))
+\tvar count: int=0
+\tfor part: MeshInstance3D in studio.car.find_children("*","MeshInstance3D",true,false):
+\t\tif part.mesh!=null and part.cast_shadow!=GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: count+=part.mesh.get_faces().size()/3
+\treport.car_triangles=count
+'''
+assert needle in probe
+(WORK/'profile.gd').write_text(probe.replace(needle,extra+needle))
+print('Private benchmark project ready; qualified car data retained; production files unchanged')

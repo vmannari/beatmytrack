@@ -1,0 +1,43 @@
+from pathlib import Path
+import hashlib
+import json
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+manifest=json.loads((ROOT/'game/assets/garage/workshop_v1.provenance.json').read_text())
+def room_inputs():
+    result={p:hashlib.sha256((ROOT/'game'/p).read_bytes()).hexdigest() for p in manifest['sources']}
+    for p in ('assets/garage/workshop_v1.scn','assets/garage/workshop_v1.provenance.json'):
+        result[p]=hashlib.sha256((ROOT/'game'/p).read_bytes()).hexdigest()
+    return result
+before=room_inputs()
+cases=[('cleanup','res://tests/test_garage_mesh_cleanup.gd','gl_compatibility',True,0,[]),
+       ('prior-detail-policy','res://tests/test_garage_prop_detail.gd','gl_compatibility',True,1,[]),
+       ('old-room-control','res://tests/test_garage_environment_budget.gd','gl_compatibility',True,1,
+        ['--candidate-room=res://../build/garage-25-2026-11-15/before/workshop_v1.scn']),
+       ('playlist','res://tests/test_record_playlist.gd','gl_compatibility',True,0,[])]
+for renderer in ('gl_compatibility','mobile'):
+    for label,script in [('capture','res://tests/test_garage_first_capture.gd'),
+      ('reflections','res://tests/test_garage_opening_reflections.gd'),
+      ('tools','res://tests/test_garage_opening_tools.gd'),
+      ('app','res://../build/garage-fast-entry-2026-11-14/live_entry_foreground.gd')]:
+        cases.append((label+'-'+renderer,script,renderer,False,0,[]))
+cases += [('parser','res://tests/check_model_refinement_parse.gd','gl_compatibility',True,0,[]),
+          ('prepared','res://tests/check_prepared_assets.gd','gl_compatibility',True,0,[])]
+rows=[]
+for name,script,renderer,headless,expected,options in cases:
+    command=[sys.executable,'scripts/run_garage_25.py',name,'--script',script,'--renderer',renderer]
+    if headless: command.append('--headless')
+    command+=options
+    result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    log=(WORK/name/'run.log').read_text()
+    errors=[line for line in log.splitlines() if line.startswith(('ERROR:','SCRIPT ERROR:'))]
+    print(name,result.returncode,log[-240:],flush=True)
+    rows.append(dict(name=name,exit_code=result.returncode,expected_exit_code=expected,errors=errors))
+    (WORK/'verification.json').write_text(json.dumps(rows,indent=2))
+after=room_inputs()
+changed=[p for p in before if before[p]!=after[p]]
+(WORK/'room-fence.json').write_text(json.dumps(dict(input_count=len(before),changed_inputs=changed,source_sha256=after),indent=2))
+assert not changed,changed

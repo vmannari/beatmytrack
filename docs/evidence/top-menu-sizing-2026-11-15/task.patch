@@ -1,0 +1,286 @@
+--- a/game/ui/garage_header.gd
++++ b/game/ui/garage_header.gd
+@@ -3,6 +3,8 @@
+ var app: Node
+ var _nav: HBoxContainer
+ var _amount: Label
++const CONTROL_HEIGHT: int = 56
++const BUTTON_PADDING_Y: int = 10
+ 
+ class Coin extends Control:
+ 	func _init() -> void:
+@@ -63,8 +65,10 @@
+ 		margin.add_theme_constant_override("margin_bottom",18)
+ 		margin.add_theme_constant_override("margin_left",16)
+ 	var brand: Control = _nav.get_child(0)
+-	brand.custom_minimum_size = Vector2(136 if compact else 196,52)
++	brand.custom_minimum_size = Vector2(136 if compact else 196,CONTROL_HEIGHT)
++	brand.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	var tabs: Control = app.root_ui.find_child("MenuNavigation",true,false)
++	tabs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	for tab: Button in tabs.get_children():
+ 		var id: String = str(tab.name).trim_prefix("Tab_")
+ 		var selected: bool = id == app.screen or (id == "tracks" and app.screen in ["rivalry","daily","challenges","challenge_create"]) or (id == "create" and app.screen in ["biome","drafts"])
+@@ -80,21 +84,40 @@
+ 			style.shadow_offset = Vector2(0,2)
+ 		tab.add_theme_stylebox_override("normal",style)
+ 		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
++		_size_button(tab)
+ 	var account: Button = app.account_button
+-	account.custom_minimum_size = Vector2(174 if compact else 210,52)
+-	for state: String in ["normal","hover","pressed","focus"]:
++	account.custom_minimum_size = Vector2(174 if compact else 210,CONTROL_HEIGHT)
++	account.clip_text = true
++	account.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	account.tooltip_text = GameText.message("Profile")+"\n"+account.text if account.text != "Guest" else GameText.message("Profile")
++	for state: String in ["normal","hover","pressed","disabled","focus"]:
+ 		var style: StyleBoxFlat = account.get_theme_stylebox(state).duplicate()
+ 		style.content_margin_left = 88 if compact else 104
+ 		style.content_margin_right = 12
+ 		if state == "normal": style.bg_color = Color(0.04,0.08,0.10,0.55)
+ 		account.add_theme_stylebox_override(state,style)
++	_size_button(account)
+ 	var picture: Control = account.get_node_or_null("MenuProfileCar")
+ 	if picture != null:
+ 		picture.offset_right = 78 if compact else 94
+-		picture.offset_top = -24 if compact else -28
+-		picture.offset_bottom = 24 if compact else 28
++		picture.offset_top = -24
++		picture.offset_bottom = 24
+ 	var picker: Control = account.get_node_or_null("MenuCarPicker")
+ 	if picker != null: picker.offset_right = 84 if compact else 100
+ 	var settings: Button = app.root_ui.find_child("MenuSettings",true,false)
+ 	settings.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT))
+-	settings.custom_minimum_size = Vector2(52,52)
++	settings.custom_minimum_size = Vector2(CONTROL_HEIGHT,CONTROL_HEIGHT)
++	_size_button(settings)
++
++func _size_button(button: Button) -> void:
++	button.custom_minimum_size.y = CONTROL_HEIGHT
++	button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	# Font padding otherwise makes a nominal 64px tab render at 66px.
++	# Match all interaction states so hovering cannot change text placement.
++	for state: String in ["normal","hover","pressed","disabled","focus"]:
++		var source: StyleBox = button.get_theme_stylebox(state)
++		if not source is StyleBoxFlat: continue
++		var style: StyleBoxFlat = source.duplicate()
++		style.content_margin_top = BUTTON_PADDING_Y
++		style.content_margin_bottom = BUTTON_PADDING_Y
++		button.add_theme_stylebox_override(state,style)
+--- a/game/tests/test_shared_menu_header.gd
++++ b/game/tests/test_shared_menu_header.gd
+@@ -4,6 +4,7 @@
+ var failures: int = 0
+ var app: Node
+ var output: String
++var header_measurements: Array[Dictionary] = []
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -20,6 +21,10 @@
+ func check_header(selected: String, caption: String) -> void:
+ 	var header: Control = app.root_ui.find_child("MenuHeader",true,false)
+ 	var wallet: Control = header.get_node("GarageHeaderWallet")
++	var profile_rect: Rect2 = app.account_button.get_global_rect()
++	var gear_rect: Rect2 = header.get_node("MenuSettings").get_global_rect()
++	check(is_equal_approx(profile_rect.size.y,gear_rect.size.y),"profile and Settings share a height "+caption)
++	check(absf(profile_rect.get_center().y-wallet.get_global_rect().get_center().y) <= 1,"coins align with account centre "+caption)
+ 	check(wallet.is_visible_in_tree(),"coin balance remains visible "+caption)
+ 	check(header.get_global_rect().end.x <= root.size.x+1,"complete header fits viewport "+caption)
+ 	if header.get_global_rect().end.x > root.size.x+1:
+@@ -37,13 +42,20 @@
+ 		check((style.bg_color != Color.TRANSPARENT) == active,"only selected navigation button is filled "+caption+"/"+tab.name)
+ 		check(tab.get_theme_color("font_color") == (MenuStyle.ACCENT if active else MenuStyle.MUTED),"tab colour follows page "+caption+"/"+tab.name)
+ 		check(tab.size.y >= 52,"tab touch target "+caption+"/"+tab.name)
++		check(is_equal_approx(tab.size.y,profile_rect.size.y),"navigation matches profile height "+caption+"/"+tab.name)
++		check(absf(tab.get_global_rect().get_center().y-gear_rect.get_center().y) <= 1,"navigation aligns with Settings centre "+caption+"/"+tab.name)
+ 	check(app.account_button.get_node("MenuProfileCar").get_global_rect().encloses(app.account_button.get_node("MenuProfileCar").preview.get_global_rect()),"profile car stays inside slot "+caption)
+ 	check(app.account_button.get_node("MenuCarPicker").get_global_rect().end.x <= app.account_button.get_global_rect().end.x,"car selector fits account "+caption)
+ 	if is_instance_valid(app.menu_body_slot):
+ 		check(app.menu_body_slot.get_global_rect().position.y >= header.get_global_rect().end.y,"page starts below shared menu "+caption)
++	header_measurements.append({"caption":caption,"header":var_to_str(header.get_global_rect()),"tab_height":header.get_node("MenuNavigation").get_child(0).size.y,"profile":var_to_str(profile_rect),"settings":var_to_str(gear_rect),"wallet":var_to_str(wallet.get_global_rect())})
+ 
+ func capture(label: String) -> void:
+ 	if DisplayServer.get_name() == "headless": return
++	var motion := InputEventMouseMotion.new()
++	motion.position = Vector2(2,root.size.y-2)
++	root.push_input(motion,true)
++	await settle(2)
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
+ 
+ func run() -> void:
+@@ -124,6 +136,35 @@
+ 	TranslationServer.set_locale("en")
+ 	GameFonts.configure("en")
+ 	GameText.refresh(self)
++	# Stress a long driver name and grouped balance without losing header actions.
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		app._show_screen("tracks")
++		app._finish_menu_page_slide()
++		var name: String = "LongDriverName_123456789012345678901234567"
++		GameText.user_text(app.account_button)
++		app.account_button.text = name
++		var wallet: Control = app.root_ui.find_child("GarageHeaderWallet",true,false)
++		wallet._amount.text = "1,234,567"
++		wallet.refresh()
++		await settle()
++		check_header("tracks","long name and balance "+str(dimensions.x))
++		check(app.account_button.tooltip_text.contains(name),"complete driver name remains available "+str(dimensions.x))
++		check(app.account_button.get_global_rect().encloses(app.account_button.get_node("MenuProfileCar").get_global_rect()),"profile car clears button edges "+str(dimensions.x))
++		if dimensions.x == 960:
++			await capture("long-name-balance-960")
++			for locale: String in ["de","fr","es","fi","ja","ko"]:
++				GameFonts.configure(locale)
++				TranslationServer.set_locale(locale)
++				GameText.refresh(self)
++				await settle(3)
++				check_header("tracks","long name and balance compact "+locale)
++				if locale == "de": await capture("long-name-balance-de-960")
++			TranslationServer.set_locale("en")
++			GameFonts.configure("en")
++			GameText.refresh(self)
++	FileAccess.open(output.path_join("header-measurements.json"),FileAccess.WRITE).store_string(JSON.stringify(header_measurements,"\t"))
+ 	app.queue_free()
+ 	await settle(20)
+ 	print("SHARED_MENU_HEADER ",checks," checks, ",failures," failures")
+--- /dev/null
++++ b/game/tests/review_menu_header.gd
+@@ -0,0 +1,92 @@
++extends "res://tests/test_shared_menu_header.gd"
++## MHR01: compare real header geometry before choosing a shared control height.
++var measurements: Array[Dictionary] = []
++
++func set_height(height: int) -> void:
++	var header: Control = app.root_ui.find_child("MenuHeader",true,false)
++	var brand: Control = header.get_child(0)
++	brand.custom_minimum_size.y = height
++	brand.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var tabs: Control = header.get_node("MenuNavigation")
++	tabs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	var buttons: Array[Button] = []
++	for tab: Button in tabs.get_children(): buttons.append(tab)
++	buttons.append(app.account_button)
++	buttons.append(header.get_node("MenuSettings"))
++	for button: Button in buttons:
++		button.custom_minimum_size.y = height
++		button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		for state: String in ["normal","hover","pressed","disabled","focus"]:
++			var source: StyleBox = button.get_theme_stylebox(state)
++			if not source is StyleBoxFlat: continue
++			var style: StyleBoxFlat = source.duplicate()
++			style.content_margin_top = (height-36)*0.5
++			style.content_margin_bottom = (height-36)*0.5
++			button.add_theme_stylebox_override(state,style)
++	header.get_node("MenuSettings").custom_minimum_size.x = height
++	var picture: Control = app.account_button.get_node("MenuProfileCar")
++	picture.offset_top = -minf(24,height*0.5-4)
++	picture.offset_bottom = minf(24,height*0.5-4)
++
++func record(label: String) -> void:
++	var header: Control = app.root_ui.find_child("MenuHeader",true,false)
++	var nodes: Dictionary = {"header":header,"logo":header.get_child(0),"account":app.account_button,"settings":header.get_node("MenuSettings"),"wallet":header.get_node("GarageHeaderWallet"),"car":app.account_button.get_node("MenuProfileCar")}
++	for tab: Button in header.get_node("MenuNavigation").get_children(): nodes[tab.name] = tab
++	var item: Dictionary = {"label":label,"viewport":var_to_str(root.size),"components":{}}
++	for key: String in nodes:
++		var control: Control = nodes[key]
++		var rect: Rect2 = control.get_global_rect()
++		item.components[key] = {"x":rect.position.x,"y":rect.position.y,"width":rect.size.x,"height":rect.size.y,"center_y":rect.get_center().y}
++	measurements.append(item)
++	if DisplayServer.get_name() != "headless":
++		var picture: Image = root.get_texture().get_image().get_region(Rect2i(0,0,root.size.x,110))
++		check(picture.save_png(output.path_join(label+".png")) == OK,"header comparison "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = "res://../docs/evidence/top-menu-sizing-2026-11-15/review"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var folder: String = "user://menu-header-review-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings = {"music_enabled":false,"selected_car":"compact","tutorial_complete":true}
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.race_area_mode = "free"
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		app._show_screen("tracks")
++		app._finish_menu_page_slide()
++		await settle(12)
++		record("before-"+str(dimensions.x))
++		for height: int in [52,56,60,64]:
++			set_height(height)
++			await settle(4)
++			var motion := InputEventMouseMotion.new()
++			motion.position = Vector2(2,root.size.y-2)
++			root.push_input(motion,true)
++			await settle(2)
++			check_header("tracks",str(height)+"px/"+str(dimensions.x))
++			record(str(height)+"px-"+str(dimensions.x))
++		if dimensions.x == 960:
++			var account_text: String = app.account_button.text
++			var wallet: Control = app.root_ui.find_child("GarageHeaderWallet",true,false)
++			app.account_button.text = "LongDriverName_123456789012345678901234567"
++			wallet._amount.text = "1,234,567"
++			set_height(56)
++			await settle(4)
++			record("long-name-balance-960")
++			app.account_button.text = account_text
++			wallet._balance()
++	FileAccess.open(output.path_join("measurements.json"),FileAccess.WRITE).store_string(JSON.stringify(measurements,"\t"))
++	app.queue_free()
++	await settle(20)
++	print("MENU_HEADER_HEIGHT_REVIEW ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- a/scripts/run_menu_header.py
++++ b/scripts/run_menu_header.py
+@@ -7,7 +7,7 @@
+ import time
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-OUT = ROOT / "docs/evidence/shared-menu-header-2026-11-15"
++OUT = Path(os.environ.get("BMT_MENU_HEADER_EVIDENCE", ROOT / "docs/evidence/shared-menu-header-2026-11-15"))
+ name = sys.argv[1] if len(sys.argv) > 1 else "headless"
+ script = sys.argv[2] if len(sys.argv) > 2 else "res://tests/test_shared_menu_header.gd"
+ OUT.mkdir(parents=True, exist_ok=True)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- TOP-MENU-SIZING-20261115 -->
++## Top-menu controls share a reviewed 56px height (2026-11-15)
++MHR01-MHR03: native 52/56/60/64px comparisons select 56px, replacing actual 66px navigation/58px profile/52px Settings heights. Shared padding preserves filled styling and action routing; the car is 48px with 4px vertical inset, and logo/coins remain centred. Long names ellipsize with the full name in the Profile tooltip; a 1,234,567 balance and six compact translations retain every header control. Header1904/0 headless and1918/0 each desktop renderer, 52 measured states each and parser579/0 pass; 28 final views retained. The comparison run retains a known two-object/one-resource shutdown diagnostic; raw-portrait warnings remain in Mobile. No phone/export/backend/deployment/owner-save/process test or task staging. [Requirements, comparisons, commands, checkpoint and limits](docs/evidence/top-menu-sizing-2026-11-15/report.json); [final view](docs/evidence/top-menu-sizing-2026-11-15/gl_compatibility-final/tracks-1280.png). Reload/owner appearance and physical-device acceptance remain.
++<!-- /TOP-MENU-SIZING-20261115 -->
++
+ <!-- CHALLENGER-SIDE-PROPORTIONS-20261115 -->
+ ## Challenger marked shoulder and nose proportions corrected (2026-11-15)
+ CSP01-CSP05: owner rejects remaining reflection scallops and excess nose length. C2 side fit, explicit longitudinal rows through a 9 mm shoulder transition and coverage-proven return removal improve native contour ripple 91.1%/90.0%. A common 140 mm front shortening includes optics/bonnet/markings/stock aero and fitted attachment coordinates; wheels, handling, glazing and roof retained. Raw 49958/83940, production 45198; counts decrease. Native 54/0, allocation17/0, contours172/0, fitted/all-kit/physics/wash/driving/parser, complete prepared551-resource2267/0 and desktop renderer/App checks pass. Dependent assets actually rebaked; four-source exact checkpoint, concurrent work/index preserved. [Before/after, implementation, commands and limits](docs/CHALLENGER_SIDE_AND_PROPORTIONS_2026_11_15.md). Reload/owner/device acceptance remains; no phone/FPS/AAA/export/backend/deployment/owner-save/process or shared-index action. Standard retention; no task pin.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- TOP-MENU-SIZING-20261115 -->
++## Top-menu controls share a reviewed 56px height (2026-11-15)
++MHR01-MHR03: native 52/56/60/64px comparisons select 56px, replacing actual 66px navigation/58px profile/52px Settings heights. Shared padding preserves filled styling and action routing; the car is 48px with 4px vertical inset, and logo/coins remain centred. Long names ellipsize with the full name in the Profile tooltip; a 1,234,567 balance and six compact translations retain every header control. Header1904/0 headless and1918/0 each desktop renderer, 52 measured states each and parser579/0 pass; 28 final views retained. The comparison run retains a known two-object/one-resource shutdown diagnostic; raw-portrait warnings remain in Mobile. No phone/export/backend/deployment/owner-save/process test or task staging. [Requirements, comparisons, commands, checkpoint and limits](docs/evidence/top-menu-sizing-2026-11-15/report.json); [final view](docs/evidence/top-menu-sizing-2026-11-15/gl_compatibility-final/tracks-1280.png). Reload/owner appearance and physical-device acceptance remain.
++<!-- /TOP-MENU-SIZING-20261115 -->
++
+ <!-- CHALLENGER-SIDE-PROPORTIONS-20261115 -->
+ ## Challenger marked shoulder and nose proportions corrected (2026-11-15)
+ CSP01-CSP05: owner rejects remaining reflection scallops and excess nose length. C2 side fit, explicit longitudinal rows through a 9 mm shoulder transition and coverage-proven return removal improve native contour ripple 91.1%/90.0%. A common 140 mm front shortening includes optics/bonnet/markings/stock aero and fitted attachment coordinates; wheels, handling, glazing and roof retained. Raw 49958/83940, production 45198; counts decrease. Native 54/0, allocation17/0, contours172/0, fitted/all-kit/physics/wash/driving/parser, complete prepared551-resource2267/0 and desktop renderer/App checks pass. Dependent assets actually rebaked; four-source exact checkpoint, concurrent work/index preserved. [Before/after, implementation, commands and limits](docs/CHALLENGER_SIDE_AND_PROPORTIONS_2026_11_15.md). Reload/owner/device acceptance remains; no phone/FPS/AAA/export/backend/deployment/owner-save/process or shared-index action. Standard retention; no task pin.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- TOP-MENU-SIZING-20261115 -->
++## Top-menu controls share a reviewed 56px height (2026-11-15)
++MHR01-MHR03: native 52/56/60/64px comparisons select 56px, replacing actual 66px navigation/58px profile/52px Settings heights. Shared padding preserves filled styling and action routing; the car is 48px with 4px vertical inset, and logo/coins remain centred. Long names ellipsize with the full name in the Profile tooltip; a 1,234,567 balance and six compact translations retain every header control. Header1904/0 headless and1918/0 each desktop renderer, 52 measured states each and parser579/0 pass; 28 final views retained. The comparison run retains a known two-object/one-resource shutdown diagnostic; raw-portrait warnings remain in Mobile. No phone/export/backend/deployment/owner-save/process test or task staging. [Requirements, comparisons, commands, checkpoint and limits](evidence/top-menu-sizing-2026-11-15/report.json); [final view](evidence/top-menu-sizing-2026-11-15/gl_compatibility-final/tracks-1280.png). Reload/owner appearance and physical-device acceptance remain.
++<!-- /TOP-MENU-SIZING-20261115 -->
++
+ <!-- CHALLENGER-SIDE-PROPORTIONS-20261115 -->
+ ## Challenger marked shoulder and nose proportions corrected (2026-11-15)
+ CSP01-CSP05: owner rejects remaining reflection scallops and excess nose length. C2 side fit, explicit longitudinal rows through a 9 mm shoulder transition and coverage-proven return removal improve native contour ripple 91.1%/90.0%. A common 140 mm front shortening includes optics/bonnet/markings/stock aero and fitted attachment coordinates; wheels, handling, glazing and roof retained. Raw 49958/83940, production 45198; counts decrease. Native 54/0, allocation17/0, contours172/0, fitted/all-kit/physics/wash/driving/parser, complete prepared551-resource2267/0 and desktop renderer/App checks pass. Dependent assets actually rebaked; four-source exact checkpoint, concurrent work/index preserved. [Before/after, implementation, commands and limits](CHALLENGER_SIDE_AND_PROPORTIONS_2026_11_15.md). Reload/owner/device acceptance remains; no phone/FPS/AAA/export/backend/deployment/owner-save/process or shared-index action. Standard retention; no task pin.

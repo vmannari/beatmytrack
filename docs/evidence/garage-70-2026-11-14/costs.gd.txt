@@ -1,0 +1,22 @@
+extends SceneTree
+func _initialize() -> void:
+	var output: String=""
+	for arg: String in OS.get_cmdline_user_args():
+		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
+	var report: Dictionary={}
+	for label: String in ["before","after"]:
+		var path: String="res://../build/garage-70-2026-11-14/before/workshop_v1.scn" if label=="before" else GarageEnvironment.PREPARED_ARCHITECTURE
+		var room: Node=load(path).instantiate()
+		var unique: Dictionary={}
+		var bytes: int=0
+		var instances: int=0
+		for part: MeshInstance3D in room.find_children("*","MeshInstance3D",true,false):
+			instances+=1
+			if not unique.has(part.mesh):
+				unique[part.mesh]=true
+				if part.mesh is ArrayMesh: bytes+=preload("res://tests/support/car_model_buffers.gd").payload(part.mesh)
+		report[label]={"instances":instances,"unique_meshes":unique.size(),"arraymesh_payload":bytes,"scene_bytes":FileAccess.get_file_as_bytes(path).size()}
+		room.free()
+	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
+	print("GARAGE70_COSTS ",JSON.stringify(report))
+	quit()

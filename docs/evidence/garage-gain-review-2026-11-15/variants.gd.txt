@@ -1,0 +1,86 @@
+extends SceneTree
+const Cleanup=preload("res://ui/garage_mesh_cleanup.gd")
+func decode(bytes: PackedByteArray,count: int) -> PackedInt32Array:
+	var stride: int=2 if count<=65536 else 4
+	var result:=PackedInt32Array()
+	for at: int in range(0,bytes.size(),stride): result.append(bytes.decode_u16(at) if stride==2 else bytes.decode_u32(at))
+	return result
+func encode(indices: PackedInt32Array,remap: PackedInt32Array,count: int) -> PackedByteArray:
+	var stride: int=2 if count<=65536 else 4
+	var result:=PackedByteArray();result.resize(indices.size()*stride)
+	for at: int in range(indices.size()):
+		if stride==2: result.encode_u16(at*stride,remap[indices[at]])
+		else: result.encode_u32(at*stride,remap[indices[at]])
+	return result
+func reduced(mesh: ArrayMesh) -> ArrayMesh:
+	var packets: Array=mesh.get("_surfaces").duplicate(true)
+	for packet: Dictionary in packets:
+		var count: int=packet.vertex_count
+		var levels: Array=packet.get("lods",[])
+		var original: PackedInt32Array=decode(packet.index_data,count)
+		var master: PackedInt32Array=original
+		var size: float=0
+		var best: float=0.5
+		for at: int in range(0,levels.size(),2):
+			var candidate: PackedInt32Array=decode(levels[at+1],count)
+			var error: float=absf(float(candidate.size())/original.size()-0.5)
+			if error<best:
+				master=candidate;size=float(levels[at]);best=error
+		if size==0: continue
+		var union: PackedInt32Array=master.duplicate()
+		var retained: Array=[]
+		for at: int in range(0,levels.size(),2):
+			if float(levels[at])<=size: continue
+			var indices: PackedInt32Array=decode(levels[at+1],count)
+			retained.append([float(levels[at]),indices]);union.append_array(indices)
+		var used:=PackedByteArray();used.resize(count)
+		for index: int in union: used[index]=1
+		var remap:=PackedInt32Array();remap.resize(count)
+		var next: int=0
+		for at: int in range(count):
+			if used[at]: remap[at]=next;next+=1
+		Cleanup.compact(packet,union)
+		packet.index_data=encode(master,remap,next);packet.index_count=master.size()
+		packet.lods=[]
+		for level: Array in retained:
+			packet.lods.append(level[0]);packet.lods.append(encode(level[1],remap,next))
+	var result:=ArrayMesh.new();result.set("_surfaces",packets)
+	result.custom_aabb=mesh.custom_aabb;result.shadow_mesh=mesh.shadow_mesh
+	return result
+func properties(source: ArrayMesh,target: ArrayMesh) -> void:
+	target.custom_aabb=source.custom_aabb;target.shadow_mesh=source.shadow_mesh
+	target.lightmap_size_hint=source.lightmap_size_hint
+	target.resource_name=source.resource_name
+	target.resource_local_to_scene=source.resource_local_to_scene
+	target.resource_scene_unique_id=source.resource_scene_unique_id
+	for key: StringName in source.get_meta_list(): target.set_meta(key,source.get_meta(key))
+func _initialize() -> void:
+	var output: String=ProjectSettings.globalize_path("res://").path_join("../../control-variants").simplify_path()
+	DirAccess.make_dir_recursive_absolute(output)
+	var report: Dictionary={}
+	for variant: String in ["current","repack","half_controlled"]:
+		var room: Node=load("res://assets/garage/workshop_v1.scn").instantiate()
+		var total: int=0
+		var instances: int=0
+		var cache: Dictionary={}
+		for part: MeshInstance3D in room.find_children("*","MeshInstance3D",true,false):
+			if variant!="current" and part.mesh is ArrayMesh:
+				var source: ArrayMesh=part.mesh
+				if not cache.has(source):
+					var next: ArrayMesh
+					if variant=="repack":
+						next=ArrayMesh.new();next.set("_surfaces",source.get("_surfaces").duplicate(true))
+						for surface: int in range(source.get_surface_count()): assert(next.surface_get_arrays(surface)==source.surface_get_arrays(surface))
+					else: next=reduced(source)
+					properties(source,next);cache[source]=next
+				part.mesh=cache[source]
+			if part.mesh!=null: total+=part.mesh.get_faces().size()/3
+			instances+=1
+		var packed:=PackedScene.new();assert(packed.pack(room)==OK)
+		var path: String=output.path_join(variant+".scn")
+		assert(ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)==OK)
+		report[variant]={"room_triangles":total,"default_environment_triangles":total+1830,"instances":instances,"bytes":FileAccess.get_file_as_bytes(path).size()}
+		room.free()
+	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
+	print("GARAGE_GAIN_VARIANTS ",JSON.stringify(report))
+	quit()

@@ -186,8 +186,7 @@ func run() -> void:
 		check(page.kit_shelf.find_child("CosmeticDetailPhoto",true,false)==null and page.kit_shelf.find_children("*","SubViewport",true,false).is_empty() and page.kit_photos==null,"Garage view replaces the separate detail photo")
 		check(page.kit_scroll.size.y > page.kit_shelf.size.y*0.45,"parts use most of the Customise card")
 		check(page.kit_cards.columns == 1 and page.kit_cards.get_child(0).size.y >= 82,"full-width options have generous touch targets")
-		check(page._compare_button.visible and not page._compare_button.disabled,"preview has a hold comparison action")
-		check(page._compare_button.size.x>=172 and page._compare_button.size.y>=48,"comparison retains its touch target")
+		check(page.find_child("GarageHoldToCompare",true,false)==null,"Garage omits the hold comparison control")
 		await capture("kits-"+str(dimensions.x))
 		await gesture(page.kit_scroll,shop)
 		var last: Control = page.kit_cards.get_child(page.kit_cards.get_child_count()-1)
@@ -269,7 +268,6 @@ func reference_states() -> void:
 	check(page.kit_cards.get_child(0).checkmark.visible and not page.kit_cards.get_child(1).checkmark.visible,"equipped mark stays on saved option during preview")
 	check(page.kit_cards.get_child(1).status.text=="PREVIEWING" and page.kit_shelf.counter.text=="02 / 10","selected preview and actual catalogue position are explicit")
 	check(page.kit_shelf.heading.text=="HOOD" and page._part_indicator.visible,"heading and modified-part indicator identify the category")
-	await compare_cases(shop)
 	page._cancel_cosmetic_preview()
 	var green: Dictionary = paint.duplicate(true)
 	green.colors.body = "397654"
@@ -290,7 +288,6 @@ func reference_states() -> void:
 		page._preview_kit("hood","louvres")
 		await settle()
 		check(page.kit_shelf.equip.visible and page.kit_shelf.equip.text.contains("750"),"unowned preview retains explicit priced equip")
-		check(page.preview.get_global_rect().encloses(page._compare_button.get_global_rect()),"comparison remains inside the Garage view")
 		await capture_panel("panel-unowned-"+str(dimensions.x))
 		page._preview_kit("hood","scoop")
 		await settle()
@@ -298,76 +295,6 @@ func reference_states() -> void:
 		await capture_panel("panel-owned-"+str(dimensions.x))
 	scene.queue_free()
 	await process_frame
-
-func compare_input(touch: bool, pressed: bool, point: Vector2, canceled: bool = false) -> void:
-	if touch:
-		var event := InputEventScreenTouch.new()
-		event.index = 12
-		event.position = point
-		event.pressed = pressed
-		event.canceled = canceled
-		root.push_input(event,true)
-	else:
-		var event := InputEventMouseButton.new()
-		event.button_index = MOUSE_BUTTON_LEFT
-		event.position = point
-		event.pressed = pressed
-		root.push_input(event,true)
-	await process_frame
-
-func compare_cases(shop: Shop) -> void:
-	var saved: Dictionary = page.records.settings.duplicate(true)
-	var preview: Dictionary = page._cosmetic_preview.duplicate(true)
-	var camera: Transform3D = page.showroom.camera.transform
-	var purchases: int = shop.purchases
-	var point: Vector2 = page._compare_button.get_global_rect().get_center()
-	for touch: bool in [false,true]:
-		await compare_input(touch,true,point)
-		check(page.showroom.customisation==page.kit_draft and not page._compare_parts.is_empty(),"holding compares equipped part through real pointer input")
-		check(page._cosmetic_preview==preview and page.records.settings==saved and shop.purchases==purchases,"comparison does not select, save or buy")
-		check(page.showroom.camera.transform==camera and not page._part_indicator.visible,"comparison keeps the camera and hides the preview callout")
-		await capture("hold-compare-"+str(touch))
-		await compare_input(touch,false,Vector2(3,3))
-		check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty() and page._part_indicator.visible,"release outside returns to the exact selected preview")
-	page._compare_button.grab_focus()
-	for pressed: bool in [true,false]:
-		var key := InputEventKey.new()
-		key.keycode = KEY_SPACE
-		key.physical_keycode = KEY_SPACE
-		key.pressed = pressed
-		root.push_input(key,true)
-		await process_frame
-		check(page.showroom.customisation==page.kit_draft if pressed else page.showroom.customisation.hood=="louvres","keyboard compare is momentary")
-	await compare_input(true,true,point)
-	await compare_input(true,false,point,true)
-	check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty(),"canceled touch restores preview")
-	await compare_input(false,true,point)
-	page._compare_button.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
-	check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty(),"application focus loss releases comparison")
-	await compare_input(false,false,point)
-	await compare_input(true,true,point)
-	page._preview_kit("hood","dome")
-	await compare_input(true,false,point)
-	check(page.showroom.customisation.hood=="dome" and page._compare_parts.is_empty(),"new selection during hold cannot restore stale preview")
-	await settle()
-	await compare_input(true,true,point)
-	page._show_section("care")
-	await compare_input(true,false,point)
-	check(page.showroom.customisation==page.kit_draft and page._cosmetic_preview.is_empty() and not page._compare_button.visible,"navigation ends comparison without restoring a preview")
-	page._show_section("tuning")
-	page._preview_kit("hood","louvres")
-	await settle()
-	point = page._compare_button.get_global_rect().get_center()
-	await compare_input(true,true,point)
-	shop.scope = "fixture/bob"
-	shop.changed.emit()
-	await compare_input(true,false,point)
-	check(page.showroom.customisation==page.kit_draft and page._cosmetic_preview.is_empty(),"account switch during compare cannot restore or equip old account preview")
-	shop.scope = "fixture/alice"
-	shop.changed.emit()
-	page._preview_kit("hood","louvres")
-	await settle()
-	check(page.records.settings==saved and shop.purchases==purchases,"all compare transitions retain saved state and purchase count")
 
 func capture_panel(label: String) -> void:
 	if DisplayServer.get_name()=="headless": return

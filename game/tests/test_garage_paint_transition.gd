@@ -138,10 +138,6 @@ func run() -> void:
 	draws = page.showroom.render_requests
 	for tick: int in range(8): await process_frame
 	check(page.showroom.render_requests==draws,"settled paint returns to retained rendering")
-	page._set_part_compare(true)
-	check(page.showroom.paint_transition==null and page.showroom.livery==page.draft,"hold compare shows exact equipped paint immediately")
-	page._set_part_compare(false)
-	check(page.showroom.livery==page.livery_menu.option_livery(4),"compare release restores current preview")
 	page._preview_livery(5)
 	freeze()
 	page._show_section("care")

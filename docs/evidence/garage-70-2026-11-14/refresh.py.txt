@@ -1,0 +1,101 @@
+"""Rebuild current car consumers privately; publish only a qualified stable set."""
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+sys.path.insert(0,str(ROOT/'scripts'))
+import refresh_garage_fast_entry as prior
+prior.WORK=WORK
+prior.PROJECT=WORK/'cache/game'
+PROJECT=prior.PROJECT
+
+def sources():
+    result=prior.sources()
+    for folder in ('game/assets/fonts','game/assets/liveries','game/resources'):
+        for p in (ROOT/folder).rglob('*'):
+            relative=p.relative_to(ROOT).as_posix()
+            if p.is_file() and p.suffix not in ('.uid','.import') and prior.consumed(relative): result[relative]=prior.digest(p)
+    return result
+
+def outputs(game):
+    return {p.relative_to(game).as_posix():prior.digest(p) for folder in prior.OUTPUTS
+            for p in (game/folder).rglob('*') if p.is_file() and p.suffix in ('.scn','.png','.json')}
+
+def run(label,script,*options):
+    command=[sys.executable,'scripts/run_garage_70.py',label,'--project',str(PROJECT),'--script',script,*options]
+    process=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    errors=[line for line in (WORK/label/'run.log').read_text().splitlines() if line.startswith(('ERROR:','SCRIPT ERROR:'))]
+    print(label,process.returncode,'native errors',len(errors),flush=True)
+    assert process.returncode==0 and not errors,(label,errors,process.stdout[-2000:])
+
+def main():
+    resume='--resume' in sys.argv
+    if not resume:
+        before=sources();accepted=outputs(ROOT/'game')
+        (WORK/'cache-inputs.json').write_text(json.dumps(before,indent=2))
+        (WORK/'cache-accepted.json').write_text(json.dumps(accepted,indent=2))
+        prior.prepare();prior.freeze_inputs(before)
+        assert before==sources(),'Inputs changed while making the private snapshot'
+        first=prior.identity('cache-before')
+        run('cache-bases','res://tests/bake_modular_car_bases.gd','--headless')
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            jobs=[executor.submit(run,'cache-kits-'+car,'res://tests/bake_modular_car_kits.gd','--headless','--vehicle='+car)
+                  for car in ('compact','kart','forklift','electric','hovercraft','super_rally')]
+            for job in jobs: job.result()
+        run('cache-garage','res://tests/bake_garage_cars.gd','--headless')
+        run('cache-header','res://tests/bake_header_simple_compact.gd','--headless')
+    else:
+        before=json.loads((WORK/'cache-inputs.json').read_text())
+        accepted=json.loads((WORK/'cache-accepted.json').read_text())
+        first=json.loads((WORK/'cache-before-identity/client-build-identity.json').read_text(encoding='utf-8-sig'))
+    assert before==sources(),'Sources changed during private cache construction'
+    final=prior.identity('cache-after')
+    assert first['modular_car_sha256']==final['modular_car_sha256'],'Geometry keys changed'
+    run('cache-preflight','res://tests/check_prepared_assets.gd','--headless')
+    run('cache-pictures','res://../scripts/bake_garage_previews.gd','--output='+str(PROJECT/'assets/garage/previews_v1'))
+    import check_garage_previews as photos
+    photos.ROOT=PROJECT.parent
+    photos.check()
+    photo_sources=json.loads((PROJECT/'assets/garage/previews_v1/provenance.json').read_text())['sources']
+    assert all(prior.digest(ROOT/p)==h for p,h in photo_sources.items()),'Current catalogue sources changed'
+    assert before==sources(),'Sources changed before publication'
+    assert accepted==outputs(ROOT/'game'),'Another producer changed generated output; preserve it'
+    def normalized_project(p): return '\n'.join(line for line in p.read_text().splitlines() if not line.startswith('config/version='))
+    assert normalized_project(PROJECT/'project.godot')==normalized_project(ROOT/'game/project.godot')
+    candidate=outputs(PROJECT)
+    for p in ('core/build_identity.gd','project.godot'):
+        accepted[p]=prior.digest(ROOT/'game'/p)
+        candidate[p]=prior.digest(PROJECT/p)
+    changed=[p for p,h in candidate.items() if accepted.get(p)!=h]
+    for p in changed:
+        target=ROOT/'game'/p
+        if target.exists():
+            saved=WORK/'cache-publication-before'/p
+            saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,saved)
+    written=[]
+    try:
+        for p in sorted(changed,key=lambda p:p.endswith('provenance.json')):
+            target=ROOT/'game'/p
+            assert prior.digest(target)==accepted[p] if p in accepted else not target.exists(),p
+            temporary=target.with_name(target.name+'.garage70-publish')
+            shutil.copy2(PROJECT/p,temporary);os.replace(temporary,target);written.append(p)
+        assert before==sources(),'Sources changed during publication'
+        assert all(prior.digest(ROOT/p)==h for p,h in photo_sources.items()),'Catalogue sources changed during publication'
+        assert all(prior.digest(ROOT/'game'/p)==candidate[p] for p in changed)
+    except BaseException:
+        for p in reversed(written):
+            target=ROOT/'game'/p
+            if prior.digest(target)==candidate[p] and p in accepted: shutil.copy2(WORK/'cache-publication-before'/p,target)
+        raise
+    (WORK/'cache-publication.json').write_text(json.dumps(dict(input_count=len(before),source_fence=True,
+        changed=changed,published_hashes={p:candidate[p] for p in changed},geometry_keys=final['modular_car_sha256']),indent=2))
+    print('Published',len(changed),'qualified current cache assets',flush=True)
+
+if __name__=='__main__': main()

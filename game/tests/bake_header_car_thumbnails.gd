@@ -1,7 +1,7 @@
 extends SceneTree
 ## Offline asset build only. No studio is instantiated by the header at runtime.
-const Profile = preload("res://ui/profile_car.gd")
-const SIZE := Vector2i(176,112)
+const Renderer = preload("res://ui/header_icon_renderer.gd")
+const SIZE := preload("res://ui/header_car_icons.gd").SIZE
 
 func _initialize() -> void: run.call_deferred()
 
@@ -17,10 +17,15 @@ func run() -> void:
 	root.add_child(canvas)
 	var rows: Array[Dictionary] = []
 	for id: String in VehicleCatalog.IDS:
-		var view: Control = Profile.make_preview(id,VehicleLivery.defaults(id),VehicleCustomisation.defaults())
+		var requested: String = ""
+		for argument: String in OS.get_cmdline_user_args():
+			if argument.begins_with("--vehicle="): requested = argument.trim_prefix("--vehicle=")
+		if not requested.is_empty() and requested != id: continue
+		if id=="super_rally" and "--exclude-vehicle=super_rally" in OS.get_cmdline_user_args(): continue
+		var view: Control = Renderer.make_preview(id,VehicleLivery.defaults(id),VehicleCustomisation.defaults())
 		view.size = Vector2(SIZE)
 		canvas.add_child(view)
-		Profile.apply_presentation(view)
+		while not view.presentation_ready: await process_frame
 		for _frame: int in range(7):
 			await process_frame
 			await RenderingServer.frame_post_draw
@@ -37,8 +42,11 @@ func run() -> void:
 		rows.append({"vehicle":id,"path":path,"sha256":FileAccess.get_sha256(path),"bytes":FileAccess.get_file_as_bytes(path).size(),"visible_bounds":str(pixels.get_used_rect())})
 		view.queue_free()
 		await process_frame
-	var evidence := FileAccess.open("res://../docs/evidence/header-car-lightweight-2026-10-26/bake.json",FileAccess.WRITE)
-	evidence.store_string(JSON.stringify({"renderer":RenderingServer.get_current_rendering_method(),"size":str(SIZE),"appearance":"standard car; original profile studio","assets":rows},"\t"))
+	var receipt: String="res://../docs/evidence/header-car-lightweight-2026-10-26/bake.json"
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): receipt=argument.trim_prefix("--evidence-root=").path_join("header-defaults.json")
+	var evidence := FileAccess.open(receipt,FileAccess.WRITE)
+	evidence.store_string(JSON.stringify({"renderer":RenderingServer.get_current_rendering_method(),"size":str(SIZE),"appearance":"shared clean car; profile renderer","assets":rows},"\t"))
 	evidence.close()
 	canvas.queue_free()
 	await process_frame

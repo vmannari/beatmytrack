@@ -1,9 +1,9 @@
 extends RefCounted
 ## Header widgets only display textures. Equipped appearances are cached by App.
 const Build = preload("res://core/build_identity.gd")
-const VERSION: String = "header-equipped-simple-2"
+const VERSION: String = "shared-car-picture-512-v1"
 const CUSTOM_LIMIT: int = 14
-const SIZE := Vector2i(176,112)
+const SIZE := Vector2i(512,288)
 const DIRECTORY: String = "res://assets/menu/header_cars_v1/"
 static var images: Dictionary = {}
 static var texture_loads: int = 0
@@ -34,7 +34,8 @@ static func appearance_key(vehicle: String, records: LocalRecords) -> String:
 	if _visual_revision.is_empty():
 		var script: Script = Build
 		_visual_revision = _source_revision(script)
-	return JSON.stringify([VERSION,_visual_revision,RenderingServer.get_current_rendering_method(),records.path,vehicle,VehicleLivery.for_car(records.settings,vehicle),VehicleCustomisation.for_car(records.settings,vehicle)],"",true).sha256_text()
+	var picture_version: String = VERSION+"-kart-cloth-1" if vehicle == "kart" else VERSION
+	return JSON.stringify([picture_version,_visual_revision,RenderingServer.get_current_rendering_method(),records.path,vehicle,VehicleLivery.for_car(records.settings,vehicle),VehicleCustomisation.for_car(records.settings,vehicle)],"",true).sha256_text()
 
 static func _source_revision(script: Script) -> String:
 	var constants: Dictionary = script.get_script_constant_map()
@@ -43,6 +44,7 @@ static func _source_revision(script: Script) -> String:
 	return revision if revision.length() == 64 and revision.is_valid_hex_number() else fallback
 
 static func publish(key: String, pixels: Image) -> void:
+	if pixels == null or pixels.get_size() != SIZE: return
 	pixels.generate_mipmaps()
 	if customized.size() >= CUSTOM_LIMIT: customized.erase(customized.keys()[0])
 	customized[key] = ImageTexture.create_from_image(pixels)

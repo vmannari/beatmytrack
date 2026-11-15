@@ -59,7 +59,7 @@ func run() -> void:
 			check(not menu.find_child("NewsCarPhoto",true,false).visible,"stock photograph is hidden once the actual car is ready")
 			check(not menu.find_child("NewsCarLoading",true,false).visible,"preparation message clears when the car is ready")
 	check(menu.find_child("NewsPhotoFrame",true,false).get_theme_stylebox("panel") is StyleBoxEmpty,"picture has no border")
-	check(menu.find_child("NewsPhotoCaption",true,false).text == "Bob · Compact / 01","caption identifies the featured driver and car")
+	check(menu.find_child("NewsPhotoCaption",true,false).text == "Bob · Rally","caption identifies the featured driver and car")
 	check(menu.find_child("NewsArticle",true,false).get_theme_font_size("font_size") == 14,"article copy uses the smaller size")
 	check(backend.calls.is_empty(),"rendering the cached appearance needs no extra API requests")
 	var garage := GaragePage.new()
@@ -78,12 +78,17 @@ func run() -> void:
 	if DisplayServer.get_name() != "headless":
 		check(root.get_texture().get_image().save_png(output.path_join("featured-car.png")) == OK,"capture the featured car")
 	var own_garage := GaragePage.new()
+	own_garage.section = "news"
+	own_garage.tools = pane.tools
 	own_garage.records = LocalRecords.new(ProjectSettings.globalize_path("user://news-livery-records.json"))
 	own_garage.records.settings["vehicle_liveries"] = {"compact":paint.duplicate(true)}
 	menu.page = own_garage
 	var original_items: Array = service.items
 	service.items = [{"id":"own","kind":"world_record","actor_id":"alice","actor_name":"Alice","vehicle_id":"compact","track_name":"Underpass"}]
 	menu._render()
+	for tick: int in range(4):
+		await process_frame
+		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
 	check(menu.find_child("NewsLiveryCar",true,false) != null and menu.find_child("NewsPhotoCaption",true,false) == null,"own car keeps its livery without a caption")
 	menu.page = pane
 	own_garage.free()

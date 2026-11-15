@@ -1,0 +1,23 @@
+extends "res://../../variants.gd"
+## Original first-matrix builder, retaining the initial experiment's choices.
+func _initialize() -> void:
+	var output: String=ProjectSettings.globalize_path("res://").path_join("../../variants").simplify_path()
+	DirAccess.make_dir_recursive_absolute(output)
+	var report: Dictionary={}
+	for variant: String in ["current","half","empty"]:
+		var room: Node=load("res://assets/garage/workshop_v1.scn").instantiate()
+		var total: int=0
+		var instances: int=0
+		for part: MeshInstance3D in room.find_children("*","MeshInstance3D",true,false):
+			if variant=="empty": part.mesh=null
+			elif variant=="half" and part.mesh is ArrayMesh: part.mesh=reduced(part.mesh)
+			if part.mesh!=null: total+=part.mesh.get_faces().size()/3
+			instances+=1
+		var packed:=PackedScene.new();assert(packed.pack(room)==OK)
+		var path: String=output.path_join(variant+".scn")
+		assert(ResourceSaver.save(packed,path,ResourceSaver.FLAG_COMPRESS)==OK)
+		report[variant]={"room_triangles":total,"default_environment_triangles":total+1830,"instances":instances,"bytes":FileAccess.get_file_as_bytes(path).size()}
+		room.free()
+	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
+	print("GARAGE_GAIN_VARIANTS ",JSON.stringify(report))
+	quit()

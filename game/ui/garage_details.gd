@@ -47,8 +47,8 @@ static func _trophy_wall(root: Node3D) -> void:
 	lettering.font = MenuStyle.DISPLAY
 	lettering.font_size = 48
 	lettering.pixel_size = 0.0047
-	lettering.depth = 0.024
-	lettering.curve_step = 0.7
+	lettering.depth = 0.0
+	lettering.curve_step = 2.0
 	title.mesh = lettering
 	title.material_override = GarageEnvironment.surface("brandlettergold","e0c797",0.22,0.44,0.12)
 	title.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -105,11 +105,11 @@ static func _laurel(parent: Node3D) -> void:
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for side: int in [-1,1]:
 		var previous := Vector3(side*1.12*sin(0.12),0.22-0.97*cos(0.12),-0.245)
-		for index: int in range(25):
-			var theta: float = 0.12+index/24.0*2.30
+		for index: int in range(9):
+			var theta: float = 0.12+index/8.0*2.30
 			var point := Vector3(side*1.12*sin(theta),0.22-0.97*cos(theta),-0.245)
 			if index > 0:
-				GarageFurnishings.tube(parent,previous,point,0.009,edge,12)
+				GarageFurnishings.tube(parent,previous,point,0.009,edge,6)
 			previous = point
 		for index: int in range(12):
 			var t: float = (index+0.5)/12.0
@@ -122,9 +122,9 @@ static func _laurel(parent: Node3D) -> void:
 				var across := Vector2(-direction.y,direction.x)
 				var length: float = 0.235-t*0.035
 				var ridge := base+Vector3(direction.x,direction.y,-0.13)*length*0.52
-				for segment: int in range(8):
-					var a: float = segment/8.0
-					var b: float = (segment+1)/8.0
+				for segment: int in range(4):
+					var a: float = segment/4.0
+					var b: float = (segment+1)/4.0
 					for half: int in [-1,1]:
 						var ca := base+Vector3(direction.x*length*a,direction.y*length*a,-sin(a*PI)*0.020)
 						var cb := base+Vector3(direction.x*length*b,direction.y*length*b,-sin(b*PI)*0.020)
@@ -132,7 +132,7 @@ static func _laurel(parent: Node3D) -> void:
 						var eb := base+Vector3(direction.x*length*b+across.x*pow(sin(b*PI),0.85)*0.043*half,direction.y*length*b+across.y*pow(sin(b*PI),0.85)*0.043*half,0)
 						var points: Array[Vector3] = [ca,ea,eb,cb]
 						_leaf_patch(tool,points)
-				GarageFurnishings.tube(parent,base+Vector3(0,0,-0.003),ridge+Vector3(0,0,-0.003),0.003,edge,8)
+				GarageFurnishings.face_mark(parent,base+Vector3(0,0,-0.006),ridge+Vector3(0,0,-0.006),0.003,edge)
 	tool.index()
 	var relief := MeshInstance3D.new()
 	relief.name = "SculptedBrandLaurel"
@@ -162,9 +162,9 @@ static func wheel(parent: Node3D, position: Vector3) -> void:
 		var next: int = (row+1)%profile.size()
 		var direction: Vector2 = profile[next]-profile[row]
 		var n := Vector2(direction.x,-direction.y).normalized()
-		for segment: int in range(48):
-			var a: float = segment*TAU/48.0
-			var b: float = (segment+1)*TAU/48.0
+		for segment: int in range(20):
+			var a: float = segment*TAU/20.0
+			var b: float = (segment+1)*TAU/20.0
 			var points: Array[Vector3] = [Vector3(sin(a)*profile[row].y,cos(a)*profile[row].y,profile[row].x),Vector3(sin(b)*profile[row].y,cos(b)*profile[row].y,profile[row].x),Vector3(sin(b)*profile[next].y,cos(b)*profile[next].y,profile[next].x),Vector3(sin(a)*profile[next].y,cos(a)*profile[next].y,profile[next].x)]
 			var outward := Vector3(sin((a+b)*0.5)*n.x,cos((a+b)*0.5)*n.x,n.y)
 			GarageEnvironment._polygon(tool,points,outward)
@@ -188,23 +188,32 @@ static func wheel(parent: Node3D, position: Vector3) -> void:
 		lug.rotation.x = PI*0.5
 	for index: int in range(18):
 		var angle: float = index*TAU/18.0
-		GarageFurnishings.tube(node,Vector3(sin(angle)*0.205,cos(angle)*0.205,-0.156),Vector3(sin(angle)*0.205,cos(angle)*0.205,-0.161),0.009,GarageEnvironment.surfaces.inset,12)
+		# Recess marks on the solid brake face need only their visible hexagon.
+		var vent:=SurfaceTool.new()
+		vent.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var outline: Array[Vector3]=[]
+		for corner: int in range(6):
+			var a: float=corner*TAU/6.0
+			outline.append(Vector3(sin(angle)*0.205+sin(a)*0.009,cos(angle)*0.205+cos(a)*0.009,-0.161))
+		GarageEnvironment._polygon(vent,outline,Vector3(0,0,-1))
+		vent.index()
+		GarageFurnishings.mesh(node,Vector3.ZERO,vent.commit(),GarageEnvironment.surfaces.inset)
 	for z: float in [-0.174,0.174]:
 		GarageFurnishings.ring(node,Vector3(0,0,z),0.302,0.307,GarageEnvironment.surface("tiresidemould","34383b",0,0.91))
 	var lip := MeshInstance3D.new()
 	var shape := TorusMesh.new()
 	shape.inner_radius = 0.245
 	shape.outer_radius = 0.277
-	shape.rings = 48
-	shape.ring_segments = 8
+	shape.rings = 20
+	shape.ring_segments = 4
 	lip.mesh = shape
 	lip.rotation.x = PI*0.5
 	lip.position.z = -0.185
 	lip.material_override = rim
 	lip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	node.add_child(lip)
-	for index: int in range(36):
-		var angle: float = index*TAU/36.0
+	for index: int in range(12):
+		var angle: float = index*TAU/12.0
 		for z: float in [-0.055,0.055]:
-			var tread := GarageEnvironment.box(node,Vector3(sin(angle)*0.479,cos(angle)*0.479,z),Vector3(0.048,0.012,0.068),GarageEnvironment.surface("tread","191c1f"))
+			var tread := GarageEnvironment.box(node,Vector3(sin(angle)*0.479,cos(angle)*0.479,z),Vector3(0.105,0.012,0.068),GarageEnvironment.surface("tread","191c1f"))
 			tread.rotation.z = -angle

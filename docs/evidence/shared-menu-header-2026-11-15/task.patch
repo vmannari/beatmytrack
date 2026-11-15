@@ -1,0 +1,422 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -768,9 +768,9 @@
+ 	settings.custom_minimum_size = Vector2(54,54)
+ 	settings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	nav.add_child(settings)
+-	var garage_header: Node = preload("res://ui/garage_header.gd").new()
+-	garage_header.app = self
+-	nav.add_child(garage_header)
++	var menu_header: Node = preload("res://ui/garage_header.gd").new()
++	menu_header.app = self
++	nav.add_child(menu_header)
+ 	layout.add_child(HSeparator.new())
+ 	content = VBoxContainer.new()
+ 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -796,7 +796,13 @@
+ 		menu_body.add_child(content)
+ 		menu_body_slot.resized.connect(_layout_menu_body)
+ 		_layout_menu_body()
+-	else: layout.add_child(content)
++	else:
++		# Wide page content must not stretch the shared navigation off-screen.
++		var page_slot := Control.new()
++		page_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
++		layout.add_child(page_slot)
++		MenuStyle.fill(content)
++		page_slot.add_child(content)
+ 	match screen:
+ 		"drafts": _drafts()
+ 		"biome": _choose_biome()
+@@ -1293,11 +1299,7 @@
+ 		_stamp_creator()
+ 		history.clear()
+ 		redo_history.clear()
+-	for id: String in ["tracks", "create", "garage", "store"]:
+-		var tab: Button = root_ui.find_child("Tab_" + id, true, false)
+-		var selected: bool = (id == "tracks" and screen in ["tracks", "rivalry"]) or (id == "create" and screen == "biome") or id == screen
+-		tab.add_theme_stylebox_override("normal", MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
+-		tab.add_theme_color_override("font_color", MenuStyle.ACCENT if selected else MenuStyle.MUTED)
++	root_ui.find_child("GarageHeaderWallet",true,false).refresh()
+ 	var browser: Control = menu_body.find_child("TrackBrowser", true, false)
+ 	if browser != null:
+ 		browser_state = browser.state
+--- a/game/ui/garage_header.gd
++++ b/game/ui/garage_header.gd
+@@ -1,11 +1,8 @@
+ extends HBoxContainer
+-## Garage-only header treatment; navigation restores the shared shell on exit.
++## Shared Garage header layout with the original filled navigation buttons.
+ var app: Node
+ var _nav: HBoxContainer
+ var _amount: Label
+-var _original: Dictionary = {}
+-var _active: bool = false
+-var _width: float = -1.0
+ 
+ class Coin extends Control:
+ 	func _init() -> void:
+@@ -32,29 +29,10 @@
+ 	divider.custom_minimum_size.x = 16
+ 	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	add_child(divider)
+-	for node: Control in _nav.get_children():
+-		if node == self: continue
+-		_remember(node)
+-		if node.name == "MenuNavigation":
+-			for tab: Control in node.get_children(): _remember(tab)
+-	_remember(_nav)
+-	_remember(_nav.get_parent())
+-	_remember(_nav.get_parent().get_parent())
+ 	if app.cosmetic_economy != null: app.cosmetic_economy.changed.connect(_balance)
+ 	_balance()
+-	visible = false
+-	_process(0.0)
+-
+-func _remember(node: Control) -> void:
+-	var data: Dictionary = {"minimum":node.custom_minimum_size,"styles":{},"colors":{},"sizes":{},"constants":{}}
+-	for key: String in ["normal","hover","pressed","focus"]:
+-		if node.has_theme_stylebox_override(key): data.styles[key] = node.get_theme_stylebox(key)
+-	for key: String in ["font_color","font_hover_color","font_pressed_color"]:
+-		if node.has_theme_color_override(key): data.colors[key] = node.get_theme_color(key)
+-	if node.has_theme_font_size_override("font_size"): data.sizes.font_size = node.get_theme_font_size("font_size")
+-	for key: String in ["separation","margin_top","margin_bottom","margin_left","margin_right"]:
+-		if node.has_theme_constant_override(key): data.constants[key] = node.get_theme_constant(key)
+-	_original[node] = data
++	get_viewport().size_changed.connect(refresh)
++	refresh()
+ 
+ func _balance() -> void:
+ 	if not is_instance_valid(_amount): return
+@@ -70,38 +48,38 @@
+ 		offset -= 3
+ 	return text
+ 
+-func _process(_delta: float) -> void:
++func refresh() -> void:
+ 	if not is_instance_valid(app) or not is_instance_valid(app.root_ui): return
+-	var active: bool = app.screen == "garage"
+-	var width: float = get_viewport_rect().size.x
+-	if active == _active and (not active or is_equal_approx(width,_width)): return
+-	_active = active
+-	_width = width
+-	visible = active
+-	if active: _fit(width < 1100)
+-	else: _restore()
++	_fit(get_viewport_rect().size.x < 1100)
+ 
+ func _fit(compact: bool) -> void:
+ 	_nav.add_theme_constant_override("separation",6 if compact else 12)
+ 	var layout: VBoxContainer = _nav.get_parent()
+ 	layout.add_theme_constant_override("separation",6)
+ 	var margin: MarginContainer = layout.get_parent()
+-	margin.add_theme_constant_override("margin_top",10)
+-	margin.add_theme_constant_override("margin_bottom",18)
+-	margin.add_theme_constant_override("margin_left",16)
++	# Mobile margins already include the display's safe area in App.
++	if not OS.has_feature("mobile"):
++		margin.add_theme_constant_override("margin_top",10)
++		margin.add_theme_constant_override("margin_bottom",18)
++		margin.add_theme_constant_override("margin_left",16)
+ 	var brand: Control = _nav.get_child(0)
+ 	brand.custom_minimum_size = Vector2(136 if compact else 196,52)
+ 	var tabs: Control = app.root_ui.find_child("MenuNavigation",true,false)
+ 	for tab: Button in tabs.get_children():
+-		var style: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,6 if compact else 16)
+-		style.set_corner_radius_all(0)
+-		if tab.name == "Tab_garage":
+-			style.border_color = MenuStyle.ACCENT
++		var id: String = str(tab.name).trim_prefix("Tab_")
++		var selected: bool = id == app.screen or (id == "tracks" and app.screen in ["rivalry","daily","challenges","challenge_create"]) or (id == "create" and app.screen in ["biome","drafts"])
++		# Preserve the original MenuStyle.tab button treatment on every page.
++		var style: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,16)
++		if selected:
++			style.bg_color = Color("29343be8")
++			style.border_color = Color("64737c80")
++			style.set_border_width_all(1)
+ 			style.border_width_bottom = 2
++			style.shadow_color = Color("00000035")
++			style.shadow_size = 3
++			style.shadow_offset = Vector2(0,2)
+ 		tab.add_theme_stylebox_override("normal",style)
+-		tab.custom_minimum_size.y = 52
+-		tab.add_theme_font_size_override("font_size",19 if compact else 23)
+-		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if tab.name == "Tab_garage" else MenuStyle.MUTED)
++		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+ 	var account: Button = app.account_button
+ 	account.custom_minimum_size = Vector2(174 if compact else 210,52)
+ 	for state: String in ["normal","hover","pressed","focus"]:
+@@ -120,33 +98,3 @@
+ 	var settings: Button = app.root_ui.find_child("MenuSettings",true,false)
+ 	settings.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT))
+ 	settings.custom_minimum_size = Vector2(52,52)
+-
+-func _restore() -> void:
+-	for node: Control in _original:
+-		if not is_instance_valid(node): continue
+-		var data: Dictionary = _original[node]
+-		node.custom_minimum_size = data.minimum
+-		for key: String in ["normal","hover","pressed","focus"]:
+-			if data.styles.has(key): node.add_theme_stylebox_override(key,data.styles[key])
+-			else: node.remove_theme_stylebox_override(key)
+-		for key: String in ["font_color","font_hover_color","font_pressed_color"]:
+-			if data.colors.has(key): node.add_theme_color_override(key,data.colors[key])
+-			else: node.remove_theme_color_override(key)
+-		if data.sizes.has("font_size"): node.add_theme_font_size_override("font_size",data.sizes.font_size)
+-		else: node.remove_theme_font_size_override("font_size")
+-		for key: String in ["separation","margin_top","margin_bottom","margin_left","margin_right"]:
+-			if data.constants.has(key): node.add_theme_constant_override(key,data.constants[key])
+-			else: node.remove_theme_constant_override(key)
+-	var tabs: Control = app.root_ui.find_child("MenuNavigation",true,false)
+-	for tab: Button in tabs.get_children():
+-		var id: String = str(tab.name).trim_prefix("Tab_")
+-		var selected: bool = id == app.screen or (id == "tracks" and app.screen in ["rivalry","daily","challenges"]) or (id == "create" and app.screen == "biome")
+-		tab.add_theme_stylebox_override("normal",MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
+-		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+-	var picture: Control = app.account_button.get_node_or_null("MenuProfileCar")
+-	if picture != null:
+-		picture.offset_right = 94
+-		picture.offset_top = -28
+-		picture.offset_bottom = 28
+-	var picker: Control = app.account_button.get_node_or_null("MenuCarPicker")
+-	if picker != null: picker.offset_right = 100
+--- a/game/tests/test_garage_reference.gd
++++ b/game/tests/test_garage_reference.gd
+@@ -27,9 +27,10 @@
+ 	app._navigate_menu_page("tracks")
+ 	app._finish_menu_page_slide()
+ 	await settle(10)
+-	check(not root.find_child("GarageHeaderWallet",true,false).visible,"ordinary menu header returns after leaving Garage")
++	check(root.find_child("GarageHeaderWallet",true,false).visible,"shared coin header remains after leaving Garage")
+ 	var track_tab: Button = root.find_child("Tab_tracks",true,false)
+-	check(track_tab.get_theme_color("font_color") == MenuStyle.ACCENT,"ordinary navigation retains correct active tab")
++	check(track_tab.get_theme_color("font_color") == MenuStyle.ACCENT,"shared navigation retains correct active tab")
++	check(track_tab.get_theme_stylebox("normal").bg_color != Color.TRANSPARENT,"Race retains the original filled button style")
+ 	app._navigate_menu_page("garage")
+ 	app._finish_menu_page_slide()
+ 	await settle(10)
+@@ -71,7 +72,7 @@
+ 	var wallet: Control = header.get_node("GarageHeaderWallet")
+ 	check(wallet.visible,"account coins appear in header")
+ 	var tab: Button = root.find_child("Tab_garage",true,false)
+-	check(tab.get_theme_stylebox("normal").border_width_bottom == 2,"Garage tab uses yellow underline")
++	check(tab.get_theme_stylebox("normal").bg_color != Color.TRANSPARENT,"Garage tab uses the original filled button style")
+ 	for card: Control in page.cards.get_children():
+ 		var id: String = VehicleCatalog.IDS[card.get_index()]
+ 		var caption: Control = card.find_child("CarCardTitle_"+id,true,false)
+--- /dev/null
++++ b/game/tests/test_shared_menu_header.gd
+@@ -0,0 +1,130 @@
++extends SceneTree
++## MHS01–MHS04: shared header with the owner's original navigation button style.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, caption: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("FAIL: ",caption)
++
++func settle(count: int = 10) -> void:
++	for frame: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func check_header(selected: String, caption: String) -> void:
++	var header: Control = app.root_ui.find_child("MenuHeader",true,false)
++	var wallet: Control = header.get_node("GarageHeaderWallet")
++	check(wallet.is_visible_in_tree(),"coin balance remains visible "+caption)
++	check(header.get_global_rect().end.x <= root.size.x+1,"complete header fits viewport "+caption)
++	if header.get_global_rect().end.x > root.size.x+1:
++		print("HEADER_BOUNDS ",caption," header=",header.get_global_rect()," minimum=",header.get_combined_minimum_size()," layout minimum=",header.get_parent().get_combined_minimum_size())
++		for child: Control in header.get_children(): print(child.name," size=",child.size," minimum=",child.get_combined_minimum_size())
++		for tab: Button in header.get_node("MenuNavigation").get_children(): print(tab.name," ",tab.text," size=",tab.size," minimum=",tab.get_combined_minimum_size())
++	var previous_end: float = header.get_global_rect().position.x
++	for child: Control in header.get_children():
++		check(child.get_global_rect().position.x >= previous_end-1,"header controls do not overlap "+caption+"/"+child.name)
++		previous_end = child.get_global_rect().end.x
++	for tab: Button in header.get_node("MenuNavigation").get_children():
++		var active: bool = tab.name == "Tab_"+selected
++		var style: StyleBoxFlat = tab.get_theme_stylebox("normal")
++		check((style.border_width_bottom == 2) == active,"selected button follows page "+caption+"/"+tab.name)
++		check((style.bg_color != Color.TRANSPARENT) == active,"only selected navigation button is filled "+caption+"/"+tab.name)
++		check(tab.get_theme_color("font_color") == (MenuStyle.ACCENT if active else MenuStyle.MUTED),"tab colour follows page "+caption+"/"+tab.name)
++		check(tab.size.y >= 52,"tab touch target "+caption+"/"+tab.name)
++	check(app.account_button.get_node("MenuProfileCar").get_global_rect().encloses(app.account_button.get_node("MenuProfileCar").preview.get_global_rect()),"profile car stays inside slot "+caption)
++	check(app.account_button.get_node("MenuCarPicker").get_global_rect().end.x <= app.account_button.get_global_rect().end.x,"car selector fits account "+caption)
++	if is_instance_valid(app.menu_body_slot):
++		check(app.menu_body_slot.get_global_rect().position.y >= header.get_global_rect().end.y,"page starts below shared menu "+caption)
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: quit(1))
++	OS.set_environment("BMT_API_URL","")
++	output = "res://../docs/evidence/shared-menu-header-2026-11-15/"+RenderingServer.get_current_rendering_method()
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var folder: String = "user://shared-menu-header-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings = {"music_enabled":false,"selected_car":"compact","tutorial_complete":true}
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(not app.online.configured,"actual App uses isolated offline storage")
++	app.race_area_mode = "free"
++	var routes: Dictionary = {"tracks":"tracks","rivalry":"tracks","daily":"tracks","challenges":"tracks","biome":"create","drafts":"create","garage":"garage","store":"store","profile":"","settings":"","challenge_create":"tracks"}
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		for route: String in routes:
++			app._show_screen(route)
++			app._finish_menu_page_slide()
++			await settle()
++			check_header(routes[route],route+"/"+str(dimensions.x))
++			var wallet: Control = app.root_ui.find_child("GarageHeaderWallet",true,false)
++			check(wallet._amount.text == "—","guest balance stays unavailable "+route)
++			if (dimensions.x == 1280 and route != "challenge_create") or (dimensions.x == 960 and route in ["tracks","store"]):
++				await capture(route+"-"+str(dimensions.x))
++	# Resize a retained shell in both directions, then navigate without rebuilding it.
++	app._show_screen("tracks")
++	app._finish_menu_page_slide()
++	await settle(20)
++	var shell: int = app.root_ui.get_instance_id()
++	var header_rect: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
++	app._navigate_menu_page("biome")
++	check(app.root_ui.get_instance_id() == shell,"warm navigation retains the same header")
++	var selected_tab: Button = app.root_ui.find_child("Tab_create",true,false)
++	check(selected_tab.get_theme_stylebox("normal").bg_color != Color.TRANSPARENT,"retained navigation updates filled button in the input callback")
++	app._finish_menu_page_slide()
++	await settle()
++	check(app.root_ui.find_child("MenuHeader",true,false).get_global_rect().is_equal_approx(header_rect),"header stays stationary across page changes")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		await settle()
++		check_header("create","live resize "+str(dimensions.x))
++		check(app.root_ui.get_instance_id() == shell,"live resize retains header")
++	# Menu actions and profile/car controls keep their existing routing.
++	app.root_ui.find_child("Tab_store",true,false).pressed.emit()
++	app._finish_menu_page_slide()
++	await settle()
++	check(app.screen == "store","Store tab still navigates")
++	check_header("store","Store button")
++	app.account_button.pressed.emit()
++	await settle()
++	check(app.screen == "profile","account still opens Profile")
++	check_header("","Profile button")
++	app.root_ui.find_child("MenuSettings",true,false).pressed.emit()
++	await settle()
++	check(app.screen == "settings","gear still opens Settings")
++	check_header("","Settings button")
++	root.size = Vector2i(960,540)
++	root.content_scale_size = root.size
++	for locale: String in ["de","fr","es","fi","ja"]:
++		GameFonts.configure(locale)
++		TranslationServer.set_locale(locale)
++		GameText.refresh(self)
++		await settle()
++		check_header("","localized compact "+locale)
++	TranslationServer.set_locale("en")
++	GameFonts.configure("en")
++	GameText.refresh(self)
++	app.queue_free()
++	await settle(20)
++	print("SHARED_MENU_HEADER ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/scripts/run_menu_header.py
+@@ -0,0 +1,47 @@
++"""Run menu header checks through the pinned dev entry point with private storage."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/shared-menu-header-2026-11-15"
++name = sys.argv[1] if len(sys.argv) > 1 else "headless"
++script = sys.argv[2] if len(sys.argv) > 2 else "res://tests/test_shared_menu_header.gd"
++OUT.mkdir(parents=True, exist_ok=True)
++profile = ROOT / "build/shared-menu-header-2026-11-15" / name
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
++           str(ROOT / "scripts/dev.ps1"), "-Action", "TestScript", "-ScriptPath", script,
++           "-CommandTimeoutSeconds", "240", "-TestArgument", f"--evidence-root={OUT / name}"]
++renderer = name.partition("-")[0]
++if renderer in ("gl_compatibility", "mobile"):
++    command += ["-Graphical", "-RenderingMethod", renderer]
++if "--direct" in sys.argv[3:]:
++    engine = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
++    version = subprocess.check_output([engine, "--version"], text=True).strip()
++    assert version == (ROOT / "godot-version.txt").read_text().strip(), version
++    command = [engine, "--path", str(ROOT / "game"), "--audio-driver", "Dummy", "--script", script]
++    command += ["--rendering-method", renderer] if renderer in ("gl_compatibility", "mobile") else ["--headless"]
++    command += ["--", f"--evidence-root={OUT / name}"]
++start = time.monotonic()
++with (OUT / f"{name}.log").open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    try:
++        code = process.wait(timeout=270)
++    except subprocess.TimeoutExpired:
++        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
++                       stdout=log, stderr=subprocess.STDOUT, check=False)
++        process.wait()
++        code = "timeout"
++receipt = {"command": command, "exit_code": code,
++           "seconds": round(time.monotonic() - start, 3)}
++(OUT / f"{name}.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++print(json.dumps(receipt))
++print("\n".join((OUT / f"{name}.log").read_text(encoding="utf-8").splitlines()[-18:]))
++raise SystemExit(0 if code == 0 else 1)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- SHARED-MENU-HEADER-20261115 -->
++## Shared Garage header with original top-menu buttons (2026-11-15)
++MHS01?MHS04: shared Garage spacing, coins and account controls now apply across the menu. Owner clarification restores the original rounded, filled active navigation buttons, including their original font, touch size, hover/press feedback and click actions. Retained navigation and viewport resize refresh directly; wide translated Settings content cannot stretch the header, and mobile safe margins remain. Shared1144/0 headless and1156/0 each desktop renderer, Garage882/0, Settings1037/0 and parser577/0 pass. A broader legacy swipe candidate162/75 reproduces exactly on task-start sources; that suite remains unqualified. Known Compatibility two-object/one-resource shutdown and raw-portrait warnings remain. [Requirements, commands, limits and checked task patch](docs/evidence/shared-menu-header-2026-11-15/report.json); [Race](docs/evidence/shared-menu-header-2026-11-15/gl_compatibility-buttons/tracks-1280.png), [compact Store](docs/evidence/shared-menu-header-2026-11-15/gl_compatibility-buttons/store-960.png). Reload/owner appearance and phone testing remain; no export, deployment, owner-save/process or main-index action.
++<!-- /SHARED-MENU-HEADER-20261115 -->
++
+ <!-- GARAGE-SPEAKERS-RESTORED-20261115 -->
+ ## Garage speakers restored after simplification (2026-11-15)
+ GSP01-GSP03: Owner reports vanished speakers. Two protected source volumes restore complete cabinet/woofer/tweeter faces inside existing material batches at every detail level. Workshop17304, platform1816, total19134(+478; still -38.43% versus31075); no extra draw groups. Original404 faces each across34 master/LOD comparisons pass37/0 each desktop renderer; old scene rejects37/34. Retained integrity494/0, source/layout/budget82/0, parser577/0, eight native paired captures, receiving90/0 and reflection/120-frame rotation146/0 each pass. Closing1300-input fence stable; workshop29-source, six-photo174-source, six portraits25418-input and12 imports pass. All557 car outputs and modular geometry keys exact. Seven-source normalized checkpoint exact both directions; retention32.75GiB remains recent/protected, no task pin. Early concurrent identity rewrite, raw-PNG warnings and Mobile rotation two-object/one-resource shutdown diagnostic retained; no FPS/load/device claim. [Changes, before/after views, commands, checkpoint and limits](docs/GARAGE_SPEAKERS_RESTORED_2026_11_15.md). Reload/owner appearance remains; no phone/export/backend/deployment/owner-save/process or main-index action.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- SHARED-MENU-HEADER-20261115 -->
++## Shared Garage header with original top-menu buttons (2026-11-15)
++MHS01?MHS04: shared Garage spacing, coins and account controls retain the owner's original rounded, filled top navigation buttons, font, touch size and hover/press feedback. Header1144/0 headless and1156/0 each desktop renderer, Garage882/0, Settings1037/0 and parser577/0 pass. A legacy swipe candidate162/75 reproduces exactly before/after; that suite remains unqualified. Known Compatibility shutdown and portrait warnings remain. [Requirements, final native views, commands, checkpoint and limits](docs/evidence/shared-menu-header-2026-11-15/report.json). Reload and owner/phone acceptance remain; no device test/export/deployment or main-index action.
++<!-- /SHARED-MENU-HEADER-20261115 -->
++
+ <!-- RALLY-LAMP-STYLE-20261115 -->
+ ## Rally lamps return to the preferred reflector style (2026-11-15)
+ RLS01-RLS04: owner prefers the earlier lamps. Unchanged clear fluted-glass shader, recessed silver dish, bright bulb cap and round dark shade restore that character while retaining smooth rims and the refined grille. Lamps1312tri versus earlier1384/opaque960; whole Rally16213 (+352 versus opaque15861, -15.00% restored19074), fitted24010/full100356. Two exact non-lamp frame migrations preserve grille/body reductions; ten other stock/full GPU controls exact. Source6/0, prepared30/0, retained grille274/0, Rally modules1441/0/shared Challenger consumer1436/0, daylight24pairs101/0/night8pairs37/0, App8/0/icons496/0 each desktop renderer, driving72/0/parser577/0 and full551-resource2267/0 pass. Transparent optics/two surfaces and9672 stock buffer bytes return as the appearance tradeoff. Two Garage/one header images,3 imports,6-photo174-source catalogue and18700-input fence pass; seven other keys exact. Challenger geometry unmodified; shared conservative source rule requires cache-only refresh. Three-way comparison and source-only exact checkpoint retained; standard retention applied, concurrent work/index preserved. Reload/owner visual acceptance remains; no device/FPS/export/backend/deployment/owner-save/process or main-index action. [Style, views, commands and limits](docs/RALLY_LAMP_STYLE_2026_11_15.md).
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- SHARED-MENU-HEADER-20261115 -->
++## Shared Garage header with original top-menu buttons (2026-11-15)
++MHS01?MHS04: shared Garage spacing, coins and account controls use the owner's original filled top navigation buttons. Existing click actions, hover/press feedback and swipe rules remain. Header1144/0 headless and1156/0 each desktop renderer, Garage882/0, Settings1037/0 and parser577/0 pass. A legacy swipe candidate162/75 is identical on task-start sources; the broad suite remains unqualified. [Requirements, native captures, commands, checkpoint and limits](evidence/shared-menu-header-2026-11-15/report.json). Reload and owner/phone acceptance remain; no device test, export or deployment.
++<!-- /SHARED-MENU-HEADER-20261115 -->
++
+ <!-- RALLY-LAMP-STYLE-20261115 -->
+ ## Rally lamps return to the preferred reflector style (2026-11-15)
+ RLS01-RLS04: owner prefers the earlier lamps. Unchanged clear fluted-glass shader, recessed silver dish, bright bulb cap and round dark shade restore that character while retaining smooth rims and the refined grille. Lamps1312tri versus earlier1384/opaque960; whole Rally16213 (+352 versus opaque15861, -15.00% restored19074), fitted24010/full100356. Two exact non-lamp frame migrations preserve grille/body reductions; ten other stock/full GPU controls exact. Source6/0, prepared30/0, retained grille274/0, Rally modules1441/0/shared Challenger consumer1436/0, daylight24pairs101/0/night8pairs37/0, App8/0/icons496/0 each desktop renderer, driving72/0/parser577/0 and full551-resource2267/0 pass. Transparent optics/two surfaces and9672 stock buffer bytes return as the appearance tradeoff. Two Garage/one header images,3 imports,6-photo174-source catalogue and18700-input fence pass; seven other keys exact. Challenger geometry unmodified; shared conservative source rule requires cache-only refresh. Three-way comparison and source-only exact checkpoint retained; standard retention applied, concurrent work/index preserved. Reload/owner visual acceptance remains; no device/FPS/export/backend/deployment/owner-save/process or main-index action. [Style, views, commands and limits](RALLY_LAMP_STYLE_2026_11_15.md).

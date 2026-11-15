@@ -1,0 +1,151 @@
+--- a/game/ui/garage_car_stats.gd
++++ b/game/ui/garage_car_stats.gd
+@@ -40,19 +40,16 @@
+ 	_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	_stack.add_theme_constant_override("separation",12)
+ 	add_child(_stack)
+-	var metrics := HBoxContainer.new()
++	var metrics := VBoxContainer.new()
+ 	metrics.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	metrics.add_theme_constant_override("separation",18)
++	metrics.add_theme_constant_override("separation",4)
+ 	_stack.add_child(metrics)
+ 	_speed = _metric(metrics,"Top speed","km/h","GarageStatTopSpeed")
+-	var rule := VSeparator.new()
+-	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	metrics.add_child(rule)
+ 	_acceleration = _metric(metrics,"0–60 km/h","s","GarageStatAcceleration")
+ 	_weight_row = HBoxContainer.new()
+ 	_weight_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	_stack.add_child(_weight_row)
+-	var weight_caption: Label = MenuStyle.label("Weight",14,true)
++	var weight_caption: Label = MenuStyle.label("Weight",13,true)
+ 	weight_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_weight_row.add_child(weight_caption)
+ 	_weight = MenuStyle.label("",16)
+@@ -61,8 +58,12 @@
+ 	_weight_row.add_child(_weight)
+ 	var divider := HSeparator.new()
+ 	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var rule := StyleBoxLine.new()
++	rule.color = Color(MenuStyle.BORDER,0.35)
++	rule.thickness = 1
++	divider.add_theme_stylebox_override("separator",rule)
+ 	_stack.add_child(divider)
+-	_description = MenuStyle.label("",14)
++	_description = MenuStyle.label("",13,true)
+ 	_description.name = "GarageCarDescription"
+ 	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	_stack.add_child(_description)
+@@ -70,21 +71,17 @@
+ 	_apply_density()
+ 	set_vehicle(vehicle_id if not vehicle_id.is_empty() else VehicleCatalog.selected)
+ 
+-func _metric(parent: HBoxContainer, caption: String, unit: String, node_name: String) -> Label:
+-	var column := VBoxContainer.new()
+-	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.add_theme_constant_override("separation",0)
+-	parent.add_child(column)
+-	var title: Label = MenuStyle.label(caption,13,true)
+-	column.add_child(title)
++func _metric(parent: VBoxContainer, caption: String, unit: String, node_name: String) -> Label:
+ 	var row := HBoxContainer.new()
+ 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	row.add_theme_constant_override("separation",5)
+-	column.add_child(row)
+-	var number: Label = MenuStyle.label("",38)
++	parent.add_child(row)
++	var title: Label = MenuStyle.label(caption,13,true)
++	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(title)
++	var number: Label = MenuStyle.label("",16)
+ 	number.name = node_name
+-	number.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	number.add_theme_color_override("font_color",Color(MenuStyle.TEXT,0.88))
+ 	GameText.user_text(number)
+ 	row.add_child(number)
+ 	var suffix: Label = MenuStyle.label(unit,13,true)
+@@ -111,20 +108,20 @@
+ 	if compact != _compact:
+ 		_compact = compact
+ 		_apply_density()
+-	var inset: float = 12.0 if compact else 24.0
+-	position = Vector2(inset,inset)
+-	size.x = clampf(dimensions.x*(0.30 if compact else 0.245),248.0 if compact else 220.0,300.0)
++	position = Vector2(12,12) if compact else Vector2(24,56)
++	size.x = clampf(dimensions.x*(0.30 if compact else 0.22),248.0 if compact else 224.0,260.0)
+ 	size.y = get_combined_minimum_size().y
+ 
+ func _apply_density() -> void:
+-	var style: StyleBoxFlat = MenuStyle.card(12 if _compact else 18)
+-	style.bg_color = Color(MenuStyle.PANEL,0.94)
+-	style.set_corner_radius_all(8)
+-	add_theme_stylebox_override("panel",style)
++	# Quiet text over the workshop, subordinate to the car and selection actions.
++	add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
+ 	if not _built: return
+-	_stack.add_theme_constant_override("separation",6 if _compact else 12)
++	_stack.add_theme_constant_override("separation",6 if _compact else 8)
+ 	_weight_row.visible = not _compact
+-	for number: Label in [_speed,_acceleration]: number.add_theme_font_size_override("font_size",28 if _compact else 38)
+-	for margin: MarginContainer in _unit_margins: margin.add_theme_constant_override("margin_bottom",4 if _compact else 8)
+-	_description.add_theme_font_size_override("font_size",12 if _compact else 14)
+-	_description.add_theme_constant_override("line_spacing",0 if _compact else 3)
++	for margin: MarginContainer in _unit_margins: margin.add_theme_constant_override("margin_bottom",2)
++	_description.add_theme_font_size_override("font_size",12 if _compact else 13)
++	_description.add_theme_constant_override("line_spacing",0 if _compact else 1)
++	for label: Label in [_speed,_acceleration,_weight,_description]:
++		label.add_theme_color_override("font_shadow_color",Color(0,0,0,0.55))
++		label.add_theme_constant_override("shadow_offset_x",0)
++		label.add_theme_constant_override("shadow_offset_y",1)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-STATS-SUBTLE-20261114 -->
++## Garage car stats made more subtle after owner review (2026-11-14)
++GCS05: transparent presentation, small neutral inline figures, muted descriptions and a faint divider replace the filled card and yellow display numbers. Standard footprint narrows; existing selection, data and drag routing remain. Actual-App Compatibility543/0 passes across six cars, four sizes and eleven translations; retained two-object/one-resource shutdown diagnostic, no device/Mobile qualification. [Current views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). Scoped checkpoint verified; no handling/model, backend/export, owner-save/process or main-index action.
++<!-- /GARAGE-STATS-SUBTLE-20261114 -->
++
+ <!-- GARAGE-CAR-STATS-20261114 -->
+ ## Garage car selection shows performance and a short description (2026-11-14)
+ GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-STATS-SUBTLE-20261114 -->
++## Garage car stats made more subtle after owner review (2026-11-14)
++GCS05: transparent presentation, small neutral inline figures, muted descriptions and a faint divider replace the filled card and yellow display numbers. Standard footprint narrows; existing selection, data and drag routing remain. Actual-App Compatibility543/0 passes across six cars, four sizes and eleven translations; retained two-object/one-resource shutdown diagnostic, no device/Mobile qualification. [Current views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). Scoped checkpoint verified; no handling/model, backend/export, owner-save/process or main-index action.
++<!-- /GARAGE-STATS-SUBTLE-20261114 -->
++
+ <!-- GARAGE-CAR-STATS-20261114 -->
+ ## Garage car selection shows performance and a short description (2026-11-14)
+ GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-STATS-SUBTLE-20261114 -->
++## Garage car stats made more subtle after owner review (2026-11-14)
++GCS05: transparent presentation, small neutral inline figures, muted descriptions and a faint divider replace the filled card and yellow display numbers. Standard footprint narrows; existing selection, data and drag routing remain. Actual-App Compatibility543/0 passes across six cars, four sizes and eleven translations; retained two-object/one-resource shutdown diagnostic, no device/Mobile qualification. [Current views, commands and limits](GARAGE_CAR_STATS_2026_11_14.md). Scoped checkpoint verified; no handling/model, backend/export, owner-save/process or main-index action.
++<!-- /GARAGE-STATS-SUBTLE-20261114 -->
++
+ <!-- GARAGE-CAR-STATS-20261114 -->
+ ## Garage car selection shows performance and a short description (2026-11-14)
+ GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
+--- a/docs/GARAGE_CAR_STATS_2026_11_14.md
++++ b/docs/GARAGE_CAR_STATS_2026_11_14.md
+@@ -1,4 +1,14 @@
+ # Garage car selection: performance and descriptions
++
++<!-- GARAGE-STATS-SUBTLE-20261114 -->
++## GCS05: quieter presentation after owner review
++
++The owner asks for less visual emphasis. The current presentation removes the filled card, border, shadow and yellow display figures. Small inline label/value rows and a muted description sit directly over the workshop. A faint divider and text shadows retain readability. The standard layout is narrower and starts below the car-title line; the compact layout retains its complete description and existing input routing. Only `game/ui/garage_car_stats.gd` changes runtime behavior; figures, descriptions and selection logic remain as previously qualified.
++
++Actual command: `python scripts/run_garage_car_stats.py gl_compatibility-subtle res://tests/test_garage_car_stats.gd --direct`. The existing actual-App suite passes **543 checks, zero failures**, including all six cars, four window sizes, eleven translated choices, saved-state preservation, immediate selection/cancellation and mouse/touch drag routing. The lower check count follows removal of three decorative/container nodes per layout, without changes to test assertions. This run exits zero with the previously observed two-object/one-resource shutdown diagnostic; no shutdown fix is claimed. No physical-device test or new Mobile-renderer qualification was performed.
++
++Current views: [1280-pixel result](evidence/garage-car-stats-2026-11-14/gl_compatibility-subtle/super_rally-1280.png), [compact result](evidence/garage-car-stats-2026-11-14/gl_compatibility-subtle/super_rally-960.png). The earlier boxed view is retained as the comparison. The follow-up's scoped forward/reverse checkpoint is `evidence/garage-car-stats-2026-11-14/subtle-checkpoint.json`; the earlier checkpoint below describes the initial implementation. Build retention cleanup was run again. Owner appearance acceptance remains.
++<!-- /GARAGE-STATS-SUBTLE-20261114 -->
+ 
+ GCS01–GCS04, 14 November 2026. Implemented the owner's marked left-hand information area with the existing Garage navy, Barlow fonts, yellow figures, fine borders and rounded cards.
+ 

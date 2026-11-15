@@ -15,6 +15,7 @@ var _scope: String = ""
 var _epoch: int = 0
 var _fetched_at: int = -60001
 var _friends_at: int = -60001
+var _reading_feed: bool = false
 var _publications: Array[Dictionary] = []
 ## Read markers are local to this device and isolated by account/server.
 var read_state_path: String = "user://news_read_state.cfg"
@@ -70,6 +71,7 @@ func identity_changed() -> void:
 	checked_day = -1
 	_fetched_at = -60001
 	_friends_at = -60001
+	_reading_feed = false
 	changed.emit()
 
 func remember_publications(receipts: Array[Dictionary]) -> void:
@@ -121,11 +123,34 @@ func blocks_changed() -> void:
 	_friends_at = -60001
 	changed.emit()
 
+func prepare_entry() -> bool:
+	# An expired edition can contain a different lead. Finish its first read
+	# before the Garage opens the paper, reusing any read already in flight.
+	identity_changed()
+	var epoch: int = _epoch
+	var identity: String = scope()
+	if not available(): return true
+	while busy:
+		if not _reading_feed and (Time.get_ticks_msec()-_fetched_at < 60000 or not error.is_empty()): return true
+		await changed
+		if not is_inside_tree() or epoch != _epoch or identity != scope(): return false
+	if Time.get_ticks_msec()-_fetched_at < 60000: return true
+	feed_loaded = false
+	var previous: int = _fetched_at
+	refresh()
+	# A usable GET response may precede a slow daily POST. It is enough to
+	# open the paper; its existing polling handles ongoing daily generation.
+	while busy and _fetched_at == previous and error.is_empty():
+		await changed
+		if not is_inside_tree() or epoch != _epoch or identity != scope(): return false
+	return epoch == _epoch and identity == scope()
+
 func refresh(poll: bool = false) -> void:
 	identity_changed()
 	if busy or not available(): return
 	if not poll and Time.get_ticks_msec()-_fetched_at < 60000: return
 	busy = true
+	_reading_feed = true
 	error = ""
 	changed.emit()
 	var epoch: int = _epoch
@@ -133,6 +158,7 @@ func refresh(poll: bool = false) -> void:
 	var request_daily: bool = not poll and checked_day < day
 	var response: Dictionary = await client.request_api("/news",HTTPClient.METHOD_GET,{},"",true)
 	if epoch != _epoch or scope() != _scope: return
+	_reading_feed = false
 	if response.get("ok",false):
 		var data: Dictionary = response.get("data",{})
 		items = _merge_publications(_with_media(data))

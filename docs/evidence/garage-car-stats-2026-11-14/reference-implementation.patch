@@ -1,0 +1,2306 @@
+--- a/game/ui/garage_car_stats.gd
++++ b/game/ui/garage_car_stats.gd
+@@ -1,36 +1,65 @@
+ extends PanelContainer
+-## Browsing information only; measurements use a clean, straight, unboosted launch.
++## Selection profile. Bars describe stock cars; tooltips retain measured figures.
+ const SUMMARIES: Dictionary = {
+-	"compact":"Agile and forgiving. A versatile choice for mixed circuits.",
+-	"kart":"Quick off the line. Tight turns and strong grip; low speed on long straights.",
+-	"forklift":"Rear-wheel steering swings the tail wide. Strong traction, low top speed.",
+-	"electric":"Instant rear-wheel power. Responsive steering and controlled power slides.",
+-	"hovercraft":"Fan-powered air cushion with long, flowing slides. Steer early to hold your line.",
+-	"super_rally":"Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++	"compact":"Agile and forgiving. Built for mixed circuits.",
++	"kart":"Light on its feet. Precise through the tightest corners.",
++	"forklift":"Heavy traction. Rear-wheel steering with a tail that swings wide.",
++	"electric":"Instant power. Feed in the throttle and control the slide.",
++	"hovercraft":"Long, flowing slides. Steer early and find your rhythm.",
++	"super_rally":"Explosive off the line. Confident in every corner."
+ }
++const SUBTITLES: Dictionary = {
++	"compact":"Mixed-surface all-rounder", "kart":"Lightweight precision",
++	"forklift":"Heavy-duty character", "electric":"Instant electric power",
++	"hovercraft":"Air-cushion drift", "super_rally":"All-terrain power"
++}
++# Authored ease-of-control comparisons; hover steering is not wheel traction.
++const HANDLING: Dictionary = {"compact":4,"kart":5,"forklift":2,"electric":3,"hovercraft":1,"super_rally":4}
++const CAPTIONS: Dictionary = {"acceleration":"Acceleration","handling":"Handling","top_speed":"Top speed"}
+ static var _measurements: Dictionary = {}
+ var vehicle_id: String = ""
++var stat_rows: Dictionary = {}
++var ratings: Dictionary = {}
+ var _stack: VBoxContainer
+-var _speed: Label
+-var _acceleration: Label
++var _title: Label
++var _subtitle: Label
+ var _description: Label
+-var _weight_row: HBoxContainer
+-var _weight: Label
+-var _unit_margins: Array[MarginContainer] = []
++var _rows: VBoxContainer
+ var _compact: bool = false
++var _density: float = 1.0
+ var _built: bool = false
++
++class RatingBar extends Control:
++	var rating: int = 0:
++		set(value):
++			rating = clampi(value,0,5)
++			queue_redraw()
++	func _init() -> void:
++		mouse_filter = Control.MOUSE_FILTER_IGNORE
++		size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		custom_minimum_size = Vector2(98,12)
++	func _draw() -> void:
++		var gap: float = 3.0
++		var width: float = (size.x-gap*4.0)/5.0
++		for index: int in range(5):
++			var style: StyleBoxFlat = MenuStyle.box(MenuStyle.ACCENT if index < rating else Color("4b5d67"),0)
++			style.set_corner_radius_all(2)
++			style.draw(get_canvas_item(),Rect2(Vector2(index*(width+gap),0),Vector2(width,size.y)))
+ 
+ static func performance(id: String) -> Dictionary:
+ 	id = VehicleCatalog.valid_id(id)
+ 	if _measurements.has(id): return _measurements[id]
+ 	var config: HandlingConfig = VehicleCatalog.config(id,HandlingSelection.ORIGINAL_PLUS_INDEX)
+-	# Offline canonical measurements keep simulation construction out of browsing.
+-	# A changed tune must be measured again rather than showing an old figure.
+ 	var launch: Array = preload("res://ui/garage_performance_data.gd").LAUNCHES.get(id,[])
+ 	var seconds: float = float(launch[1]) if launch.size() == 2 and launch[0] == JSON.stringify(config.snapshot()).sha256_text() else -1.0
+ 	var result: Dictionary = {"top_speed":roundi(config.maximum_speed*3.6),"acceleration":seconds,"mass":roundi(config.mass)}
+ 	_measurements[id] = result
+ 	return result
++
++static func comparison(id: String) -> Dictionary:
++	var data: Dictionary = performance(id)
++	return {"acceleration":clampi(roundi(4.0/float(data.acceleration)),1,5) if data.acceleration > 0.0 else 0,
++		"handling":int(HANDLING[VehicleCatalog.valid_id(id)]),"top_speed":clampi(roundi(float(data.top_speed)/60.0),1,5)}
+ 
+ func _ready() -> void:
+ 	name = "GarageCarStats"
+@@ -38,90 +67,95 @@
+ 	focus_mode = Control.FOCUS_NONE
+ 	_stack = VBoxContainer.new()
+ 	_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	_stack.add_theme_constant_override("separation",12)
+ 	add_child(_stack)
+-	var metrics := VBoxContainer.new()
+-	metrics.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	metrics.add_theme_constant_override("separation",4)
+-	_stack.add_child(metrics)
+-	_speed = _metric(metrics,"Top speed","km/h","GarageStatTopSpeed")
+-	_acceleration = _metric(metrics,"0–60 km/h","s","GarageStatAcceleration")
+-	_weight_row = HBoxContainer.new()
+-	_weight_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	_stack.add_child(_weight_row)
+-	var weight_caption: Label = MenuStyle.label("Weight",13,true)
+-	weight_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	_weight_row.add_child(weight_caption)
+-	_weight = MenuStyle.label("",16)
+-	_weight.name = "GarageStatWeight"
+-	GameText.user_text(_weight)
+-	_weight_row.add_child(_weight)
+-	var divider := HSeparator.new()
+-	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	var rule := StyleBoxLine.new()
+-	rule.color = Color(MenuStyle.BORDER,0.35)
+-	rule.thickness = 1
+-	divider.add_theme_stylebox_override("separator",rule)
+-	_stack.add_child(divider)
+-	_description = MenuStyle.label("",13,true)
++	_title = MenuStyle.label("",42)
++	_title.name = "GarageCarProfileTitle"
++	_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	_title.add_theme_font_override("font",MenuStyle.DISPLAY)
++	GameText.user_text(_title)
++	_stack.add_child(_title)
++	_subtitle = MenuStyle.label("",18,true)
++	_subtitle.name = "GarageCarCharacter"
++	_subtitle.add_theme_font_override("font",MenuStyle.DISPLAY)
++	_subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	_stack.add_child(_subtitle)
++	_divider()
++	var rows := VBoxContainer.new()
++	_rows = rows
++	rows.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	rows.add_theme_constant_override("separation",6)
++	_stack.add_child(rows)
++	for key: String in ["acceleration","handling","top_speed"]:
++		var row := HBoxContainer.new()
++		row.name = "GarageRating_"+key
++		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		rows.add_child(row)
++		var caption: Label = MenuStyle.label("",18,true)
++		caption.add_theme_font_override("font",MenuStyle.DISPLAY)
++		caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		GameText.bind_upper(caption,CAPTIONS[key])
++		row.add_child(caption)
++		var bar := RatingBar.new()
++		row.add_child(bar)
++		stat_rows[key] = {"row":row,"caption":caption,"bar":bar}
++	_divider()
++	_description = MenuStyle.label("",14)
+ 	_description.name = "GarageCarDescription"
++	_description.add_theme_font_override("font",MenuStyle.BODY)
+ 	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	_stack.add_child(_description)
+ 	_built = true
+ 	_apply_density()
+ 	set_vehicle(vehicle_id if not vehicle_id.is_empty() else VehicleCatalog.selected)
+ 
+-func _metric(parent: VBoxContainer, caption: String, unit: String, node_name: String) -> Label:
+-	var row := HBoxContainer.new()
+-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	row.add_theme_constant_override("separation",5)
+-	parent.add_child(row)
+-	var title: Label = MenuStyle.label(caption,13,true)
+-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	row.add_child(title)
+-	var number: Label = MenuStyle.label("",16)
+-	number.name = node_name
+-	number.add_theme_color_override("font_color",Color(MenuStyle.TEXT,0.88))
+-	GameText.user_text(number)
+-	row.add_child(number)
+-	var suffix: Label = MenuStyle.label(unit,13,true)
+-	var unit_margin := MarginContainer.new()
+-	unit_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	unit_margin.size_flags_vertical = Control.SIZE_SHRINK_END
+-	_unit_margins.append(unit_margin)
+-	row.add_child(unit_margin)
+-	unit_margin.add_child(suffix)
+-	return number
++func _divider() -> void:
++	var divider := HSeparator.new()
++	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_stack.add_child(divider)
++
++func _notification(what: int) -> void:
++	if what == NOTIFICATION_TRANSLATION_CHANGED and _built:
++		set_vehicle(vehicle_id)
+ 
+ func set_vehicle(id: String) -> void:
+ 	vehicle_id = VehicleCatalog.valid_id(id)
+ 	if not _built: return
+ 	var data: Dictionary = performance(vehicle_id)
+-	_speed.text = str(data.top_speed)
+-	_acceleration.text = "%.1f" % data.acceleration if data.acceleration >= 0.0 else "—"
+-	GameText.bind(_weight,"{weight} kg",{"weight":str(data.mass)})
++	ratings = comparison(vehicle_id)
++	_title.text = VehicleCatalog.title(vehicle_id)
++	GameText.bind_upper(_subtitle,SUBTITLES[vehicle_id])
+ 	GameText.bind(_description,SUMMARIES[vehicle_id])
++	for key: String in stat_rows:
++		var parts: Dictionary = stat_rows[key]
++		parts.bar.rating = ratings[key]
++		parts.bar.accessibility_name = GameText.message("{stat}: {rating} of 5",{"stat":GameText.message(CAPTIONS[key]),"rating":ratings[key]})
++		parts.row.tooltip_text = GameText.message("{speed} km/h",{"speed":data.top_speed}) if key == "top_speed" else GameText.message("0–60 km/h: {time} s",{"time":"%.1f" % data.acceleration}) if key == "acceleration" and data.acceleration >= 0.0 else GameText.message(SUMMARIES[vehicle_id])
+ 	reset_size()
+ 
+ func fit_in_preview(dimensions: Vector2) -> void:
+-	var compact: bool = dimensions.y < 260.0
+-	if compact != _compact:
++	var compact: bool = dimensions.y < 300.0
++	var density: float = 0.8 if compact else clampf(dimensions.y/380.0,0.95,1.25)
++	if compact != _compact or not is_equal_approx(density,_density):
+ 		_compact = compact
++		_density = density
+ 		_apply_density()
+-	position = Vector2(12,12) if compact else Vector2(24,56)
+-	size.x = clampf(dimensions.x*(0.30 if compact else 0.22),248.0 if compact else 224.0,260.0)
++	position = Vector2(0,8)
++	size.x = clampf(dimensions.x*0.275,248.0 if compact else 288.0,280.0 if compact else 410.0)
+ 	size.y = get_combined_minimum_size().y
+ 
+ func _apply_density() -> void:
+-	# Quiet text over the workshop, subordinate to the car and selection actions.
+-	add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
++	var style: StyleBoxFlat = MenuStyle.box(Color(0.025,0.05,0.065,0.91),10 if _compact else roundi(18*_density))
++	style.border_color = Color(MenuStyle.MUTED,0.35)
++	style.set_border_width_all(1)
++	style.set_corner_radius_all(8)
++	add_theme_stylebox_override("panel",style)
+ 	if not _built: return
+-	_stack.add_theme_constant_override("separation",6 if _compact else 8)
+-	_weight_row.visible = not _compact
+-	for margin: MarginContainer in _unit_margins: margin.add_theme_constant_override("margin_bottom",2)
+-	_description.add_theme_font_size_override("font_size",12 if _compact else 13)
+-	_description.add_theme_constant_override("line_spacing",0 if _compact else 1)
+-	for label: Label in [_speed,_acceleration,_weight,_description]:
+-		label.add_theme_color_override("font_shadow_color",Color(0,0,0,0.55))
+-		label.add_theme_constant_override("shadow_offset_x",0)
+-		label.add_theme_constant_override("shadow_offset_y",1)
++	_stack.add_theme_constant_override("separation",2 if _compact else roundi(8*_density))
++	_rows.add_theme_constant_override("separation",2 if _compact else 6)
++	_title.add_theme_font_size_override("font_size",28 if _compact else roundi(46*_density))
++	_subtitle.add_theme_font_size_override("font_size",14 if _compact else roundi(20*_density))
++	_description.add_theme_font_size_override("font_size",12 if _compact else roundi(16*_density))
++	_description.add_theme_constant_override("line_spacing",0)
++	for parts: Dictionary in stat_rows.values():
++		parts.caption.add_theme_font_size_override("font_size",14 if _compact else roundi(20*_density))
++		parts.bar.custom_minimum_size = Vector2(82,10) if _compact else Vector2(98,12)*_density
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -91,6 +91,8 @@
+ var _preview_service: Node
+ var prepared_pictures: Dictionary={}
+ var tile_stride: int = 240
++var _carousel_height: float = 180.0
++var _stats_tooltip_key: Array = []
+ var _condition_saved: Dictionary = {}
+ var _condition_presented: Dictionary = {}
+ var _livery_saved: Dictionary = {}
+@@ -110,6 +112,7 @@
+ var _compare_button: Button
+ var _part_indicator: Control
+ var _customisation_camera := preload("res://ui/garage_customisation_camera.gd").new()
++var _selection_camera := preload("res://ui/garage_selection_camera.gd").new()
+ var _customise_tab: String = "livery"
+ var _sticker_surface: String = "hood"
+ var _sticker_board: Control
+@@ -245,6 +248,7 @@
+ 		_coin_balance.offset_right = -24
+ 		_coin_balance.offset_top = 18
+ 		_coin_balance.offset_bottom = 48
++		_coin_balance.visible = section != "cars"
+ 		_coin_status = MenuStyle.label("",13,true)
+ 		_coin_status.name = "GarageCoinStatus"
+ 		_coin_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+@@ -255,6 +259,7 @@
+ 		_coin_status.offset_right = -24
+ 		_coin_status.offset_top = 49
+ 		_coin_status.offset_bottom = 72
++		_coin_status.visible = section != "cars"
+ 		economy.changed.connect(_shop_changed)
+ 		_shop_changed()
+ 		if is_visible_in_tree(): economy.refresh()
+@@ -331,6 +336,7 @@
+ 	tools_panel.add_child(tools)
+ 	actions = HBoxContainer.new()
+ 	actions.name = "GarageActions"
++	actions.alignment = BoxContainer.ALIGNMENT_END
+ 	_live_menus.add_child(actions)
+ 	for panel: Control in [rail,tools_panel,actions]:
+ 		if not panel.minimum_size_changed.is_connected(_sync_menu_minimums):
+@@ -503,7 +509,7 @@
+ 	# Reserve the carousel and action row on short landscape windows too.
+ 	# The parent may already exceed its viewport because of our minimum height.
+ 	var available_height: float = get_viewport_rect().end.y-global_position.y-16.0
+-	var preview_height: float = clampf(available_height-224.0,160.0,250.0) if section == "cars" else 250.0
++	var preview_height: float = clampf(available_height-_carousel_height-80.0,160.0,250.0) if section == "cars" else 250.0
+ 	if not is_equal_approx(_preview_slot.custom_minimum_size.y,preview_height):
+ 		_preview_slot.custom_minimum_size.y = preview_height
+ 		preview.custom_minimum_size.y = preview_height
+@@ -545,10 +551,21 @@
+ func _layout_workshop_overlay() -> void:
+ 	if is_instance_valid(_car_stats) and _car_stats.visible:
+ 		_car_stats.fit_in_preview(preview.size)
++	if is_instance_valid(showroom): _selection_camera.sync(showroom,section == "cars",_car_stats.size.x/maxf(1.0,preview.size.x))
++	_update_stats_tooltip()
+ 	var view_controls: Control = preview.get_node_or_null("GarageViewControls")
+ 	if is_instance_valid(view_controls):
+-		view_controls.offset_left = _car_stats.get_rect().end.x+16.0 if _car_stats.visible and preview.size.y < 260.0 else 24.0
++		view_controls.offset_left = _car_stats.get_rect().end.x+16.0 if section == "cars" else 24.0
++		view_controls.offset_right = -32.0 if section == "cars" else -16.0
++		view_controls.offset_top = -44.0 if section == "cars" else -36.0
++		view_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if section == "cars" else HORIZONTAL_ALIGNMENT_LEFT
++		if view_hint.get_meta("selection_hint",false) != (section == "cars"):
++			view_hint.set_meta("selection_hint",section == "cars")
++			if section == "cars": GameText.bind_upper(view_hint,"Drag to rotate")
++			else: GameText.bind(view_hint,"Drag to turn")
+ 	if is_instance_valid(heading):
++		heading.visible = section != "cars"
++		preview.get_node("ShowroomHeaderShade").visible = section != "cars"
+ 		heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER if section == "cars" else HORIZONTAL_ALIGNMENT_LEFT
+ 		heading.size.x = maxf(100,preview.size.x-48)
+ 	if not is_instance_valid(_workshop_tabs) or not _workshop_tabs.visible:
+@@ -567,6 +584,19 @@
+ 	_workshop_tabs.size = _workshop_tabs.get_combined_minimum_size()
+ 	_workshop_tabs.position = Vector2(preview.size.x-_workshop_tabs.size.x-16,14)
+ 	heading.size.x = maxf(100,minf(520,_workshop_tabs.position.x-heading.position.x-12))
++
++func _update_stats_tooltip() -> void:
++	if not is_instance_valid(showroom) or not is_instance_valid(_car_stats): return
++	var pointer_at: Vector2 = get_global_mouse_position()
++	var key: Array = [section,pointer_at,_car_stats.vehicle_id,TranslationServer.get_locale()]
++	if key == _stats_tooltip_key: return
++	_stats_tooltip_key = key
++	showroom.tooltip_text = ""
++	if section != "cars": return
++	for parts: Dictionary in _car_stats.stat_rows.values():
++		if parts.row.get_global_rect().has_point(pointer_at):
++			showroom.tooltip_text = parts.row.tooltip_text
++			break
+ 
+ func _workshop_overlay_button(destination: String, caption: String, active: bool) -> Button:
+ 	var button: Button = MenuStyle.button("",_wash_for_customisation if destination == "care" else _navigate_section.bind(destination))
+@@ -695,6 +725,7 @@
+ 	showroom.trophy_tapped.connect(_trophy_tapped)
+ 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.add_child(showroom)
++	_selection_camera.sync(showroom,section == "cars",0.275)
+ 	preview.move_child(showroom, 0)
+ 	MenuStyle.fill(showroom)
+ 	_condition_presented = showroom.weathering.snapshot()
+@@ -858,25 +889,60 @@
+ 		card.mouse_exited.connect(func() -> void: shade.bg_color = Color(0.035,0.095,0.13,0.58))
+ 		card.button_down.connect(func() -> void: shade.bg_color = Color(0.11,0.20,0.23,0.82))
+ 		card.button_up.connect(func() -> void: shade.bg_color = Color(0.075,0.16,0.20,0.72) if card.get_global_rect().has_point(card.get_global_mouse_position()) else Color(0.035,0.095,0.13,0.58))
+-		var caption := MenuStyle.label(_car_name(id), 22)
++		var caption := MenuStyle.label(_car_name(id), 26)
+ 		caption.name = "CarCardTitle_" + id
+ 		caption.add_theme_font_override("font", MenuStyle.DISPLAY)
+ 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 		caption.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 		caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-		footer.add_child(caption)
++		var titles := VBoxContainer.new()
++		titles.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		titles.alignment = BoxContainer.ALIGNMENT_CENTER
++		titles.add_theme_constant_override("separation",0)
++		footer.add_child(titles)
++		titles.add_child(caption)
++		var selected := HBoxContainer.new()
++		selected.name = "CarEquipped_"+id
++		selected.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		selected.alignment = BoxContainer.ALIGNMENT_CENTER
++		selected.add_theme_constant_override("separation",4)
++		titles.add_child(selected)
++		var tick := TextureRect.new()
++		tick.texture = MenuIcon.texture("check")
++		tick.custom_minimum_size = Vector2(14,14)
++		tick.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		tick.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		tick.modulate = MenuStyle.ACCENT
++		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		selected.add_child(tick)
++		var equipped := MenuStyle.label("",14)
++		equipped.add_theme_font_override("font",MenuStyle.DISPLAY)
++		equipped.add_theme_color_override("font_color",MenuStyle.ACCENT)
++		GameText.bind_upper(equipped,"Selected")
++		selected.add_child(equipped)
+ 	_update_cards()
+ 
+ func _layout_gallery() -> void:
+ 	if not is_instance_valid(cards) or gallery_slot.size.x <= 0: return
+ 	var first: int = roundi(float(gallery.scroll_horizontal) / tile_stride)
+ 	gallery.call("_stop_snap")
+-	var slots: int = clampi(floori((gallery_slot.size.x + 12.0) / 240.0), 1, 5)
++	_carousel_height = roundf(clampf(get_viewport_rect().size.y*0.245,128.0,236.0))
++	gallery_slot.custom_minimum_size.y = _carousel_height
++	gallery_content.custom_minimum_size.y = _carousel_height
++	var slots: int = clampi(floori((gallery_slot.size.x + 12.0) / 280.0), 1, 4)
+ 	tile_stride = floori((gallery_slot.size.x + 12.0) / slots)
+-	gallery.size = Vector2(slots * tile_stride - 12, 140)
++	gallery.size = Vector2(slots * tile_stride - 12, _carousel_height)
+ 	gallery.set("snap_stride", tile_stride)
+ 	gallery_content.custom_minimum_size.x = VehicleCatalog.IDS.size() * tile_stride - 12
+-	for card: Control in cards.get_children(): card.custom_minimum_size = Vector2(tile_stride - 12, 140)
++	for card: Control in cards.get_children():
++		card.custom_minimum_size = Vector2(tile_stride - 12, _carousel_height)
++		var id: String = VehicleCatalog.IDS[card.get_index()]
++		var footer: Control = card.find_child("CarCardLabel_"+id,true,false)
++		footer.custom_minimum_size.y = 48 if _carousel_height < 155 else 58
++		footer.offset_top = -footer.custom_minimum_size.y
++		(card.find_child("CarCardTitle_"+id,true,false) as Label).add_theme_font_size_override("font_size",22 if _carousel_height < 155 else 28)
++	gallery_content.size = Vector2(gallery_content.custom_minimum_size.x,_carousel_height)
++	cards.size = Vector2(gallery_content.custom_minimum_size.x,_carousel_height)
+ 	gallery.scroll_horizontal = first * tile_stride
+ 
+ func _focus_card(index: int) -> void:
+@@ -898,7 +964,7 @@
+ 		var card := cards.get_child(index) as Button
+ 		var chosen: bool = VehicleCatalog.IDS[index] == highlighted
+ 		var style: StyleBoxFlat = MenuStyle.card(0)
+-		style.bg_color = Color(0.035,0.095,0.13,0.58)
++		style.bg_color = Color(0.035,0.075,0.10,0.90)
+ 		style.set_corner_radius_all(8)
+ 		style.border_color = MenuStyle.ACCENT if chosen else Color(MenuStyle.BORDER,0.65)
+ 		style.set_border_width_all(2 if chosen else 1)
+@@ -911,6 +977,7 @@
+ 		pressed.bg_color = Color(0.11,0.20,0.23,0.82)
+ 		card.add_theme_stylebox_override("pressed",pressed)
+ 		(card.find_child("CarCardTitle_" + VehicleCatalog.IDS[index], true, false) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
++		card.find_child("CarEquipped_"+VehicleCatalog.IDS[index],true,false).visible = VehicleCatalog.IDS[index] == _selected_vehicle_id
+ 
+ func _queue_car_preview(index: int) -> void:
+ 	if index < 0 or index >= VehicleCatalog.IDS.size(): return
+@@ -970,6 +1037,7 @@
+ 	if index < 0 or index >= VehicleCatalog.IDS.size(): return
+ 	preview_car(index)
+ 	_selected_vehicle_id = vehicle_id
++	_update_cards()
+ 	_show_section("customise")
+ 	vehicle_selected.emit(index)
+ 
+@@ -1066,6 +1134,7 @@
+ 		_set_news_pending(false)
+ 		if not ready or not is_inside_tree() or not is_visible_in_tree() or entry_service != news_client: return
+ 	_set_news_pending(false)
++	if next != "cars": _selection_camera.clear()
+ 	_finish_tools(next != section or section != "customise")
+ 	if is_instance_valid(_compare_button): _compare_button.hide()
+ 	if next in ["customise","tuning","care"]: _workshop_wash_required = not _clean_for_customisation()
+@@ -1077,6 +1146,7 @@
+ 	_prepare_menu_move()
+ 	_set_customise_layout(next == "records" or (next in ["customise","tuning"] and not _customisation_locked))
+ 	section = next
++	actions.alignment = BoxContainer.ALIGNMENT_END if next == "cars" else BoxContainer.ALIGNMENT_BEGIN
+ 	if next in ["customise","tuning","care"]: _workshop_section = next
+ 	_workshop_tabs.visible = next in ["customise","tuning","care"]
+ 	for child: Node in _workshop_tabs.get_children():
+@@ -1093,8 +1163,8 @@
+ 	_preview_slot.visible = next not in ["news","achievements"]
+ 	_actions_slot.visible = next not in ["news","achievements","customise","tuning"]
+ 	actions.visible = _actions_slot.visible
+-	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["customise","tuning","care"]
+-	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["customise","tuning","care"]
++	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["cars","customise","tuning","care"]
++	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["cars","customise","tuning","care"]
+ 	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements","records"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+ 	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements","records"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+ 	if next == "news": tools_panel.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
+@@ -1124,14 +1194,14 @@
+ 	_build_rail()
+ 	if section == "cars":
+ 		_refresh_thumbnails()
+-		select_button = MenuStyle.button("SELECT", _confirm_car, true)
++		select_button = MenuStyle.button("", _confirm_car, true)
++		GameText.bind_upper(select_button,"Select vehicle")
+ 		select_button.name = "GarageSelectCar"
+ 		select_button.icon = MenuIcon.texture("arrow")
+ 		select_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 		for state: String in ["icon_normal_color", "icon_hover_color", "icon_focus_color"]:
+ 			select_button.add_theme_color_override(state, MenuStyle.INK)
+-		select_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		select_button.custom_minimum_size.y = 60
++		select_button.custom_minimum_size = Vector2(280,52)
+ 		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
+ 		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
+ 		actions.add_child(select_button)
+@@ -1202,10 +1272,15 @@
+ 	_start_menu_move()
+ 
+ func _add_test_drive_action() -> void:
+-	var button := MenuStyle.button("Test drive", _request_free_drive)
++	var button := MenuStyle.button("", _request_free_drive)
++	GameText.bind_upper(button,"Test drive")
+ 	button.name = "GarageTestDrive"
+ 	button.tooltip_text = "Drive freely in the 120 × 72 m P1 parking hall"
+-	button.custom_minimum_size = Vector2(180,60)
++	button.custom_minimum_size = Vector2(180,52)
++	var style: StyleBoxFlat = MenuStyle.box(Color(0.035,0.075,0.10,0.65),12)
++	style.border_color = Color(MenuStyle.TEXT,0.7)
++	style.set_border_width_all(1)
++	button.add_theme_stylebox_override("normal",style)
+ 	actions.add_child(button)
+ 
+ func _request_free_drive() -> void:
+@@ -1213,6 +1288,7 @@
+ 	_finish_car_preview()
+ 	_finish_tools()
+ 	_selected_vehicle_id = vehicle_id
++	_update_cards()
+ 	vehicle_selected.emit(VehicleCatalog.IDS.find(vehicle_id))
+ 	free_drive_requested.emit()
+ 
+@@ -1700,7 +1776,7 @@
+ 		if picker.get_popup().visible: picker.get_popup().hide()
+ 	_save_condition()
+ 	_wash_achievement_pending = false
+-	if view_hint != null: view_hint.text = "Drag to turn"
++	if view_hint != null: _update_wash_hint()
+ 
+ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree():
+@@ -1803,7 +1879,8 @@
+ 	_update_wash_hint()
+ 
+ func _update_wash_hint() -> void:
+-	view_hint.text = ("Hold to rinse / Two fingers to turn" if showroom.wash_tool == "hose" else "Drag to wash / Two fingers to turn") if showroom.wash_mode else "Drag to turn"
++	if section == "cars": GameText.bind_upper(view_hint,"Drag to rotate")
++	else: GameText.bind(view_hint,("Hold to rinse / Two fingers to turn" if showroom.wash_tool == "hose" else "Drag to wash / Two fingers to turn") if showroom.wash_mode else "Drag to turn")
+ 
+ func _save_condition() -> void:
+ 	if showroom == null: return
+@@ -1856,6 +1933,7 @@
+ 
+ func _exit_tree() -> void:
+ 	_cancel_car_preview()
++	_selection_camera.clear()
+ 	_finish_tools()
+ 	if _menu_motion != null: _menu_motion.kill()
+ 
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -30,6 +30,14 @@
+ func refresh_thumbnail() -> void:
+ 	if _image == null or preview_service == null: return
+ 	var key: String = preview_service.identity(self)
++	var portrait: Texture2D = preload("res://ui/garage_selection_pictures.gd").texture(self)
++	if portrait != null:
++		preview_key = key
++		displayed_key = key
++		_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		_image.texture = portrait
++		_placeholder.hide()
++		return
+ 	if key == preview_key:
+ 		if displayed_key!=key and preview_service.has_method("_remembered"):
+ 			var ready: Texture2D=preview_service._remembered(vehicle_id,key)
+@@ -49,6 +57,7 @@
+ 
+ func publish_preview(key: String, value: Texture2D) -> void:
+ 	if key == preview_key and _image != null and value != null:
++		_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 		_image.texture = value
+ 		displayed_key = key
+ 		_placeholder.hide()
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -768,6 +768,9 @@
+ 	settings.custom_minimum_size = Vector2(54,54)
+ 	settings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	nav.add_child(settings)
++	var garage_header: Node = preload("res://ui/garage_header.gd").new()
++	garage_header.app = self
++	nav.add_child(garage_header)
+ 	layout.add_child(HSeparator.new())
+ 	content = VBoxContainer.new()
+ 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+--- a/game/tests/test_garage_car_stats.gd
++++ b/game/tests/test_garage_car_stats.gd
+@@ -28,7 +28,7 @@
+ 	check(preload("res://ui/garage_performance_data.gd").PHYSICS_VERSION == VehicleSimulation.PHYSICS_VERSION,"launch measurement physics version "+id)
+ 	check(float(data.acceleration) >= 0.0,"current tune has a qualified launch measurement "+id)
+ 	check(page._car_stats.vehicle_id == id,"stats follow browsed car "+id)
+-	check(int(page._car_stats._speed.text) == roundi(config.maximum_speed*3.6),"top speed matches race configuration "+id)
++	check(page._car_stats.stat_rows.top_speed.row.tooltip_text == GameText.message("{speed} km/h",{"speed":roundi(config.maximum_speed*3.6)}),"top speed tooltip matches race configuration "+id)
+ 	check(int(data.mass) == roundi(config.mass),"weight matches race configuration "+id)
+ 	check(page._car_stats._description.text == GameText.message(Stats.SUMMARIES[id]),"short description matches car "+id)
+ 	# Replay the displayed rounded launch time with the actual clean-road simulation.
+--- a/game/export_presets.cfg
++++ b/game/export_presets.cfg
+@@ -6,7 +6,7 @@
+ dedicated_server=false
+ custom_features=""
+ export_filter="all_resources"
+-include_filter="rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
++include_filter="assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
+ ; Superseded authoring revisions; see scripts/obsolete_export_assets.json.
+ exclude_filter="tests/*,music/*,assets/audio/score_v1/*,backend/runner.gd,backend/generate_fixture.gd,backend/generate_test_driver.gd,backend/test_client.gd,platform/windows/*,platform/track_geometry/*.dll,assets/audio/ambience/desert_dune_sand.wav,assets/audio/ambience/desert_wind.wav,assets/audio/ambience/desert_wind_b.wav,assets/audio/ambience/desert_wind_c.wav,assets/audio/ambience/night_cicadas.wav,assets/audio/ambience/storm_rain_recorded.wav,assets/audio/ambience/winter_gale_a.wav,assets/audio/ambience/winter_gale_b.wav,assets/audio/menu_exploration_v1/exploration_menu_loop.wav,assets/audio/storm_rumble.wav,assets/audio/vehicles/road.wav,assets/audio/vehicles/wind.wav,assets/audio/vehicles/water.wav,assets/audio/vehicles/sand_roll.wav,assets/audio/vehicles/sand.wav,assets/audio/vehicles/sand_debris.wav,assets/audio/vehicles/kerb_roll.wav,assets/audio/vehicles/loose.wav,assets/audio/vehicles/grass.wav,assets/audio/locked_in_v1/desert_groove.ogg,assets/audio/locked_in_v1/desert_hook.ogg,assets/audio/locked_in_v1/desert_lock.ogg,assets/audio/locked_in_v1/desert_pulse.ogg,assets/audio/locked_in_v1/desert_soar.ogg,assets/audio/locked_in_v1/desert_wide.ogg,assets/audio/locked_in_v1/night_city_groove.ogg,assets/audio/locked_in_v1/night_city_hook.ogg,assets/audio/locked_in_v1/night_city_lock.ogg,assets/audio/locked_in_v1/night_city_pulse.ogg,assets/audio/locked_in_v1/night_city_soar.ogg,assets/audio/locked_in_v1/night_city_wide.ogg,assets/audio/locked_in_v1/pine_groove.ogg,assets/audio/locked_in_v1/pine_hook.ogg,assets/audio/locked_in_v1/pine_lock.ogg,assets/audio/locked_in_v1/pine_pulse.ogg,assets/audio/locked_in_v1/pine_soar.ogg,assets/audio/locked_in_v1/pine_wide.ogg,assets/audio/locked_in_v1/storm_groove.ogg,assets/audio/locked_in_v1/storm_hook.ogg,assets/audio/locked_in_v1/storm_lock.ogg,assets/audio/locked_in_v1/storm_pulse.ogg,assets/audio/locked_in_v1/storm_soar.ogg,assets/audio/locked_in_v1/storm_wide.ogg,assets/audio/locked_in_v1/winter_groove.ogg,assets/audio/locked_in_v1/winter_hook.ogg,assets/audio/locked_in_v1/winter_lock.ogg,assets/audio/locked_in_v1/winter_pulse.ogg,assets/audio/locked_in_v1/winter_soar.ogg,assets/audio/locked_in_v1/winter_wide.ogg,assets/audio/locked_in_v1/menu_theme.wav,assets/audio/storm_rain.wav,assets/audio/vehicles/wet_road.wav,assets/vehicles/compact_coachwork_v1/*,assets/vehicles/compact_coachwork_v2/*,assets/vehicles/electric_aligned_doors_v1/*,assets/vehicles/electric_coachwork_v10/*,assets/vehicles/electric_coachwork_v11/*,assets/vehicles/electric_coachwork_v12/*,assets/vehicles/electric_coachwork_v13/*,assets/vehicles/electric_coachwork_v14/*,assets/vehicles/electric_coachwork_v15/*,assets/vehicles/electric_coachwork_v16/*,assets/vehicles/electric_coachwork_v17/*,assets/vehicles/electric_coachwork_v20/*,assets/vehicles/electric_coachwork_v21/*,assets/vehicles/electric_coachwork_v22/*,assets/vehicles/electric_coachwork_v23/*,assets/vehicles/electric_curved_rear_glass_sides_v1/*,assets/vehicles/electric_curved_rear_window_v1/*,assets/vehicles/electric_extended_hatch_seam_v1/*,assets/vehicles/electric_painted_rear_quarters_v1/*,assets/vehicles/electric_rear_hatch_seam_v1/*,assets/vehicles/electric_rear_hatch_seam_v2/*,assets/vehicles/electric_reference_car_nose_v1/*,assets/vehicles/electric_reference_hood_v1/*,assets/vehicles/electric_reference_lower_cowl_v1/*,assets/vehicles/electric_reference_premium_v1/*,assets/vehicles/electric_reference_rounded_body_v1/*,assets/vehicles/electric_reference_rounded_doors_v1/*,assets/vehicles/electric_reference_slim_v1/*,assets/vehicles/electric_reference_smooth_nose_v1/*,assets/vehicles/electric_reference_sport_nose_v1/*,assets/vehicles/electric_reference_sports_v1/*,assets/vehicles/electric_reference_straight_sides_v1/*,assets/vehicles/electric_reference_tapered_hood_v1/*,assets/vehicles/electric_reference_v1/*,assets/vehicles/electric_reference_v2/*,assets/vehicles/electric_reference_v3/*,assets/vehicles/electric_roof_trunk_sills_v1/*,assets/vehicles/electric_smooth_hatch_seam_v1/*,assets/vehicles/electric_smooth_hatch_seam_v2/*,assets/vehicles/electric_sport_fastback_v1/*,assets/vehicles/electric_sport_fenders_v1/*,assets/vehicles/electric_subtle_fenders_v1/*,assets/vehicles/electric_visible_kits_v2/*,assets/vehicles/electric_wider_lower_doors_v1/*,assets/vehicles/electric_wider_sills_trunk_v1/*,assets/vehicles/hovercraft_sport_v3/*,assets/menu/challenges/entry-create-v1.png,assets/menu/challenges/entry-create-v2.png,assets/menu/challenges/entry-find-play-v1.png,assets/menu/challenges/entry-find-play-v2.png,assets/menu/challenges/group-race-v1.png,assets/menu/challenges/group-race-v2.png,assets/menu/challenges/one-to-one-v1.png,assets/menu/challenges/one-to-one-v2.png,assets/menu/challenges/three-by-three-v1.png,assets/menu/challenges/three-by-three-v2.png,assets/menu/challenges/three-by-three-v3.png,assets/menu/challenges/three-by-three-v4.png,assets/menu/challenges/three-by-three-v5.png,assets/menu/challenges/three-by-three-v6.png,assets/menu/challenges/three-by-three-v7.png,assets/menu/challenges/three-by-three-v8.png"
+ export_path="../build/android/circuit01-debug.apk"
+@@ -47,7 +47,7 @@
+ dedicated_server=false
+ custom_features=""
+ export_filter="all_resources"
+-include_filter="rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
++include_filter="assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
+ ; Superseded authoring revisions; see scripts/obsolete_export_assets.json.
+ exclude_filter="tests/*,music/*,assets/audio/score_v1/*,backend/runner.gd,backend/generate_fixture.gd,backend/generate_test_driver.gd,backend/test_client.gd,platform/windows/*,platform/track_geometry/*.dll,assets/audio/ambience/desert_dune_sand.wav,assets/audio/ambience/desert_wind.wav,assets/audio/ambience/desert_wind_b.wav,assets/audio/ambience/desert_wind_c.wav,assets/audio/ambience/night_cicadas.wav,assets/audio/ambience/storm_rain_recorded.wav,assets/audio/ambience/winter_gale_a.wav,assets/audio/ambience/winter_gale_b.wav,assets/audio/menu_exploration_v1/exploration_menu_loop.wav,assets/audio/storm_rumble.wav,assets/audio/vehicles/road.wav,assets/audio/vehicles/wind.wav,assets/audio/vehicles/water.wav,assets/audio/vehicles/sand_roll.wav,assets/audio/vehicles/sand.wav,assets/audio/vehicles/sand_debris.wav,assets/audio/vehicles/kerb_roll.wav,assets/audio/vehicles/loose.wav,assets/audio/vehicles/grass.wav,assets/audio/locked_in_v1/desert_groove.ogg,assets/audio/locked_in_v1/desert_hook.ogg,assets/audio/locked_in_v1/desert_lock.ogg,assets/audio/locked_in_v1/desert_pulse.ogg,assets/audio/locked_in_v1/desert_soar.ogg,assets/audio/locked_in_v1/desert_wide.ogg,assets/audio/locked_in_v1/night_city_groove.ogg,assets/audio/locked_in_v1/night_city_hook.ogg,assets/audio/locked_in_v1/night_city_lock.ogg,assets/audio/locked_in_v1/night_city_pulse.ogg,assets/audio/locked_in_v1/night_city_soar.ogg,assets/audio/locked_in_v1/night_city_wide.ogg,assets/audio/locked_in_v1/pine_groove.ogg,assets/audio/locked_in_v1/pine_hook.ogg,assets/audio/locked_in_v1/pine_lock.ogg,assets/audio/locked_in_v1/pine_pulse.ogg,assets/audio/locked_in_v1/pine_soar.ogg,assets/audio/locked_in_v1/pine_wide.ogg,assets/audio/locked_in_v1/storm_groove.ogg,assets/audio/locked_in_v1/storm_hook.ogg,assets/audio/locked_in_v1/storm_lock.ogg,assets/audio/locked_in_v1/storm_pulse.ogg,assets/audio/locked_in_v1/storm_soar.ogg,assets/audio/locked_in_v1/storm_wide.ogg,assets/audio/locked_in_v1/winter_groove.ogg,assets/audio/locked_in_v1/winter_hook.ogg,assets/audio/locked_in_v1/winter_lock.ogg,assets/audio/locked_in_v1/winter_pulse.ogg,assets/audio/locked_in_v1/winter_soar.ogg,assets/audio/locked_in_v1/winter_wide.ogg,assets/audio/locked_in_v1/menu_theme.wav,assets/audio/storm_rain.wav,assets/audio/vehicles/wet_road.wav,assets/vehicles/compact_coachwork_v1/*,assets/vehicles/compact_coachwork_v2/*,assets/vehicles/electric_aligned_doors_v1/*,assets/vehicles/electric_coachwork_v10/*,assets/vehicles/electric_coachwork_v11/*,assets/vehicles/electric_coachwork_v12/*,assets/vehicles/electric_coachwork_v13/*,assets/vehicles/electric_coachwork_v14/*,assets/vehicles/electric_coachwork_v15/*,assets/vehicles/electric_coachwork_v16/*,assets/vehicles/electric_coachwork_v17/*,assets/vehicles/electric_coachwork_v20/*,assets/vehicles/electric_coachwork_v21/*,assets/vehicles/electric_coachwork_v22/*,assets/vehicles/electric_coachwork_v23/*,assets/vehicles/electric_curved_rear_glass_sides_v1/*,assets/vehicles/electric_curved_rear_window_v1/*,assets/vehicles/electric_extended_hatch_seam_v1/*,assets/vehicles/electric_painted_rear_quarters_v1/*,assets/vehicles/electric_rear_hatch_seam_v1/*,assets/vehicles/electric_rear_hatch_seam_v2/*,assets/vehicles/electric_reference_car_nose_v1/*,assets/vehicles/electric_reference_hood_v1/*,assets/vehicles/electric_reference_lower_cowl_v1/*,assets/vehicles/electric_reference_premium_v1/*,assets/vehicles/electric_reference_rounded_body_v1/*,assets/vehicles/electric_reference_rounded_doors_v1/*,assets/vehicles/electric_reference_slim_v1/*,assets/vehicles/electric_reference_smooth_nose_v1/*,assets/vehicles/electric_reference_sport_nose_v1/*,assets/vehicles/electric_reference_sports_v1/*,assets/vehicles/electric_reference_straight_sides_v1/*,assets/vehicles/electric_reference_tapered_hood_v1/*,assets/vehicles/electric_reference_v1/*,assets/vehicles/electric_reference_v2/*,assets/vehicles/electric_reference_v3/*,assets/vehicles/electric_roof_trunk_sills_v1/*,assets/vehicles/electric_smooth_hatch_seam_v1/*,assets/vehicles/electric_smooth_hatch_seam_v2/*,assets/vehicles/electric_sport_fastback_v1/*,assets/vehicles/electric_sport_fenders_v1/*,assets/vehicles/electric_subtle_fenders_v1/*,assets/vehicles/electric_visible_kits_v2/*,assets/vehicles/electric_wider_lower_doors_v1/*,assets/vehicles/electric_wider_sills_trunk_v1/*,assets/vehicles/hovercraft_sport_v3/*,assets/menu/challenges/entry-create-v1.png,assets/menu/challenges/entry-create-v2.png,assets/menu/challenges/entry-find-play-v1.png,assets/menu/challenges/entry-find-play-v2.png,assets/menu/challenges/group-race-v1.png,assets/menu/challenges/group-race-v2.png,assets/menu/challenges/one-to-one-v1.png,assets/menu/challenges/one-to-one-v2.png,assets/menu/challenges/three-by-three-v1.png,assets/menu/challenges/three-by-three-v2.png,assets/menu/challenges/three-by-three-v3.png,assets/menu/challenges/three-by-three-v4.png,assets/menu/challenges/three-by-three-v5.png,assets/menu/challenges/three-by-three-v6.png,assets/menu/challenges/three-by-three-v7.png,assets/menu/challenges/three-by-three-v8.png"
+ export_path="../build/android/circuit01-arm64.apk"
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -380,6 +380,8 @@
+ 	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
+ 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')
+ 	if ($LASTEXITCODE) { throw 'Garage preview assets are stale or missing. Bake native previews before exporting.' }
++	& python (Join-Path $PSScriptRoot 'check_garage_selection_pictures.py')
++	if ($LASTEXITCODE) { throw 'Garage selection portraits are stale or missing. Bake the native selection portraits before exporting.' }
+     Test-AndroidTools
+     Prepare-AndroidGradle
+     Invoke-Validation
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -3,6 +3,8 @@
+ . (Join-Path $PSScriptRoot 'garage_preview_identity.ps1')
+ . (Join-Path $PSScriptRoot 'prepared_asset_identity.ps1')
+ function Test-GaragePreviewSource([string]$Relative) {
++    # Selection portraits are derived UI output, never inputs to a room capture.
++    if ($Relative -match '^game/assets/garage/selection_portraits_v1/') { return $false }
+     # Match the native preview baker's conservative model/room dependencies.
+     # Menu layout, translations, backend and build metadata do not repaint a car.
+     if ($Relative -match '^game/(vehicle/|assets/(garage/|liveries/)|resources/(cars/|[^/]+\.tres$))' -or
+--- a/scripts/garage_preview_identity.ps1
++++ b/scripts/garage_preview_identity.ps1
+@@ -6,6 +6,11 @@
+ }
+ 
+ function Get-GaragePreviewVehicles([string]$Relative) {
++    # Selection layouts and their derived portraits cannot change a native car/room photograph.
++    if ($Relative -match '^game/assets/garage/selection_portraits_v1/' -or
++        $Relative -in @('game/ui/garage_car_stats.gd', 'game/ui/garage_performance_data.gd',
++            'game/ui/garage_header.gd', 'game/ui/garage_selection_camera.gd',
++            'game/ui/garage_selection_pictures.gd')) { return @() }
+     # New visual files are shared by default, rather than silently omitted.
+     # These narrowly excluded files cannot affect the captured showroom.
+     if ($Relative -match '^game/(backend/|diagnostics/|music/|localization/|core/features/|assets/menu/header_car_templates_v1/)' -or
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11845,3 +11845,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Mixed-surface all-rounder"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Lightweight precision"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Heavy-duty character"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Instant electric power"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Air-cushion drift"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "All-terrain power"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Agile and forgiving. Built for mixed circuits."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Light on its feet. Precise through the tightest corners."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Heavy traction. Rear-wheel steering with a tail that swings wide."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Instant power. Feed in the throttle and control the slide."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Long, flowing slides. Steer early and find your rhythm."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Explosive off the line. Confident in every corner."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Acceleration"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Handling"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Select vehicle"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Drag to rotate"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} of 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Coussin d'air propulsé par ventilateurs et longues glissades fluides. Anticipez les virages pour tenir votre trajectoire."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Polyvalence tous terrains"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Précision poids plume"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Un caractère robuste"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Puissance électrique immédiate"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Glisse sur coussin d'air"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Puissance tout-terrain"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Agile et indulgente. À l'aise sur les circuits variés."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Légère et précise, même dans les virages les plus serrés."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Forte motricité. Les roues arrière directrices font déporter la poupe."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Puissance immédiate. Dosez l'accélérateur pour maîtriser la glisse."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "De longues glisses fluides. Braquez tôt et trouvez votre rythme."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Un départ explosif. De l'assurance dans chaque virage."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Accélération"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Maniabilité"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Choisir le véhicule"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Glissez pour faire pivoter"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat} : {rating} sur 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h : {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Colchón de aire con ventiladores y derrapes largos y fluidos. Gira con antelación para mantener la trazada."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Versatilidad en todo terreno"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Precisión ligera"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Carácter robusto"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Potencia eléctrica instantánea"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Derrape sobre colchón de aire"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Potencia todoterreno"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Ágil y dócil. Hecho para circuitos variados."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Ligero y preciso, incluso en las curvas más cerradas."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Gran tracción. La dirección trasera hace que la cola se abra."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Potencia instantánea. Dosifica el acelerador y controla el derrape."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Derrapes largos y fluidos. Gira pronto y encuentra tu ritmo."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Salida explosiva. Confianza en cada curva."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Aceleración"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Manejo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Seleccionar vehículo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Arrastra para girar"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} de 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Luftkissen mit Gebläseantrieb und langen, fließenden Drifts. Früh einlenken, um die Linie zu halten."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Vielseitig auf jedem Belag"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Leicht und präzise"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Robuster Charakter"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Sofortige Elektrokraft"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Driften auf dem Luftkissen"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Kraft auf jedem Terrain"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Wendig und gutmütig. Für abwechslungsreiche Strecken."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Leichtfüßig und präzise, auch in engsten Kurven."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Viel Traktion. Die Hinterradlenkung lässt das Heck ausschwenken."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Sofortige Kraft. Mit dosiertem Gas den Drift kontrollieren."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Lange, fließende Drifts. Früh lenken und den Rhythmus finden."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Explosiv am Start. Souverän in jeder Kurve."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Beschleunigung"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Fahrverhalten"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Fahrzeug auswählen"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Zum Drehen ziehen"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} von 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Colchão de ar movido a ventiladores, com derrapagens longas e fluidas. Vire cedo para manter a trajetória."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Versátil em qualquer piso"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Leveza e precisão"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Personalidade robusta"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Potência elétrica instantânea"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Derrapagem sobre colchão de ar"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Potência em qualquer terreno"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Ágil e fácil de guiar. Feito para circuitos mistos."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Leve e preciso, mesmo nas curvas mais fechadas."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Muita tração. A direção traseira faz a traseira abrir."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Potência instantânea. Dose o acelerador e controle a derrapagem."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Derrapagens longas e suaves. Vire cedo e ache seu ritmo."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Arrancada explosiva. Confiança em cada curva."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Aceleração"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Dirigibilidade"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Selecionar veículo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Arraste para girar"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} de 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11700,3 +11700,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "ファンで進むエアクッション。長く滑らかに滑ります。早めの操舵でラインを保ちましょう。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "あらゆる路面に対応"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "軽さと精密さ"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "力強い個性"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "瞬時の電動パワー"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "エアクッション・ドリフト"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "全路面のパワー"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "軽快で扱いやすい、さまざまな路面に強い一台。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "軽やかに、最もタイトなコーナーも正確に。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "強いトラクション。後輪操舵でリアが大きく振れます。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "瞬時のパワー。アクセルを加減して滑りを操りましょう。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "長く滑らかなスライド。早めに舵を切り、リズムをつかみましょう。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "爆発的なスタート。あらゆるコーナーで確かな走り。"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "加速"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "操縦性"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "車両を選択"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "ドラッグして回転"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}：5段階中{rating}"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h：{time}秒"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11700,3 +11700,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "팬으로 추진하는 공기 쿠션과 길고 부드러운 슬라이드. 일찍 조향해 주행 라인을 유지하세요."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "다양한 노면의 만능 주자"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "가벼움과 정밀함"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "묵직한 개성"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "즉각적인 전기 동력"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "공기 쿠션 드리프트"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "모든 지형의 파워"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "민첩하고 다루기 쉽습니다. 다양한 서킷에 어울립니다."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "가벼운 몸놀림. 좁은 코너에서도 정밀한 조향."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "강한 접지력. 후륜 조향으로 뒷부분이 크게 돌아갑니다."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "즉각적인 동력. 가속을 조절해 슬라이드를 제어하세요."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "길고 부드러운 슬라이드. 일찍 조향하며 리듬을 찾으세요."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "폭발적인 출발. 모든 코너에서 자신 있게."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "가속"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "조종성"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "차량 선택"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "드래그하여 회전"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: 5점 중 {rating}점"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time}초"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Luchtkussen met ventilatoraandrijving en lange, vloeiende slides. Stuur vroeg om je lijn vast te houden."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Veelzijdig op elk wegdek"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Licht en precies"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Robuust karakter"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Direct elektrisch vermogen"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Driften op een luchtkussen"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Kracht op elk terrein"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Wendbaar en vergevingsgezind. Voor afwisselende circuits."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Lichtvoetig. Precies in de krapste bochten."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Veel tractie. Achterwielbesturing laat de achterkant uitzwaaien."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Direct vermogen. Doseer het gas en beheers de slide."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Lange, vloeiende slides. Stuur vroeg en vind je ritme."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Explosief van start. Zeker in elke bocht."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Acceleratie"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Wegligging"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Voertuig selecteren"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Sleep om te draaien"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} van 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Cuscino d'aria a ventole con lunghe derapate fluide. Sterza in anticipo per tenere la traiettoria."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Versatile su ogni fondo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Leggerezza e precisione"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Carattere robusto"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Potenza elettrica istantanea"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Derapata su cuscino d'aria"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Potenza su ogni terreno"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Agile e indulgente. Per circuiti misti."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Leggero e preciso anche nelle curve più strette."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Forte trazione. Lo sterzo posteriore fa allargare la coda."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Potenza istantanea. Dosa il gas e controlla la derapata."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Lunghe derapate fluide. Sterza presto e trova il ritmo."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Scatto esplosivo. Sicurezza in ogni curva."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Accelerazione"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Maneggevolezza"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Seleziona veicolo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Trascina per ruotare"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} su 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Puhaltimilla kulkeva ilmatyyny liukuu pitkin, pehmein kaarin. Ohjaa ajoissa, niin pysyt ajolinjalla."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Kaikkien pintojen yleisauto"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Kevyttä tarkkuutta"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Raskaan sarjan luonne"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Välitöntä sähkövoimaa"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Ilmatyynyluistoa"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Voimaa joka maastoon"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Ketterä ja anteeksiantava. Monipuolisille radoille."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Kevyt liikkeissään. Tarkka tiukimmissakin mutkissa."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Vahva vetopito. Takapyöräohjaus heittää perän ulos."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Välitön voima. Annostele kaasua ja hallitse luisto."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Pitkiä, pehmeitä luistoja. Ohjaa ajoissa ja löydä rytmi."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Räjähtävä lähtö. Varmuutta joka mutkaan."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Kiihtyvyys"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Ajettavuus"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Valitse ajoneuvo"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Käännä vetämällä"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating}/5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Fläktdriven luftkudde med långa, mjuka sladdar. Styr tidigt för att hålla spåret."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Mångsidig på alla underlag"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Lätt och precis"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Robust karaktär"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Omedelbar elkraft"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Luftkuddesladd"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Kraft i all terräng"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Smidig och förlåtande. För varierade banor."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Lätt på foten. Precis i de snävaste kurvorna."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "Bra dragkraft. Bakhjulsstyrning får bakänden att svepa ut."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Omedelbar kraft. Dosera gasen och kontrollera sladden."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Långa, mjuka sladdar. Styr tidigt och hitta rytmen."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Explosiv från start. Trygg i varje kurva."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Acceleration"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Köregenskaper"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Välj fordon"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Dra för att rotera"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} av 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11731,3 +11731,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr "Viftedrevet luftpute med lange, jevne sladder. Styr tidlig for å holde sporet."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr "Allsidig på alle underlag"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr "Lett og presis"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr "Robust karakter"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr "Umiddelbar elektrisk kraft"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr "Luftputedrift"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr "Kraft i alt terreng"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr "Smidig og tilgivende. For varierte baner."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr "Lett på foten. Presis i de trangeste svingene."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr "God trekkraft. Bakhjulsstyring får bakenden til å svinge ut."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr "Umiddelbar kraft. Doser gassen og kontroller sladden."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr "Lange, jevne sladder. Styr tidlig og finn rytmen."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr "Eksplosiv fra start. Trygg i hver sving."
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr "Akselerasjon"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr "Kjøreegenskaper"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr "Velg kjøretøy"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr "Dra for å rotere"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr "{stat}: {rating} av 5"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr "0–60 km/h: {time} s"
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr "{speed} km/h"
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11542,3 +11542,79 @@
+ #: ui/garage_car_stats.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+ msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Mixed-surface all-rounder"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Lightweight precision"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy-duty character"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant electric power"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Air-cushion drift"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "All-terrain power"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Agile and forgiving. Built for mixed circuits."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Light on its feet. Precise through the tightest corners."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Heavy traction. Rear-wheel steering with a tail that swings wide."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Instant power. Feed in the throttle and control the slide."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Long, flowing slides. Steer early and find your rhythm."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Explosive off the line. Confident in every corner."
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Acceleration"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Handling"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Select vehicle"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "Drag to rotate"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{stat}: {rating} of 5"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "0–60 km/h: {time} s"
++msgstr ""
++
++#: ui/garage_car_stats.gd ui/garage_page.gd
++msgid "{speed} km/h"
++msgstr ""
+--- /dev/null
++++ b/game/ui/garage_header.gd
+@@ -0,0 +1,152 @@
++extends HBoxContainer
++## Garage-only header treatment; navigation restores the shared shell on exit.
++var app: Node
++var _nav: HBoxContainer
++var _amount: Label
++var _original: Dictionary = {}
++var _active: bool = false
++var _width: float = -1.0
++
++class Coin extends Control:
++	func _init() -> void:
++		custom_minimum_size = Vector2(24,24)
++		mouse_filter = Control.MOUSE_FILTER_IGNORE
++		size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	func _draw() -> void:
++		draw_circle(Vector2(12,12),11,Color("eaa718"))
++		draw_circle(Vector2(12,12),9,MenuStyle.ACCENT)
++		draw_string(MenuStyle.DISPLAY,Vector2(7,19),"$",HORIZONTAL_ALIGNMENT_LEFT,-1,20,Color("b67c13"))
++
++func _ready() -> void:
++	name = "GarageHeaderWallet"
++	_nav = get_parent()
++	_nav.move_child(self,app.account_button.get_index())
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	add_theme_constant_override("separation",8)
++	add_child(Coin.new())
++	_amount = MenuStyle.label("",24)
++	GameText.user_text(_amount)
++	add_child(_amount)
++	var divider := VSeparator.new()
++	divider.custom_minimum_size.x = 16
++	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(divider)
++	for node: Control in _nav.get_children():
++		if node == self: continue
++		_remember(node)
++		if node.name == "MenuNavigation":
++			for tab: Control in node.get_children(): _remember(tab)
++	_remember(_nav)
++	_remember(_nav.get_parent())
++	_remember(_nav.get_parent().get_parent())
++	if app.cosmetic_economy != null: app.cosmetic_economy.changed.connect(_balance)
++	_balance()
++	visible = false
++	_process(0.0)
++
++func _remember(node: Control) -> void:
++	var data: Dictionary = {"minimum":node.custom_minimum_size,"styles":{},"colors":{},"sizes":{},"constants":{}}
++	for key: String in ["normal","hover","pressed","focus"]:
++		if node.has_theme_stylebox_override(key): data.styles[key] = node.get_theme_stylebox(key)
++	for key: String in ["font_color","font_hover_color","font_pressed_color"]:
++		if node.has_theme_color_override(key): data.colors[key] = node.get_theme_color(key)
++	if node.has_theme_font_size_override("font_size"): data.sizes.font_size = node.get_theme_font_size("font_size")
++	for key: String in ["separation","margin_top","margin_bottom","margin_left","margin_right"]:
++		if node.has_theme_constant_override(key): data.constants[key] = node.get_theme_constant(key)
++	_original[node] = data
++
++func _balance() -> void:
++	if not is_instance_valid(_amount): return
++	var signed_in: bool = app.cosmetic_economy != null and app.cosmetic_economy.authenticated()
++	_amount.text = _grouped(app.cosmetic_economy.balance()) if signed_in else "—"
++	tooltip_text = GameText.message("Account coins" if signed_in else "Sign in to earn coins")
++
++func _grouped(value: int) -> String:
++	var text: String = str(value)
++	var offset: int = text.length()-3
++	while offset > 0:
++		text = text.insert(offset,",")
++		offset -= 3
++	return text
++
++func _process(_delta: float) -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app.root_ui): return
++	var active: bool = app.screen == "garage"
++	var width: float = get_viewport_rect().size.x
++	if active == _active and (not active or is_equal_approx(width,_width)): return
++	_active = active
++	_width = width
++	visible = active
++	if active: _fit(width < 1100)
++	else: _restore()
++
++func _fit(compact: bool) -> void:
++	_nav.add_theme_constant_override("separation",6 if compact else 12)
++	var layout: VBoxContainer = _nav.get_parent()
++	layout.add_theme_constant_override("separation",6)
++	var margin: MarginContainer = layout.get_parent()
++	margin.add_theme_constant_override("margin_top",10)
++	margin.add_theme_constant_override("margin_bottom",18)
++	margin.add_theme_constant_override("margin_left",16)
++	var brand: Control = _nav.get_child(0)
++	brand.custom_minimum_size = Vector2(136 if compact else 196,52)
++	var tabs: Control = app.root_ui.find_child("MenuNavigation",true,false)
++	for tab: Button in tabs.get_children():
++		var style: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,6 if compact else 16)
++		style.set_corner_radius_all(0)
++		if tab.name == "Tab_garage":
++			style.border_color = MenuStyle.ACCENT
++			style.border_width_bottom = 2
++		tab.add_theme_stylebox_override("normal",style)
++		tab.custom_minimum_size.y = 52
++		tab.add_theme_font_size_override("font_size",19 if compact else 23)
++		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if tab.name == "Tab_garage" else MenuStyle.MUTED)
++	var account: Button = app.account_button
++	account.custom_minimum_size = Vector2(174 if compact else 210,52)
++	for state: String in ["normal","hover","pressed","focus"]:
++		var style: StyleBoxFlat = account.get_theme_stylebox(state).duplicate()
++		style.content_margin_left = 88 if compact else 104
++		style.content_margin_right = 12
++		if state == "normal": style.bg_color = Color(0.04,0.08,0.10,0.55)
++		account.add_theme_stylebox_override(state,style)
++	var picture: Control = account.get_node_or_null("MenuProfileCar")
++	if picture != null:
++		picture.offset_right = 78 if compact else 94
++		picture.offset_top = -24 if compact else -28
++		picture.offset_bottom = 24 if compact else 28
++	var picker: Control = account.get_node_or_null("MenuCarPicker")
++	if picker != null: picker.offset_right = 84 if compact else 100
++	var settings: Button = app.root_ui.find_child("MenuSettings",true,false)
++	settings.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT))
++	settings.custom_minimum_size = Vector2(52,52)
++
++func _restore() -> void:
++	for node: Control in _original:
++		if not is_instance_valid(node): continue
++		var data: Dictionary = _original[node]
++		node.custom_minimum_size = data.minimum
++		for key: String in ["normal","hover","pressed","focus"]:
++			if data.styles.has(key): node.add_theme_stylebox_override(key,data.styles[key])
++			else: node.remove_theme_stylebox_override(key)
++		for key: String in ["font_color","font_hover_color","font_pressed_color"]:
++			if data.colors.has(key): node.add_theme_color_override(key,data.colors[key])
++			else: node.remove_theme_color_override(key)
++		if data.sizes.has("font_size"): node.add_theme_font_size_override("font_size",data.sizes.font_size)
++		else: node.remove_theme_font_size_override("font_size")
++		for key: String in ["separation","margin_top","margin_bottom","margin_left","margin_right"]:
++			if data.constants.has(key): node.add_theme_constant_override(key,data.constants[key])
++			else: node.remove_theme_constant_override(key)
++	var tabs: Control = app.root_ui.find_child("MenuNavigation",true,false)
++	for tab: Button in tabs.get_children():
++		var id: String = str(tab.name).trim_prefix("Tab_")
++		var selected: bool = id == app.screen or (id == "tracks" and app.screen in ["rivalry","daily","challenges"]) or (id == "create" and app.screen == "biome")
++		tab.add_theme_stylebox_override("normal",MenuStyle.box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16))
++		tab.add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
++	var picture: Control = app.account_button.get_node_or_null("MenuProfileCar")
++	if picture != null:
++		picture.offset_right = 94
++		picture.offset_top = -28
++		picture.offset_bottom = 28
++	var picker: Control = app.account_button.get_node_or_null("MenuCarPicker")
++	if picker != null: picker.offset_right = 100
+--- /dev/null
++++ b/game/ui/garage_selection_camera.gd
+@@ -0,0 +1,40 @@
++extends RefCounted
++## The selection composition uses the showroom's existing presentation callback.
++var _showroom: CarShowroom
++var _active: bool = false
++var _ratio: float = 0.275
++
++func sync(view: CarShowroom, enabled: bool, panel_ratio: float) -> void:
++	if not enabled:
++		clear()
++		return
++	var changed: bool = not _active or _showroom != view or not is_equal_approx(_ratio,panel_ratio)
++	_showroom = view
++	_ratio = panel_ratio
++	_active = true
++	view.customisation_orbit = _orbit
++	if changed and is_instance_valid(view.camera): _orbit()
++
++func _orbit() -> void:
++	if not is_instance_valid(_showroom) or not is_instance_valid(_showroom.camera): return
++	var view: CarShowroom = _showroom
++	var tall: bool = view.vehicle_id == "forklift"
++	var wide: bool = view.vehicle_id in ["electric","hovercraft"]
++	var distance: float = view.garage_distance*view.zoom*(0.96 if tall else 0.68 if wide else 0.56)
++	var angle: float = view.elevation+0.04
++	var target := Vector3(0,(1.40 if tall else 0.52)+GarageEnvironment.DECK_HEIGHT,0)
++	var point: Vector3 = target+Vector3(0,sin(angle)*distance,-cos(angle)*distance)
++	view.camera.transform = Transform3D(Basis.IDENTITY,point).looking_at(target)
++	view.camera.h_offset = -_ratio*3.8
++	view._update_roof()
++	view.invalidate_render()
++
++func clear() -> void:
++	if not _active: return
++	_active = false
++	if is_instance_valid(_showroom) and _showroom.customisation_orbit == _orbit:
++		_showroom.customisation_orbit = Callable()
++		if is_instance_valid(_showroom.camera):
++			_showroom.camera.h_offset = 0.0
++			if _showroom.camera.is_inside_tree(): _showroom._orbit()
++	_showroom = null
+--- /dev/null
++++ b/game/ui/garage_selection_pictures.gd
+@@ -0,0 +1,29 @@
++extends RefCounted
++## Sharp native stock portraits. Saved paint, kits and wear retain exact previews.
++const Build = preload("res://core/build_identity.gd")
++const DIRECTORY: String = "res://assets/garage/selection_portraits_v1/"
++const VERSION: String = "garage-selection-portrait-1"
++static var _manifest: Dictionary = {}
++static var _read: bool = false
++static var _textures: Dictionary = {}
++
++static func texture(view: Node) -> Texture2D:
++	var service: Node = view.get("preview_service")
++	if service == null or not service._default(view): return null
++	if not _read:
++		_read = true
++		if FileAccess.file_exists(DIRECTORY+"provenance.json"):
++			var value: Variant = JSON.parse_string(FileAccess.get_file_as_string(DIRECTORY+"provenance.json"))
++			if value is Dictionary: _manifest = value
++	if _manifest.get("version","") != VERSION or _manifest.get("revision","") != Build.HEADER_PREVIEW_SHA256: return null
++	if _manifest.get("garage_revision","") != Build.GARAGE_PREVIEW_SHA256: return null
++	var id: String = str(view.get("vehicle_id"))
++	var path: String = DIRECTORY+id+".png"
++	if not _manifest.get("pictures",{}).has(id): return null
++	if not _textures.has(id):
++		if FileAccess.get_sha256(path) != str(_manifest.pictures[id]): return null
++		var pixels: Image = Image.load_from_file(path)
++		if pixels == null or pixels.get_size() != Vector2i(512,288): return null
++		pixels.generate_mipmaps()
++		_textures[id] = ImageTexture.create_from_image(pixels)
++	return _textures[id]
+--- /dev/null
++++ b/game/tests/test_garage_reference.gd
+@@ -0,0 +1,84 @@
++extends "res://tests/test_garage_car_stats.gd"
++## GRD01–GRD05: revised owner layout, stock comparisons and real selection state.
++
++class WalletFixture extends Node:
++	signal changed
++	var coins: int = 3500
++	func authenticated() -> bool: return true
++	func balance() -> int: return coins
++
++func capture(label: String) -> void:
++	await super.capture(label)
++	if label != "super_rally-2560": return
++	var wallet: Control = root.find_child("GarageHeaderWallet",true,false)
++	var app: Node = wallet.app
++	var economy: Node = app.cosmetic_economy
++	var fixture := WalletFixture.new()
++	app.cosmetic_economy = fixture
++	wallet._balance()
++	check(wallet._amount.text == "3,500","header formats authenticated coin balance")
++	fixture.coins = 1280
++	wallet._balance()
++	check(wallet._amount.text == "1,280","header follows changed account coin balance")
++	app.cosmetic_economy = economy
++	wallet._balance()
++	fixture.free()
++	var identity: int = page.get_instance_id()
++	app._navigate_menu_page("tracks")
++	app._finish_menu_page_slide()
++	await settle(10)
++	check(not root.find_child("GarageHeaderWallet",true,false).visible,"ordinary menu header returns after leaving Garage")
++	var track_tab: Button = root.find_child("Tab_tracks",true,false)
++	check(track_tab.get_theme_color("font_color") == MenuStyle.ACCENT,"ordinary navigation retains correct active tab")
++	app._navigate_menu_page("garage")
++	app._finish_menu_page_slide()
++	await settle(10)
++	check(root.find_child("GaragePage",true,false).get_instance_id() == identity,"header navigation retains Garage page")
++	check(root.find_child("GarageHeaderWallet",true,false).visible,"returning to Garage restores its header")
++
++func check_content(id: String) -> void:
++	super.check_content(id)
++	check(page._car_stats._title.text == VehicleCatalog.title(id),"profile title follows browsed car "+id)
++	var data: Dictionary = Stats.performance(id)
++	check(page._car_stats.stat_rows.acceleration.row.tooltip_text == GameText.message("0–60 km/h: {time} s",{"time":"%.1f" % data.acceleration}),"acceleration tooltip retains exact measured value "+id)
++	for key: String in ["acceleration","handling","top_speed"]:
++		var bar: Control = page._car_stats.stat_rows[key].bar
++		check(bar.rating >= 1 and bar.rating <= 5,"qualified five-segment rating "+id+"/"+key)
++		check(bar.rating == page._car_stats.ratings[key],"visible segments follow car rating "+id+"/"+key)
++	if id == "super_rally": check(page._car_stats.ratings == {"acceleration":4,"handling":4,"top_speed":3},"Super Rally matches owner draft comparisons")
++	if id == "kart": check(page._car_stats.ratings.handling > Stats.comparison("hovercraft").handling,"precise Kart and sliding Hover retain distinct handling character")
++	var thumbnail: Node = page.thumbnails[id]
++	if thumbnail.preview_service._default(thumbnail):
++		check(thumbnail._image.texture != null and thumbnail._image.texture.get_size() == Vector2(512,288),"sharp stock selection portrait "+id)
++		check(thumbnail._image.texture.get_image().get_pixel(0,0).a == 0.0,"stock portrait has transparent surround "+id)
++	var visible_bounds: Rect2
++	var first: bool = true
++	for mesh: MeshInstance3D in page.showroom.car.find_children("*","MeshInstance3D",true,false):
++		if mesh.mesh == null or not mesh.is_visible_in_tree() or mesh.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		for corner: int in range(8):
++			var at: Vector2 = page.showroom.camera.unproject_position(mesh.global_transform*mesh.get_aabb().get_endpoint(corner))
++			visible_bounds = Rect2(at,Vector2.ZERO) if first else visible_bounds.expand(at)
++			first = false
++	check(Rect2(Vector2.ZERO,Vector2(page.showroom.showroom_viewport.size)).encloses(visible_bounds),"entire default car silhouette fits selection view "+id)
++
++func check_layout() -> void:
++	super.check_layout()
++	check(not page.heading.visible and page._car_stats._title.visible,"car name appears once inside profile")
++	check(page.select_button.get_global_rect().position.x > page.actions.get_global_rect().position.x+50,"selection actions align to the right")
++	check(page.select_button.size.x < page.actions.size.x*0.55,"Select vehicle does not fill the entire footer")
++	var header: Control = root.find_child("MenuHeader",true,false)
++	check(header.get_global_rect().end.x <= root.size.x+1,"header fits viewport "+str(root.size))
++	var wallet: Control = header.get_node("GarageHeaderWallet")
++	check(wallet.visible,"account coins appear in header")
++	var tab: Button = root.find_child("Tab_garage",true,false)
++	check(tab.get_theme_stylebox("normal").border_width_bottom == 2,"Garage tab uses yellow underline")
++	for card: Control in page.cards.get_children():
++		var id: String = VehicleCatalog.IDS[card.get_index()]
++		var caption: Control = card.find_child("CarCardTitle_"+id,true,false)
++		check(card.get_global_rect().encloses(caption.get_global_rect()),"card caption fits "+id+"/"+str(root.size))
++		check(card.get_global_rect().end.y <= page.gallery.get_global_rect().end.y+1,"carousel exposes complete card footer "+id+"/"+str(root.size))
++		check(card.find_child("CarEquipped_"+id,true,false).visible == (id == page._selected_vehicle_id),"selected badge represents equipped car "+id)
++		if not card.get_global_rect().encloses(caption.get_global_rect()):
++			print("REFERENCE_CARD_BOUNDS ",id," ",card.get_global_rect()," caption ",caption.get_global_rect()," model ",page.thumbnails[id].size)
++	if not page.preview.get_global_rect().encloses(page._car_stats.get_global_rect()):
++		print("REFERENCE_PROFILE_BOUNDS ",root.size," preview ",page.preview.size," profile ",page._car_stats.size)
+--- /dev/null
++++ b/game/tests/bake_garage_selection_portraits.gd
+@@ -0,0 +1,84 @@
++extends SceneTree
++## Native generation only. Validate inputs and publish the manifest last.
++const Renderer = preload("res://tests/support/garage_car_portrait.gd")
++const Pictures = preload("res://ui/garage_selection_pictures.gd")
++const Build = preload("res://core/build_identity.gd")
++const SIZE := Vector2i(512,288)
++var inputs: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++
++func scan(path: String) -> void:
++	var directory := DirAccess.open(path)
++	if directory == null: return
++	for file: String in directory.get_files():
++		if file.get_extension() in ["gd","gdshader","res","scn","tres"]:
++			var source: String = path.path_join(file)
++			inputs[source] = FileAccess.get_sha256(source)
++	for child: String in directory.get_directories(): scan(path.path_join(child))
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless": quit(1); return
++	scan("res://vehicle")
++	scan("res://rendering")
++	scan("res://resources/cars")
++	scan("res://assets/vehicles")
++	for source: String in HandlingSelection.PROFILE_PATHS:
++		inputs[source] = FileAccess.get_sha256(source)
++	for source: String in ["res://tests/bake_garage_selection_portraits.gd","res://core/build_identity.gd","res://ui/header_icon_renderer.gd","res://ui/header_simple_cache.gd","res://ui/rivalry_simple_car.gd","res://ui/rivalry_preview_finish.gdshader"]:
++		inputs[source] = FileAccess.get_sha256(source)
++	for source: String in ["res://tests/support/garage_car_portrait.gd","res://ui/garage_environment.gd","res://ui/showroom_studio.gd","res://ui/studio_sky.gdshader"]:
++		inputs[source] = FileAccess.get_sha256(source)
++	var staging: String = ProjectSettings.globalize_path("res://../build/garage-reference-2026-11-15/portraits-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(staging)
++	var canvas := SubViewport.new()
++	canvas.size = SIZE
++	canvas.disable_3d = true
++	canvas.transparent_bg = true
++	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(canvas)
++	var pictures: Dictionary = {}
++	for id: String in VehicleCatalog.IDS:
++		var view: Control = Renderer.new()
++		view.vehicle_id = id
++		view.livery = VehicleLivery.defaults(id)
++		view.customisation = VehicleCustomisation.defaults()
++		view.size = Vector2(SIZE)
++		canvas.add_child(view)
++		while not view.presentation_ready: await process_frame
++		for frame: int in range(6):
++			await process_frame
++			await RenderingServer.frame_post_draw
++		var pixels: Image = canvas.get_texture().get_image()
++		pixels.convert(Image.FORMAT_RGBA8)
++		# Godot canvas readback is premultiplied; saved PNGs use straight alpha.
++		for y: int in range(SIZE.y):
++			for x: int in range(SIZE.x):
++				var color: Color = pixels.get_pixel(x,y)
++				if color.a > 0.0 and color.a < 1.0:
++					pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++		if pixels.get_used_rect().size.x < 30 or pixels.save_png(staging.path_join(id+".png")) != OK:
++			quit(1); return
++		pictures[id] = FileAccess.get_sha256(staging.path_join(id+".png"))
++		view.queue_free()
++		await process_frame
++	for source: String in inputs:
++		if FileAccess.get_sha256(source) != inputs[source]:
++			printerr("SELECTION_PORTRAIT_INPUT_CHANGED ",source)
++			quit(1); return
++	var destination: String = ProjectSettings.globalize_path(Pictures.DIRECTORY)
++	DirAccess.make_dir_recursive_absolute(destination)
++	for id: String in pictures:
++		var file := FileAccess.open(destination.path_join(id+".png"),FileAccess.WRITE)
++		if file == null: quit(1); return
++		file.store_buffer(FileAccess.get_file_as_bytes(staging.path_join(id+".png")))
++		file.close()
++	var manifest: Dictionary = {"version":Pictures.VERSION,"revision":Build.HEADER_PREVIEW_SHA256,"garage_revision":Build.GARAGE_PREVIEW_SHA256,"recipe":FileAccess.get_sha256("res://tests/support/garage_car_portrait.gd"),"producer":FileAccess.get_sha256("res://tests/bake_garage_selection_portraits.gd"),"size":[512,288],"source_count":inputs.size(),"source_digest":JSON.stringify(inputs).sha256_text(),"pictures":pictures,"provenance":"Native Beat my track stock cars and finishes; Garage lighting; no reference-image pixels"}
++	var output := FileAccess.open(destination.path_join("provenance.json"),FileAccess.WRITE)
++	if output == null: quit(1); return
++	output.store_string(JSON.stringify(manifest,"\t"))
++	output.close()
++	canvas.queue_free()
++	await process_frame
++	print("GARAGE_SELECTION_PORTRAITS ",pictures.size()," pictures, ",inputs.size()," stable inputs")
++	quit()
+--- /dev/null
++++ b/game/tests/support/garage_car_portrait.gd
+@@ -0,0 +1,34 @@
++extends "res://ui/rivalry_simple_car.gd"
++## Offline portraits retain native vehicle finishes and Garage studio lighting.
++
++func _init() -> void:
++	render_scale = 1.0
++	cache_rest_pose = false
++
++func _prepare_materials() -> void:
++	viewport.msaa_3d = Viewport.MSAA_4X
++	viewport.mesh_lod_threshold = 0.5
++	var world := Node3D.new()
++	viewport.add_child(world)
++	var environment: WorldEnvironment = GarageEnvironment.build_lighting(world,true,true)
++	environment.environment.ambient_light_energy = 0.60
++	world.get_node("GarageKey").light_energy = 1.15
++	world.get_node("GarageFill").light_energy = 0.50
++	world.get_node("GarageRim").light_energy = 1.45
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if part.mesh == null: continue
++		if part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
++			part.hide()
++			continue
++		if not part.is_visible_in_tree(): continue
++		var local: Transform3D = inverse*part.global_transform
++		for corner: int in range(8): _bounds.append(local*part.get_aabb().get_endpoint(corner))
++
++func _refresh() -> void:
++	if camera == null or not is_inside_tree() or _bounds.is_empty(): return
++	var bounds := AABB(_bounds[0],Vector3.ZERO)
++	for point: Vector3 in _bounds: bounds = bounds.expand(point)
++	var target: Vector3 = car.transform*bounds.get_center()
++	camera.transform = Transform3D(Basis.IDENTITY,Vector3(5,2.8,6.5)).looking_at(target)
++	super._refresh()
+--- /dev/null
++++ b/scripts/check_garage_selection_pictures.py
+@@ -0,0 +1,35 @@
++"""Validate the native selection portraits before Android export."""
++import hashlib
++import json
++from pathlib import Path
++import re
++import struct
++
++ROOT = Path(__file__).resolve().parents[1]
++
++def check():
++    directory = ROOT / "game/assets/garage/selection_portraits_v1"
++    data = json.loads((directory / "provenance.json").read_text(encoding="utf-8"))
++    identity = (ROOT / "game/core/build_identity.gd").read_text(encoding="utf-8")
++    revision = re.search(r'const HEADER_PREVIEW_SHA256: String = "([a-f0-9]{64})"', identity)
++    assert revision and data["revision"] == revision[1], "Selection portraits need a current-source rebake"
++    garage_revision = re.search(r'const GARAGE_PREVIEW_SHA256: String = "([a-f0-9]{64})"', identity)
++    assert garage_revision and data["garage_revision"] == garage_revision[1], "Selection lighting needs a current-source rebake"
++    assert data["version"] == "garage-selection-portrait-1"
++    for key, source in (("recipe", "game/tests/support/garage_car_portrait.gd"), ("producer", "game/tests/bake_garage_selection_portraits.gd")):
++        assert hashlib.sha256((ROOT / source).read_bytes()).hexdigest() == data[key], f"Selection portrait {key} changed; rebake required"
++    catalog = (ROOT / "game/vehicle/vehicle_catalog.gd").read_text(encoding="utf-8")
++    ids = set(re.findall(r'"([^"]+)"', re.search(r'const IDS: Array\[String\] = \[([^\]]+)\]', catalog)[1]))
++    assert set(data["pictures"]) == ids, "Selection portraits must cover every available car"
++    for vehicle, digest in data["pictures"].items():
++        pixels = (directory / f"{vehicle}.png").read_bytes()
++        assert pixels[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", pixels[16:24]) == (512, 288), vehicle
++        assert hashlib.sha256(pixels).hexdigest() == digest, f"Damaged selection portrait: {vehicle}"
++    presets = (ROOT / "game/export_presets.cfg").read_text(encoding="utf-8")
++    for filters in re.findall(r'^include_filter="(.*)"', presets, re.M):
++        assert "assets/garage/selection_portraits_v1/*.png" in filters
++        assert "assets/garage/selection_portraits_v1/provenance.json" in filters
++    return {"pictures": len(ids), "revision": revision[1], "stable_bake_inputs": data["source_count"]}
++
++if __name__ == "__main__":
++    print("GARAGE_SELECTION_PICTURES " + json.dumps(check()))
+--- /dev/null
++++ b/scripts/translations/garage_reference_2026_11_15.tsv
+@@ -0,0 +1,20 @@
++# English|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Mixed-surface all-rounder|Polyvalence tous terrains|Versatilidad en todo terreno|Vielseitig auf jedem Belag|Versátil em qualquer piso|あらゆる路面に対応|다양한 노면의 만능 주자|Veelzijdig op elk wegdek|Versatile su ogni fondo|Kaikkien pintojen yleisauto|Mångsidig på alla underlag|Allsidig på alle underlag
++Lightweight precision|Précision poids plume|Precisión ligera|Leicht und präzise|Leveza e precisão|軽さと精密さ|가벼움과 정밀함|Licht en precies|Leggerezza e precisione|Kevyttä tarkkuutta|Lätt och precis|Lett og presis
++Heavy-duty character|Un caractère robuste|Carácter robusto|Robuster Charakter|Personalidade robusta|力強い個性|묵직한 개성|Robuust karakter|Carattere robusto|Raskaan sarjan luonne|Robust karaktär|Robust karakter
++Instant electric power|Puissance électrique immédiate|Potencia eléctrica instantánea|Sofortige Elektrokraft|Potência elétrica instantânea|瞬時の電動パワー|즉각적인 전기 동력|Direct elektrisch vermogen|Potenza elettrica istantanea|Välitöntä sähkövoimaa|Omedelbar elkraft|Umiddelbar elektrisk kraft
++Air-cushion drift|Glisse sur coussin d'air|Derrape sobre colchón de aire|Driften auf dem Luftkissen|Derrapagem sobre colchão de ar|エアクッション・ドリフト|공기 쿠션 드리프트|Driften op een luchtkussen|Derapata su cuscino d'aria|Ilmatyynyluistoa|Luftkuddesladd|Luftputedrift
++All-terrain power|Puissance tout-terrain|Potencia todoterreno|Kraft auf jedem Terrain|Potência em qualquer terreno|全路面のパワー|모든 지형의 파워|Kracht op elk terrein|Potenza su ogni terreno|Voimaa joka maastoon|Kraft i all terräng|Kraft i alt terreng
++Agile and forgiving. Built for mixed circuits.|Agile et indulgente. À l'aise sur les circuits variés.|Ágil y dócil. Hecho para circuitos variados.|Wendig und gutmütig. Für abwechslungsreiche Strecken.|Ágil e fácil de guiar. Feito para circuitos mistos.|軽快で扱いやすい、さまざまな路面に強い一台。|민첩하고 다루기 쉽습니다. 다양한 서킷에 어울립니다.|Wendbaar en vergevingsgezind. Voor afwisselende circuits.|Agile e indulgente. Per circuiti misti.|Ketterä ja anteeksiantava. Monipuolisille radoille.|Smidig och förlåtande. För varierade banor.|Smidig og tilgivende. For varierte baner.
++Light on its feet. Precise through the tightest corners.|Légère et précise, même dans les virages les plus serrés.|Ligero y preciso, incluso en las curvas más cerradas.|Leichtfüßig und präzise, auch in engsten Kurven.|Leve e preciso, mesmo nas curvas mais fechadas.|軽やかに、最もタイトなコーナーも正確に。|가벼운 몸놀림. 좁은 코너에서도 정밀한 조향.|Lichtvoetig. Precies in de krapste bochten.|Leggero e preciso anche nelle curve più strette.|Kevyt liikkeissään. Tarkka tiukimmissakin mutkissa.|Lätt på foten. Precis i de snävaste kurvorna.|Lett på foten. Presis i de trangeste svingene.
++Heavy traction. Rear-wheel steering with a tail that swings wide.|Forte motricité. Les roues arrière directrices font déporter la poupe.|Gran tracción. La dirección trasera hace que la cola se abra.|Viel Traktion. Die Hinterradlenkung lässt das Heck ausschwenken.|Muita tração. A direção traseira faz a traseira abrir.|強いトラクション。後輪操舵でリアが大きく振れます。|강한 접지력. 후륜 조향으로 뒷부분이 크게 돌아갑니다.|Veel tractie. Achterwielbesturing laat de achterkant uitzwaaien.|Forte trazione. Lo sterzo posteriore fa allargare la coda.|Vahva vetopito. Takapyöräohjaus heittää perän ulos.|Bra dragkraft. Bakhjulsstyrning får bakänden att svepa ut.|God trekkraft. Bakhjulsstyring får bakenden til å svinge ut.
++Instant power. Feed in the throttle and control the slide.|Puissance immédiate. Dosez l'accélérateur pour maîtriser la glisse.|Potencia instantánea. Dosifica el acelerador y controla el derrape.|Sofortige Kraft. Mit dosiertem Gas den Drift kontrollieren.|Potência instantânea. Dose o acelerador e controle a derrapagem.|瞬時のパワー。アクセルを加減して滑りを操りましょう。|즉각적인 동력. 가속을 조절해 슬라이드를 제어하세요.|Direct vermogen. Doseer het gas en beheers de slide.|Potenza istantanea. Dosa il gas e controlla la derapata.|Välitön voima. Annostele kaasua ja hallitse luisto.|Omedelbar kraft. Dosera gasen och kontrollera sladden.|Umiddelbar kraft. Doser gassen og kontroller sladden.
++Long, flowing slides. Steer early and find your rhythm.|De longues glisses fluides. Braquez tôt et trouvez votre rythme.|Derrapes largos y fluidos. Gira pronto y encuentra tu ritmo.|Lange, fließende Drifts. Früh lenken und den Rhythmus finden.|Derrapagens longas e suaves. Vire cedo e ache seu ritmo.|長く滑らかなスライド。早めに舵を切り、リズムをつかみましょう。|길고 부드러운 슬라이드. 일찍 조향하며 리듬을 찾으세요.|Lange, vloeiende slides. Stuur vroeg en vind je ritme.|Lunghe derapate fluide. Sterza presto e trova il ritmo.|Pitkiä, pehmeitä luistoja. Ohjaa ajoissa ja löydä rytmi.|Långa, mjuka sladdar. Styr tidigt och hitta rytmen.|Lange, jevne sladder. Styr tidlig og finn rytmen.
++Explosive off the line. Confident in every corner.|Un départ explosif. De l'assurance dans chaque virage.|Salida explosiva. Confianza en cada curva.|Explosiv am Start. Souverän in jeder Kurve.|Arrancada explosiva. Confiança em cada curva.|爆発的なスタート。あらゆるコーナーで確かな走り。|폭발적인 출발. 모든 코너에서 자신 있게.|Explosief van start. Zeker in elke bocht.|Scatto esplosivo. Sicurezza in ogni curva.|Räjähtävä lähtö. Varmuutta joka mutkaan.|Explosiv från start. Trygg i varje kurva.|Eksplosiv fra start. Trygg i hver sving.
++Acceleration|Accélération|Aceleración|Beschleunigung|Aceleração|加速|가속|Acceleratie|Accelerazione|Kiihtyvyys|Acceleration|Akselerasjon
++Handling|Maniabilité|Manejo|Fahrverhalten|Dirigibilidade|操縦性|조종성|Wegligging|Maneggevolezza|Ajettavuus|Köregenskaper|Kjøreegenskaper
++Select vehicle|Choisir le véhicule|Seleccionar vehículo|Fahrzeug auswählen|Selecionar veículo|車両を選択|차량 선택|Voertuig selecteren|Seleziona veicolo|Valitse ajoneuvo|Välj fordon|Velg kjøretøy
++Drag to rotate|Glissez pour faire pivoter|Arrastra para girar|Zum Drehen ziehen|Arraste para girar|ドラッグして回転|드래그하여 회전|Sleep om te draaien|Trascina per ruotare|Käännä vetämällä|Dra för att rotera|Dra for å rotere
++{stat}: {rating} of 5|{stat} : {rating} sur 5|{stat}: {rating} de 5|{stat}: {rating} von 5|{stat}: {rating} de 5|{stat}：5段階中{rating}|{stat}: 5점 중 {rating}점|{stat}: {rating} van 5|{stat}: {rating} su 5|{stat}: {rating}/5|{stat}: {rating} av 5|{stat}: {rating} av 5
++0–60 km/h: {time} s|0–60 km/h : {time} s|0–60 km/h: {time} s|0–60 km/h: {time} s|0–60 km/h: {time} s|0–60 km/h：{time}秒|0–60 km/h: {time}초|0–60 km/h: {time} s|0–60 km/h: {time} s|0–60 km/h: {time} s|0–60 km/h: {time} s|0–60 km/h: {time} s
++{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h|{speed} km/h
+--- /dev/null
++++ b/docs/GARAGE_REVISED_DRAFT_2026_11_15.md
+@@ -0,0 +1,38 @@
++# Garage revised draft and typography correction
++
++GRD01–GRD05, 15 November 2026. The owner's new reference supersedes the previous subtle text overlay. The later font feedback also supersedes the draft's synthetic italic treatment.
++
++The Garage now has a bordered left-hand profile with a single car title, character subtitle, five-segment Acceleration/Handling/Top speed comparisons, dividers and short description. All profile typography uses the same upright Barlow display/body faces as the rest of the game. The temporary transform-based italics were removed after the owner identified distorted letters.
++
++The selected car occupies more of the showroom, with separate breathing room for the Forklift mast and Volt/Hover silhouettes. The existing showroom's camera callback provides this selection-only composition; `car_showroom.gd` remains byte-exact to the task-start source. Workshop focus, rotation, zoom, saved paint, kits and wear retain their original ownership. The drag hint sits at the lower right. Rounded whole-pixel carousel heights prevent focus from scrolling a fully visible card out from under a subsequent touch.
++
++Four car cards fit the standard layout; smaller windows expose three and retain horizontal browsing. New 512×288 transparent stock portraits render the actual production cars with native finishes and Garage lighting, without the earlier miniature platforms. Saved custom paint, kits and visible wear continue through the existing appearance-specific preview path. The gold border follows the browsed car immediately; the checkmark/Selected badge identifies the equipped car. This resolves the draft's mismatch between a Super Rally profile and selected Rally card without mislabeling the equipped vehicle.
++
++The footer uses compact right-aligned Select vehicle and outlined Test drive actions. The Garage header uses underline navigation and an account coin balance beside the retained car/profile controls. Guests show an unavailable balance, without a fabricated 3,500 coins. Leaving Garage restores the ordinary header; returning retains the Garage page and showroom.
++
++Comparison scales are presentation only. Acceleration uses the qualified clean unboosted 0–60 km/h time, with `round(4 / seconds)` clamped to five segments. Top speed uses `round(km/h / 60)`, also clamped; five segments correspond to 300 km/h. Handling is an authored ease-of-control comparison: Rally 4, Kart 5, Forklift 2, Volt 3, Hover 1 and Super Rally 4. These values describe different driving characters and do not modify a tune or claim physical grip measurements. Exact configured top speed and measured acceleration are available in hover tooltips; tooltip routing preserves drag-through input. Super Rally matches the draft's 4/4/3 bars.
++
++Runtime changes: `game/ui/garage_car_stats.gd`, `garage_page.gd`, `garage_header.gd`, `garage_selection_camera.gd`, `garage_selection_pictures.gd`, `garage_cached_thumbnail.gd`, and three header-composition lines in `game/core/app.gd`. Supporting changes: the native portrait producer and renderer under `game/tests/`, the reference regression plus presentation-specific assertions in the existing stats suite, `scripts/check_garage_selection_pictures.py`, a narrow Android preflight hook/raw-image inclusion, portrait provenance, 19 directly authored phrases across twelve catalogues/source template, and narrow identity exclusions for selection-only helpers/derived pictures. Unknown vehicle inputs and room reflections remain shared dependencies. Existing concurrent App, Garage, vehicle and index changes were preserved.
++
++The portrait producer renders privately, verifies 25,150 consumed inputs, then publishes six PNGs and a manifest last. Consumers verify source revisions, per-image hashes and dimensions; export additionally verifies producer/recipe hashes. Derived portraits are excluded from their own source identity. No old prepared scene or catalogue manifest was restamped to make it appear current. Broader prepared-car/workshop/catalogue readiness is outside this UI qualification.
++
++Actual commands used the pinned Godot 4.7.2 and isolated local records, with an empty backend URL:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/check_model_refinement_parse.gd
++python scripts/run_garage_car_stats.py gl_compatibility-reference-portraits res://tests/bake_garage_selection_portraits.gd --direct
++python scripts/check_garage_selection_pictures.py
++python scripts/run_garage_car_stats.py headless-reference-header res://tests/test_garage_reference.gd --direct
++python scripts/run_garage_car_stats.py headless-reference-final-language res://tests/test_garage_reference.gd --direct
++python scripts/run_garage_car_stats.py gl_compatibility-reference-final res://tests/test_garage_reference.gd --direct
++python scripts/run_garage_car_stats.py mobile-reference-final res://tests/test_garage_reference.gd --direct
++python scripts/run_garage_car_stats.py selection-reference-final res://tests/test_garage_selection_feedback.gd --direct
++```
++
++Final reference suite: **881/0 headless and 893/0 in each desktop renderer**. It covers six cars, four window sizes, eleven translated language choices, exact measured/configured tooltips, rating distinctions, complete default-car silhouettes, uncropped card footers, equipped badges, stock-portrait resolution/alpha, saved-state preservation, real mouse/touch rotation, balances and header navigation round trips. A final tooltip-only locale notification also passes **4/0** live language changes and a clean **881/0** headless repeat; its command and temporary probe are recorded in `reference-live-language.json`. Existing selection feedback passes **20/0 headless and 23/0 native Compatibility**, including drawn feedback before construction. Production parsing passes **576/0**. All six portraits and their stable-source manifest validate; seven isolated stale/corrupt-asset controls reject bad inputs and preserve accepted files. Targeted translation validation passes **228/0**. Ten focused routing controls retain shared model/lighting dependencies while excluding selection UI/output. Python compilation and scoped whitespace checks pass.
++
++The Compatibility run exits zero but retains the known two-object/one-resource shutdown diagnostic. The final Mobile and headless reference runs exit cleanly. Earlier Mobile stalls remain historical evidence; this task does not identify or claim to fix their cause. Earlier layout/typography/portrait iterations, a temporary camera-clear teardown error, two conservative silhouette findings and a fractional-height touch regression were corrected without weakening the corresponding assertions. The existing broad PowerShell identity fixture still stops on its missing checkpoint `godot-version.txt` dependency; its result is not claimed as passed. Focused routing checks run separately. An initial shell-quoting attempt and execution-policy rejection were corrected before those checks were accepted.
++
++Current views: [standard Garage](evidence/garage-car-stats-2026-11-14/gl_compatibility-reference-final/super_rally-1280.png), [compact Garage](evidence/garage-car-stats-2026-11-14/gl_compatibility-reference-final/super_rally-960.png), [Forklift](evidence/garage-car-stats-2026-11-14/gl_compatibility-reference-final/forklift-1280.png), and [desktop Mobile](evidence/garage-car-stats-2026-11-14/mobile-reference-final/super_rally-1280.png). Logs, command receipts, source/asset controls and the scoped `reference-checkpoint.json` are in the same evidence directory. The historical directory name follows the original stats task; this revision is dated 15 November.
++
++No physical-device test, APK/export, backend operation, deployment, owner-save change, owner-process restart or main-index staging was performed. The existing vehicle geometry, handling and canonical simulation were not authored by this task. Owner appearance and phone qualification remain. Standard build retention was applied; recent/protected output remains above its target.
+--- /dev/null
++++ b/game/assets/garage/selection_portraits_v1/provenance.json
+@@ -0,0 +1,22 @@
++{
++	"garage_revision": "dc1516c985df95fd6bb64636ea39784c15ce0d905f6600ce0ae8c1eb28e0b9ff",
++	"pictures": {
++		"compact": "09e445a65de02ef3d3d6ff411553375c74a4193293eeaafda25ec2da69d7fdd5",
++		"electric": "621086ee41753b18f25355716889bfc4ed94d3acf730a9bec08be46825b8fba0",
++		"forklift": "960075607761e162263cd8a84771659b74b5c52c806f41095636cef8edcf2b99",
++		"hovercraft": "8aa998ca4e2b56f5d93b1c3f22d19b8e916fff55d9491a05216909f7a07cd9c3",
++		"kart": "40dcb790cc0b5d60d268aee79d9a94298319dc9aedab0fdfe0cadc9ae95adb61",
++		"super_rally": "ec8ee3e74b1ff2373c4cce72176772e4208d1f20c87fbb09a1c2edeb3ab85cee"
++	},
++	"producer": "51f06d9fca0af9d93275429c9d79ad6489b7c18ac1a668e4b277b1b293acec87",
++	"provenance": "Native Beat my track stock cars and finishes; Garage lighting; no reference-image pixels",
++	"recipe": "c752ff04418c33bff268624344fedb2550ed0088ec2b97f3637bf39db62a3274",
++	"revision": "ff33bfda3766e3d869f8650ff9a944540214a8998a3d6d1dbf336b8aaa2d9406",
++	"size": [
++		512,
++		288
++	],
++	"source_count": 25150,
++	"source_digest": "037b6a3f747de0d1ee6567c245b17b10895377c408ac225839e3b32be2520362",
++	"version": "garage-selection-portrait-1"
++}
+\ No newline at end of file
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-REVISED-DRAFT-20261115 -->
++## Garage revised draft applied and distorted typography corrected (2026-11-15)
++GRD01-GRD05: left profile with character subtitle and 4/4/3 Super Rally bars, larger selection camera, sharp native car-only portraits, equipped badges, compact footer actions and Garage header coins/underline follow the revised draft. Artificial slants removed; shared upright Barlow fonts retained. Reference881/0 headless and893/0 each desktop renderer, selection20/0+23/0, parser576/0, translations228/0, six portraits/25150-input fence and seven asset rejection controls pass. Compatibility retains two-object/one-resource teardown diagnostics; legacy identity fixture remains unqualified. [Changes, final views, commands and limits](docs/GARAGE_REVISED_DRAFT_2026_11_15.md). Scoped checkpoint; showroom source exact, no model/handling authoring, device/export/backend/owner-save/process or main-index action. Build retention applied.
++<!-- /GARAGE-REVISED-DRAFT-20261115 -->
++
+ <!-- CHALLENGER-CONTINUOUS-SIDE-20261115 -->
+ ## Challenger sides share one continuous shoulder (2026-11-15)
+ CCS01-CCS03: Owner marks the rear-to-nose shoulder and supplies a clean rendered reference. One C2 longitudinal chart, crowned lower panel, small rounded shoulder and common tangents remove the independent side folds; bonnet attachments, Y/Z outline, upper body and handling remain. Native28/0 rejects baseline28/6; maximum longitudinal normal step62.24to4.97deg full/61.30to8.77deg reduced. Complete bonnet arrays and1528/1082 upper vertices remain; one of43200 silhouette probes differs per tier. Raw49584/83522to48572/82332tri; production41118fixed/41116editable. Allocation17/0, contours172/0, fitted316/0, modules1436/0, physics3677/0, wash1655/0, driving72/0, parser573/0, opacity30/0 each renderer and actual App13/0 assertions each pass. Mobile capture/App broad UI fences reject concurrent stats/page edits; compiled empty model routes qualify the unchanged model inputs without a whole-UI claim. Scoped84-resource349/0 and picture/import/workshop controls pass; global551-resource2267-check109 Forklift source-map findings remain outside scope. Challenger key/consumed inputs,48 native files/four unused legacy controls and three-source exact checkpoint retained; no metadata-only restamping. Concurrent car/UI/index work preserved. [Geometry, final prepared views, commands, rejected attempts and limits](docs/CHALLENGER_CONTINUOUS_SIDE_2026_11_15.md). Reload/owner/device acceptance remains; no AAA/FPS/whole-suite/device/export/backend/deployment/owner-save/process or main-index action. Standard retention recorded; no task pin.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-REVISED-DRAFT-20261115 -->
++## Garage revised draft applied and distorted typography corrected (2026-11-15)
++GRD01-GRD05: left profile with character subtitle and 4/4/3 Super Rally bars, larger selection camera, sharp native car-only portraits, equipped badges, compact footer actions and Garage header coins/underline follow the revised draft. Artificial slants removed; shared upright Barlow fonts retained. Reference881/0 headless and893/0 each desktop renderer, selection20/0+23/0, parser576/0, translations228/0, six portraits/25150-input fence and seven asset rejection controls pass. Compatibility retains two-object/one-resource teardown diagnostics; legacy identity fixture remains unqualified. [Changes, final views, commands and limits](docs/GARAGE_REVISED_DRAFT_2026_11_15.md). Scoped checkpoint; showroom source exact, no model/handling authoring, device/export/backend/owner-save/process or main-index action. Build retention applied.
++<!-- /GARAGE-REVISED-DRAFT-20261115 -->
++
+ <!-- CHALLENGER-CONTINUOUS-SIDE-20261115 -->
+ ## Challenger sides share one continuous shoulder (2026-11-15)
+ CCS01-CCS03: Owner marks the rear-to-nose shoulder and supplies a clean rendered reference. One C2 longitudinal chart, crowned lower panel, small rounded shoulder and common tangents remove the independent side folds; bonnet attachments, Y/Z outline, upper body and handling remain. Native28/0 rejects baseline28/6; maximum longitudinal normal step62.24to4.97deg full/61.30to8.77deg reduced. Complete bonnet arrays and1528/1082 upper vertices remain; one of43200 silhouette probes differs per tier. Raw49584/83522to48572/82332tri; production41118fixed/41116editable. Allocation17/0, contours172/0, fitted316/0, modules1436/0, physics3677/0, wash1655/0, driving72/0, parser573/0, opacity30/0 each renderer and actual App13/0 assertions each pass. Mobile capture/App broad UI fences reject concurrent stats/page edits; compiled empty model routes qualify the unchanged model inputs without a whole-UI claim. Scoped84-resource349/0 and picture/import/workshop controls pass; global551-resource2267-check109 Forklift source-map findings remain outside scope. Challenger key/consumed inputs,48 native files/four unused legacy controls and three-source exact checkpoint retained; no metadata-only restamping. Concurrent car/UI/index work preserved. [Geometry, final prepared views, commands, rejected attempts and limits](docs/CHALLENGER_CONTINUOUS_SIDE_2026_11_15.md). Reload/owner/device acceptance remains; no AAA/FPS/whole-suite/device/export/backend/deployment/owner-save/process or main-index action. Standard retention recorded; no task pin.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-REVISED-DRAFT-20261115 -->
++## Garage revised draft applied and distorted typography corrected (2026-11-15)
++GRD01-GRD05: left profile with character subtitle and 4/4/3 Super Rally bars, larger selection camera, sharp native car-only portraits, equipped badges, compact footer actions and Garage header coins/underline follow the revised draft. Artificial slants removed; shared upright Barlow fonts retained. Reference881/0 headless and893/0 each desktop renderer, selection20/0+23/0, parser576/0, translations228/0, six portraits/25150-input fence and seven asset rejection controls pass. Compatibility retains two-object/one-resource teardown diagnostics; legacy identity fixture remains unqualified. [Changes, final views, commands and limits](GARAGE_REVISED_DRAFT_2026_11_15.md). Scoped checkpoint; showroom source exact, no model/handling authoring, device/export/backend/owner-save/process or main-index action. Build retention applied.
++<!-- /GARAGE-REVISED-DRAFT-20261115 -->
++
+ <!-- CAR-GRADUAL-ITERATION01-20261115 -->
+ ## Gradual car optimisation: first Forklift review point (2026-11-15)
+ CI01-CI04: owner replaces 10k target with 10-20% reviewed steps. Forklift26472to23370(-11.72%), fitted29428to26044(-11.50%), stock buffers-10.20%; exact caps save692tri and small fittings retain encoded corners/connectivity with maximum sampled1.850mm within unchanged2mm gate. Broad lamp/bevel proposals rejected; Rally/Kart/Volt/Hover stay at restored baseline, Challenger excluded. Runtime construction unchanged; existing frame recipes retain hidden-face protection. Source6/0, prepared39/0 with13 exact unaffected master controls, recipe guards313/0, all-kit1726/0, native18pairs75/0 and actual App48/0 each renderer, driving72/0, parser573/0 and scoped468-resource1925/0 pass. Forklift pictures/two imports,173-source catalogue and16516-input fence pass; eight other keys and188 resource hashes exact. Original bounds/count and changing-version import rejections retained, no assertion relaxed. Source/resource checkpoint and standard retention receipt retained; next reduction awaits owner appearance review. No device/FPS/export/backend/deployment/owner-save/process or main-index action. [Iteration, comparisons, commands and limits](CAR_GRADUAL_OPTIMISATION_2026_11_15.md).

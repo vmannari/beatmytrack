@@ -20,10 +20,14 @@ func run() -> void:
 	check(fake.reload() == OK,"load the unchanged preview source with synthetic build identity")
 	var cache: Node = fake.new()
 	var car := CarShowroom.new()
+	car.simple_model = false
 	car.vehicle_id = "electric"
 	car.livery = VehicleLivery.for_car({},car.vehicle_id)
 	car.customisation = VehicleCustomisation.defaults()
-	var electric_revision: String = "electric-fixture:"+preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
+	var input_hashes: Array[String]=[]
+	for path: String in ["res://vehicle/electric_reference_mesh.gd","res://vehicle/electric_kits.gd","res://vehicle/electric_body_kits.gd"]:
+		input_hashes.append(FileAccess.get_sha256(path))
+	var electric_revision: String = "electric-fixture:volt-source-1:"+":".join(input_hashes)
 	var expected: String = JSON.stringify([cache.VERSION,electric_revision,car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
 	check(cache.identity(car) == expected,"known car uses its own visual revision")
 	var previous: String = JSON.stringify([cache.VERSION,"electric-fixture",car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
@@ -38,6 +42,9 @@ func run() -> void:
 	var revision: String = str(revisions.get(car.vehicle_id,Build.GARAGE_PREVIEW_SHA256))
 	expected = JSON.stringify([real.VERSION,revision,car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
 	check(real.identity(car) == expected,"actual generated or legacy build identity is supported")
+	car.simple_model=true
+	expected = JSON.stringify([real.VERSION,revision,car.vehicle_id,car.livery,{},car.customisation,"reduced-garage-1"]).sha256_text()
+	check(real.identity(car)==expected,"production reduced identity stays distinct from the reference model")
 	car.free(); cache.free(); real.free()
 	print("GARAGE_PREVIEW_IDENTITY: ",checks," checks, ",failures," failures")
 	quit(1 if failures else 0)

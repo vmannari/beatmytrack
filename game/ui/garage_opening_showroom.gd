@@ -3,21 +3,20 @@ extends "res://ui/car_showroom.gd"
 signal studio_prepared
 signal studio_interactive
 const FirstDraw=preload("res://ui/garage_first_draw.gd")
+const ENTRY_IDLE_MS: int=100
+var reflection_msaa: int=Viewport.MSAA_4X
 var preparing: bool=true
 var can_begin_studio: Callable
 var achievement_service: Node
 var _picture: Control
 var _pending: Dictionary={}
 var _record_choice: Dictionary={}
-var _warm_view: SubViewport
-var _warm_camera: Camera3D
 var _last_input: int=0
 var interaction_ready: bool=false
 var opening_started: int=0
 var live_ready_ms: float=0.0
 var _loads: Array[String]=[]
 var _resources: Array[Resource]=[]
-var _lights: Array[Dictionary]=[]
 var _tree_ref: WeakRef
 var _first: Node
 
@@ -35,10 +34,13 @@ func _ready() -> void:
 	child_entered_tree.connect(func(_child: Node) -> void: _cover.call_deferred())
 	weathering.restore(condition)
 	set_process_input(true)
-	# Resource decoding may run off the UI thread; nodes and renderer stay owned.
-	for path: String in ["res://assets/garage/cars_v1/"+vehicle_id+".scn",GarageEnvironment.PREPARED_ARCHITECTURE]:
-		if DisplayServer.get_name()!="headless" and ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _loads.append(path)
+	_request_assets(vehicle_id,customisation)
 	_begin_studio.call_deferred()
+
+func _request_assets(id: String,parts: Dictionary) -> void:
+	# Decode public resources on workers; create nodes/renderer state on main.
+	for path: String in preload("res://ui/garage_studio_assets.gd").paths(id,simple_model,parts):
+		if DisplayServer.get_name()!="headless" and not _loads.has(path) and ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _loads.append(path)
 
 func _cover() -> void:
 	if preparing and is_instance_valid(_picture) and _picture.get_index()!=get_child_count()-1:
@@ -55,37 +57,36 @@ func _begin_studio() -> void:
 		await get_tree().process_frame
 		if _entry_presented(): break
 	if not _current_studio(): return
-	for path: String in _loads:
-		while _current_studio() and ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_IN_PROGRESS: await get_tree().process_frame
+	while _current_studio():
+		while _current_studio() and not _work_allowed(): await get_tree().process_frame
 		if not _current_studio(): return
-		if ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_LOADED: _resources.append(ResourceLoader.load_threaded_get(path))
-	_loads.clear()
+		while not _loads.is_empty():
+			var path: String=_loads[0]
+			while _current_studio() and ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_IN_PROGRESS: await get_tree().process_frame
+			if not _current_studio(): return
+			var status: int=ResourceLoader.load_threaded_get_status(path)
+			if status==ResourceLoader.THREAD_LOAD_LOADED: _resources.append(ResourceLoader.load_threaded_get(path))
+			elif status==ResourceLoader.THREAD_LOAD_FAILED: ResourceLoader.load_threaded_get(path)
+			_loads.pop_front()
+		if _work_allowed(): break
+	if not _current_studio(): return
+	# A choice made while the picture was visible becomes the first built car.
+	if not _pending.is_empty():
+		vehicle_id=_pending.vehicle
+		livery=_pending.paint
+		condition=_pending.wear
+		customisation=_pending.parts
+		_pending={}
 	cooperative_build=true
 	await super._ready()
 	if not is_inside_tree() or is_queued_for_deletion(): return
 	# The ordinary page applies its wall contents synchronously. Its deferred
 	# counterpart must include them before holding/warming the actual scene.
 	preload("res://ui/achievement_display.gd").update(self,achievement_service)
-	# One MSAA level prevents renderer precompilation switching back and forth
-	# between the live view and its two reflection captures.
-	for view: SubViewport in reflections.views: view.msaa_3d=showroom_viewport.msaa_3d
-	_warm_view=SubViewport.new()
-	_warm_view.world_3d=showroom_viewport.find_world_3d()
-	_warm_view.size=Vector2i(64,64)
-	_warm_view.msaa_3d=showroom_viewport.msaa_3d
-	_warm_view.render_target_update_mode=SubViewport.UPDATE_DISABLED
-	add_child(_warm_view)
-	_warm_camera=Camera3D.new()
-	_warm_camera.cull_mask=8
-	_warm_view.add_child(_warm_camera)
-	_warm_camera.current=true
-	for light: Node in camera.get_parent().find_children("*","Light3D",true,false):
-		var copy: Node=light.duplicate()
-		copy.layers=8
-		copy.light_cull_mask=8
-		light.get_parent().add_child(copy)
-		_lights.append({"source":weakref(light),"mask":light.light_cull_mask,"copy":copy})
-		light.light_cull_mask&=7
+	# Render the actual receiving targets once input is idle. Proxy cameras,
+	# cloned lights and offscreen meshes create additional pipeline variants.
+	showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
+	for view: SubViewport in reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
 	while _current_studio():
 		if not _pending.is_empty():
 			var target: Dictionary=_pending
@@ -99,21 +100,9 @@ func _begin_studio() -> void:
 		var first: Node=FirstDraw.new()
 		_first=first
 		add_child(first)
-		first.hold(car)
-		first.hold(camera.get_parent())
 		move_child(_picture,get_child_count()-1)
-		# Keep the neutral loading car over first-use work. The final reveal
-		# still uses the original full finishes, lighting and planar reflections.
-		while not first.pending.is_empty() and _current_preparation():
-			# Do not even reveal a cold native material into the shadow pass while
-			# input is active. Wait before prepare() exposes its next group.
-			while _current_preparation() and (not _entry_presented() or Time.get_ticks_msec()-_last_input<750): await get_tree().process_frame
-			if not _current_preparation(): break
-			await first.prepare(_draw_studio,_current_warm_batch)
+		while _current_preparation() and not _current_warm_batch(): await get_tree().process_frame
 		if not _current_studio(): return
-		first.release()
-		first.queue_free()
-		_first=null
 		if not _record_choice.is_empty(): super.update_records(_record_choice)
 		var graphics: Script=preload("res://rendering/graphics_preparation.gd")
 		var capture: Dictionary=graphics.begin_capture(camera.get_parent(),showroom_viewport,camera)
@@ -121,20 +110,21 @@ func _begin_studio() -> void:
 		# targets must settle under the picture before the first live reveal.
 		for _settle: int in range(4):
 			if not _current_preparation(): break
-			while _current_studio() and not _entry_presented(): await get_tree().process_frame
+			while _current_preparation() and not _current_warm_batch(): await get_tree().process_frame
 			if not _current_preparation(): break
 			super._process(0.0)
 			showroom_viewport.render_target_update_mode=SubViewport.UPDATE_ONCE
 			reflections.request_draw()
 			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
-			await get_tree().process_frame
+			else: await get_tree().process_frame
+			if _settle==0: await get_tree().process_frame
 		if not _current_studio(): return
+		first.release()
+		first.queue_free()
+		_first=null
 		if _pending.is_empty():
 			graphics.finish_capture(capture,camera.get_parent(),showroom_viewport,camera)
 			break
-	_warm_view.queue_free()
-	_warm_view=null
-	_restore_lights()
 	_resources.clear()
 	preparing=false
 	interaction_ready=true
@@ -154,27 +144,20 @@ func _entry_presented() -> bool:
 	return is_visible_in_tree() and (not can_begin_studio.is_valid() or can_begin_studio.call())
 
 func _current_warm_batch() -> bool:
-	return _current_preparation() and _entry_presented() and Time.get_ticks_msec()-_last_input>=750
+	return _current_preparation() and _work_allowed()
+
+func _work_allowed() -> bool:
+	if not _current_studio() or not _entry_presented() or Input.is_anything_pressed() or Time.get_ticks_msec()-_last_input<ENTRY_IDLE_MS: return false
+	var focus: Control=get_viewport().gui_get_focus_owner()
+	return not focus is LineEdit and not focus is TextEdit
 
 func _current_studio() -> bool:
 	return is_inside_tree() and not is_queued_for_deletion()
 
-func _draw_studio() -> bool:
-	while _current_studio() and not _entry_presented(): await get_tree().process_frame
-	# Compile full finishes only after the player pauses their interaction.
-	while _current_preparation() and Time.get_ticks_msec()-_last_input<750: await get_tree().process_frame
-	if not _current_preparation(): return false
-	_warm_camera.transform=camera.transform
-	_warm_camera.fov=camera.fov
-	_warm_camera.keep_aspect=camera.keep_aspect
-	_warm_view.render_target_update_mode=SubViewport.UPDATE_ONCE
-	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
-	await get_tree().process_frame
-	return _current_studio()
-
 func replace_car(id: String,paint: Dictionary,wear: Dictionary,parts: Dictionary={}) -> void:
 	if preparing:
 		_pending={"vehicle":id,"paint":paint.duplicate(true),"wear":wear.duplicate(true),"parts":parts.duplicate(true)}
+		if car==null: _request_assets(id,parts)
 		if _picture!=null:
 			_picture.vehicle_id=id
 			_picture.show()
@@ -192,6 +175,7 @@ func apply_customisation(value: Dictionary,animate_kit: bool=false) -> void:
 	if preparing:
 		if _pending.is_empty(): _pending={"vehicle":vehicle_id,"paint":livery.duplicate(true),"wear":condition.duplicate(true),"parts":customisation.duplicate(true)}
 		_pending.parts=value.duplicate(true)
+		if car==null: _request_assets(_pending.vehicle,value)
 		return
 	super.apply_customisation(value,animate_kit)
 
@@ -215,26 +199,15 @@ func _exit_tree() -> void:
 
 func _notification(what: int) -> void:
 	super._notification(what)
-	if what==NOTIFICATION_PREDELETE:
-		_restore_lights()
 	if what==NOTIFICATION_PREDELETE and not _loads.is_empty():
 		_retire_loads(_loads.duplicate(),_tree_ref)
 		_loads.clear()
-
-func _restore_lights() -> void:
-	for item: Dictionary in _lights:
-		var light: Object=item.source.get_ref()
-		if is_instance_valid(light): light.light_cull_mask=item.mask
-		if is_instance_valid(item.copy):
-			if item.copy.get_parent()!=null: item.copy.get_parent().remove_child(item.copy)
-			item.copy.queue_free()
-	_lights.clear()
 
 static func _retire_loads(paths: Array[String],tree_ref: WeakRef) -> void:
 	var pending: Array[String]=[]
 	for path: String in paths:
 		var status: int=ResourceLoader.load_threaded_get_status(path)
 		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: pending.append(path)
-		elif status==ResourceLoader.THREAD_LOAD_LOADED: ResourceLoader.load_threaded_get(path)
+		elif status in [ResourceLoader.THREAD_LOAD_LOADED,ResourceLoader.THREAD_LOAD_FAILED]: ResourceLoader.load_threaded_get(path)
 	var tree: Object=tree_ref.get_ref()
 	if not pending.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_retire_loads.bind(pending,tree_ref),CONNECT_ONE_SHOT)

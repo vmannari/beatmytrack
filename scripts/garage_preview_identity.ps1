@@ -6,6 +6,11 @@ function Get-GaragePreviewVehicleIds {
 }
 
 function Get-GaragePreviewVehicles([string]$Relative) {
+    # Selection layouts and their derived portraits cannot change a native car/room photograph.
+    if ($Relative -match '^game/assets/garage/selection_portraits_v1/' -or
+        $Relative -in @('game/ui/garage_car_stats.gd', 'game/ui/garage_performance_data.gd',
+            'game/ui/garage_header.gd', 'game/ui/garage_selection_camera.gd',
+            'game/ui/garage_selection_pictures.gd')) { return @() }
     # New visual files are shared by default, rather than silently omitted.
     # These narrowly excluded files cannot affect the captured showroom.
     if ($Relative -match '^game/(backend/|diagnostics/|music/|localization/|core/features/|assets/menu/header_car_templates_v1/)' -or

@@ -5,6 +5,7 @@ const DECK_HEIGHT: float = 0.22
 const DECK_RADIUS: float = 3.65
 const ROOF_CUTAWAY_HEIGHT: float = 4.95
 const MeshCleanup = preload("res://ui/garage_mesh_cleanup.gd")
+const MeshReduction = preload("res://ui/garage_mesh_reduction.gd")
 static var surfaces: Dictionary = {}
 static var architecture_scene: PackedScene
 static var cabinet_meshes: Dictionary = {}
@@ -45,7 +46,7 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, 
 	mesh.top_radius = radius
 	mesh.bottom_radius = radius
 	mesh.height = height
-	# Keep the large platform's outline; small fixtures need fewer radial samples.
+	# Keep a smooth 64-sided platform; tiny fittings retain cardinal extrema.
 	mesh.radial_segments = cylinder_segments(radius)
 	# The side is straight: intermediate height rings add no shape or shading.
 	mesh.rings = 0
@@ -57,18 +58,19 @@ static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, 
 	return node
 
 static func cylinder_segments(radius: float) -> int:
-	if radius >= 0.5: return 96
-	if radius >= 0.12: return 48
-	if radius >= 0.035: return 32
-	return 16
+	if radius >= 0.5: return 64
+	if radius >= 0.12: return 16
+	if radius >= 0.035: return 12
+	if radius <= 0.018: return 4
+	return 8
 
 static func ring(parent: Node3D, radius: float, y: float, thickness: float, material: Material) -> void:
 	var node := MeshInstance3D.new()
 	var mesh := TorusMesh.new()
 	mesh.inner_radius = radius - thickness
 	mesh.outer_radius = radius + thickness
-	mesh.rings = 96
-	mesh.ring_segments = 8
+	mesh.rings = 48
+	mesh.ring_segments = 4
 	node.mesh = mesh
 	node.position.y = y
 	node.material_override = material
@@ -135,6 +137,7 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool, use_prepared: 
 		preload("res://ui/garage_record_station.gd").build(shell)
 		_batch(roof)
 		_batch(shell)
+		MeshReduction.apply(shell)
 		_set_owner(shell, shell)
 		var prepared := PackedScene.new()
 		if prepared.pack(shell) == OK: architecture_scene = prepared
@@ -266,6 +269,9 @@ static func _batch(root: Node3D) -> void:
 		merged.name = "PreparedGarageMesh"
 		merged.mesh = (groups[source] as SurfaceTool).commit()
 		merged.material_override = source
+		# Keep readable lettering and continuous coloured cabinet fronts.
+		if source == surfaces.get("brandlettergold") or source == surfaces.get("benchdrawers") or source == GarageFurnishings.paint():
+			merged.set_meta("garage_keep_detail", true)
 		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(merged)
 
@@ -298,6 +304,29 @@ static func _set_owner(node: Node, owner: Node) -> void:
 static func bevel_box(dimensions: Vector3) -> ArrayMesh:
 	if cabinet_meshes.has(dimensions): return cabinet_meshes[dimensions]
 	var half: Vector3 = dimensions * 0.5
+	# Compact fittings retain their exact extents with six closed faces.
+	# Broad shutter panels and the largest bodies keep the authored bevel.
+	var broad_panel: bool=dimensions.x>=8.0 and dimensions.y<=0.3 and dimensions.z>=0.05 and dimensions.z<=0.3
+	if minf(dimensions.x,minf(dimensions.y,dimensions.z)) <= 0.5 and not broad_panel:
+		var faces := SurfaceTool.new()
+		faces.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for axis: int in range(3):
+			var u: int=(axis+1)%3
+			var v: int=(axis+2)%3
+			for sign_axis: float in [-1.0,1.0]:
+				var normal:=Vector3.ZERO
+				normal[axis]=sign_axis
+				var points: Array[Vector3]=[]
+				for corner: Vector2 in [Vector2(-1,-1),Vector2(1,-1),Vector2(1,1),Vector2(-1,1)]:
+					var point:=Vector3.ZERO
+					point[axis]=half[axis]*sign_axis
+					point[u]=half[u]*corner.x
+					point[v]=half[v]*corner.y
+					points.append(point)
+				_polygon(faces,points,normal)
+		faces.index()
+		cabinet_meshes[dimensions]=faces.commit()
+		return cabinet_meshes[dimensions]
 	var bevel: float = minf(0.025, minf(half.x, minf(half.y, half.z)) * 0.18)
 	var core: Vector3 = half - Vector3.ONE * bevel
 	var tool := SurfaceTool.new()

@@ -70,20 +70,6 @@ func run() -> void:
 		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.equip.get_global_rect()),"purchase action fits")
 		check(page.kit_scroll.get_global_rect().encloses(page.kit_cards.get_child(1).get_global_rect()),"selected row fits")
 		if dimensions.x==1720:
-			var at: Vector2 = page._compare_button.get_global_rect().get_center()
-			var event := InputEventScreenTouch.new()
-			event.index = 24
-			event.position = at
-			event.pressed = true
-			root.push_input(event,true)
-			check(page.showroom.customisation==page.kit_draft,"touch hold shows equipped hood")
-			await capture("hood-compare-equipped")
-			event = event.duplicate() as InputEventScreenTouch
-			event.pressed = false
-			event.position = Vector2(3,3)
-			root.push_input(event,true)
-			check(page.showroom.customisation.hood=="louvres","release restores selected hood")
-			await capture("hood-preview-after-release")
 			page._preview_kit("hood","scoop")
 			await capture("hood-owned")
 			page._select_kit_category("body")

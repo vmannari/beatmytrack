@@ -59,6 +59,9 @@ static func inside(point: Vector3, core: Vector3) -> bool:
 
 func clean(part: MeshInstance3D, transform: Transform3D) -> Mesh:
 	var source: Mesh = part.mesh
+	if enabled and source is CylinderMesh and opaque(part.material_override):
+		var cylinder: ArrayMesh = compact_cylinder_caps(source)
+		if cylinder != null: source=cylinder
 	if not enabled or not source is ArrayMesh or source.get_surface_count() != 1 or source.get_blend_shape_count() != 0 or not opaque(part.material_override): return source
 	if source.surface_get_format(0) & (Mesh.ARRAY_FORMAT_BONES | Mesh.ARRAY_FLAG_COMPRESS_ATTRIBUTES): return source
 	# The workshop generates fresh LODs after batching. Existing levels require
@@ -109,6 +112,56 @@ func clean(part: MeshInstance3D, transform: Transform3D) -> Mesh:
 	result.shadow_mesh = source.shadow_mesh
 	for key: StringName in source.get_meta_list(): result.set_meta(key,source.get_meta(key))
 	return preload("res://rendering/mesh_vertex_packing.gd").pack(result)
+
+static func compact_cylinder_caps(source: CylinderMesh) -> ArrayMesh:
+	# Planar cap fans need no centre vertex. Retain their exact boundary,
+	# normals and UVs; four triangles disappear from each closed cylinder.
+	if not source.cap_top or not source.cap_bottom or source.top_radius<=0 or source.top_radius!=source.bottom_radius: return null
+	var arrays: Array=source.surface_get_arrays(0)
+	var positions: PackedVector3Array=arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array=arrays[Mesh.ARRAY_NORMAL]
+	var indices: PackedInt32Array=arrays[Mesh.ARRAY_INDEX]
+	var kept:=PackedInt32Array()
+	var caps: Dictionary={-1:[],1:[]}
+	for offset: int in range(0,indices.size(),3):
+		var direction: int=1 if normals[indices[offset]].y>0 else -1
+		var cap: bool=true
+		for corner: int in range(3):
+			var index: int=indices[offset+corner]
+			cap=cap and normals[index].dot(Vector3.UP*direction)>0.9999 and is_equal_approx(positions[index].y,source.height*0.5*direction)
+		if not cap:
+			kept.append_array(indices.slice(offset,offset+3))
+			continue
+		for corner: int in range(3):
+			var index: int=indices[offset+corner]
+			if Vector2(positions[index].x,positions[index].z).length_squared()<0.000000000001: continue
+			var duplicate: bool=false
+			for previous: int in caps[direction]:
+				if positions[index].distance_squared_to(positions[previous])<0.000000000001: duplicate=true;break
+			if not duplicate: caps[direction].append(index)
+	for direction: int in [-1,1]:
+		var boundary: Array=caps[direction]
+		if boundary.size()!=source.radial_segments: return null
+		boundary.sort_custom(func(a: int,b: int) -> bool: return atan2(positions[a].x,positions[a].z)<atan2(positions[b].x,positions[b].z))
+		for at: int in range(1,boundary.size()-1):
+			var a: int=boundary[0]
+			var b: int=boundary[at]
+			var c: int=boundary[at+1]
+			if (positions[b]-positions[a]).cross(positions[c]-positions[a]).dot(Vector3.UP*direction)>0:
+				kept.append_array(PackedInt32Array([a,c,b]))
+			else: kept.append_array(PackedInt32Array([a,b,c]))
+	arrays[Mesh.ARRAY_INDEX]=kept
+	var result:=ArrayMesh.new()
+	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+	result.surface_set_material(0,source.surface_get_material(0))
+	# Primitive bounds can differ by a float rounding unit from the identical
+	# generated positions. Keep the original culling bounds as well.
+	var packets: Array=result.get("_surfaces")
+	packets[0].aabb=source.get_aabb()
+	var bounded:=ArrayMesh.new()
+	bounded.set("_surfaces",packets)
+	bounded.custom_aabb=source.get_aabb()
+	return bounded
 
 static func compact(packet: Dictionary, indices: PackedInt32Array) -> Dictionary:
 	# Copy complete encoded records; never round normals/UVs through a decoder.

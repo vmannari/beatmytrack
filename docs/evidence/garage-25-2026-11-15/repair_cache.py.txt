@@ -1,0 +1,71 @@
+"""Reconstruct the 83 stale Challenger consumers without authoring model source."""
+from pathlib import Path
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+sys.path.insert(0,str(ROOT/'scripts'))
+import refresh_garage_fast_entry as prior
+prior.WORK=WORK
+prior.PROJECT=WORK/'cache/game'
+PROJECT=prior.PROJECT
+def sources():
+    result=prior.sources()
+    for folder in ('game/assets/fonts','game/assets/liveries','game/resources'):
+        for p in (ROOT/folder).rglob('*'):
+            relative=p.relative_to(ROOT).as_posix()
+            if p.is_file() and p.suffix not in ('.uid','.import') and prior.consumed(relative): result[relative]=prior.digest(p)
+    return result
+def owned(p): return '/super_rally/' in p or p.endswith('/super_rally.scn') or '/modular_car_bases_v1/super_rally_' in p
+def outputs(game):
+    return {p.relative_to(game).as_posix():prior.digest(p) for folder in prior.OUTPUTS
+            for p in (game/folder).rglob('*.scn') if owned(p.relative_to(game).as_posix())}
+def keys(path): return json.loads(re.search(r'MODULAR_CAR_SHA256: Dictionary = (\{[^\n]+\})',path.read_text()).group(1))
+def run(label,script,*options):
+    command=[sys.executable,'scripts/run_garage_25.py',label,'--project',str(PROJECT),'--script',script,'--headless',*options]
+    result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    errors=[s for s in (WORK/label/'run.log').read_text().splitlines() if s.startswith(('ERROR:','SCRIPT ERROR:'))]
+    print(label,result.returncode,'native errors',len(errors),flush=True)
+    assert result.returncode==0 and not errors,(label,errors,result.stdout[-1200:])
+def main():
+    before=sources();accepted=outputs(ROOT/'game')
+    print('Freezing',len(before),'current inputs; preserving every other car',flush=True)
+    (WORK/'cache-inputs.json').write_text(json.dumps(before,indent=2))
+    prior.prepare();prior.freeze_inputs(before)
+    assert before==sources(),'Sources changed during the private snapshot'
+    identity=prior.identity('cache-before')
+    assert keys(ROOT/'game/core/build_identity.gd')==identity['modular_car_sha256'],'Current car keys changed'
+    run('cache-bases','res://tests/bake_modular_car_bases.gd','--vehicle=super_rally')
+    run('cache-kits','res://tests/bake_modular_car_kits.gd','--vehicle=super_rally')
+    run('cache-garage','res://tests/bake_garage_cars.gd','--vehicle=super_rally')
+    run('cache-combined-preflight','res://tests/check_prepared_assets.gd')
+    assert before==sources(),'Current model inputs changed'
+    assert accepted==outputs(ROOT/'game'),'Another producer changed Challenger output'
+    assert keys(ROOT/'game/core/build_identity.gd')==identity['modular_car_sha256']
+    candidate=outputs(PROJECT)
+    changed=[p for p,h in candidate.items() if accepted.get(p)!=h]
+    written=[]
+    try:
+        for p in changed:
+            target=ROOT/'game'/p
+            assert prior.digest(target)==accepted[p],p
+            saved=WORK/'cache-publication-before'/p
+            saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,saved)
+            temporary=target.with_name(target.name+'.garage25-publish')
+            shutil.copy2(PROJECT/p,temporary);os.replace(temporary,target);written.append(p)
+        assert before==sources(),'Sources changed during publication'
+        assert all(prior.digest(ROOT/'game'/p)==candidate[p] for p in changed)
+    except BaseException:
+        for p in reversed(written):
+            if prior.digest(ROOT/'game'/p)==candidate[p]: shutil.copy2(WORK/'cache-publication-before'/p,ROOT/'game'/p)
+        raise
+    (WORK/'cache-publication.json').write_text(json.dumps(dict(input_count=len(before),source_fence=True,
+        published_hashes={p:candidate[p] for p in changed},geometry_keys=identity['modular_car_sha256']),indent=2))
+    print('Published',len(changed),'current Challenger cache resources',flush=True)
+if __name__=='__main__': main()

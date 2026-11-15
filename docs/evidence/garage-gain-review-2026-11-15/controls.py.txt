@@ -1,0 +1,35 @@
+from pathlib import Path
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+PROJECT=WORK/'snapshot/game'
+fixed=json.loads((WORK/'fixed-inputs.json').read_text())
+def verify():
+    changed=[p for p,h in fixed.items() if hashlib.sha256((PROJECT/p).read_bytes()).hexdigest()!=h]
+    assert not changed,changed
+verify()
+rows=[]
+for renderer in ('gl_compatibility','mobile'):
+    for round_number,order in enumerate((('repack',),('current','repack','half_controlled'),('half_controlled','repack','current'))):
+        for variant in order:
+            name='control-'+renderer+'-'+str(round_number)+'-'+variant
+            shutil.copy2(WORK/'control-variants'/(variant+'.scn'),PROJECT/'assets/garage/workshop_v1.scn')
+            result=subprocess.run([sys.executable,str(WORK/'run.py'),name,'--project',str(PROJECT),'--renderer',renderer],cwd=ROOT,capture_output=True,text=True)
+            errors=[s for s in (WORK/'runs'/name/'run.log').read_text().splitlines() if s.startswith(('ERROR:','SCRIPT ERROR:'))]
+            assert result.returncode==0 and not errors,(name,errors,result.stdout[-1000:])
+            report=json.loads((WORK/'runs'/name/'report.json').read_text())
+            assert report['base_hits']>=1 and report['base_key_matches'] and not report['source_differences']
+            assert report['car_triangles']==19074 and report['ready'] and report['selection_matches']
+            row=dict(renderer=renderer,variant=variant,round=round_number,warmup=round_number==0,
+                entry_ms=next(e['ms'] for e in report['events'] if e['stage']=='live_ready'),
+                navigation_ms=report['events'][0]['ms'],max_frame_ms=report['max_frame_ms'],
+                main_primitives=report['main_primitives'],main_draws=report['main_draws'],label=name)
+            rows.append(row);(WORK/'control-samples.json').write_text(json.dumps(rows,indent=2))
+            print(name,round(row['entry_ms'],1),'ms',row['main_primitives'],'primitives',flush=True)
+verify()
+(WORK/'control-fence.json').write_text(json.dumps(dict(input_count=len(fixed),changed_inputs=[]),indent=2))
+shutil.copy2(WORK/'control-variants/current.scn',PROJECT/'assets/garage/workshop_v1.scn')

@@ -5,7 +5,7 @@ signal capture_started(vehicle: String)
 signal capture_finished
 const Icons = preload("res://ui/header_car_icons.gd")
 const Work = preload("res://editor/work_job.gd")
-const SIZE := Vector2i(176,112)
+const SIZE := Icons.SIZE
 const FILE_LIMIT: int = 14
 var records: LocalRecords
 var allowed: Callable
@@ -37,12 +37,12 @@ var preparing_selected: bool = false
 func _ready() -> void:
 	_debounce = Timer.new()
 	_debounce.one_shot = true
-	_debounce.wait_time = 0.35
+	_debounce.wait_time = 0.12
 	_debounce.timeout.connect(_scan)
 	add_child(_debounce)
 	_retry = Timer.new()
 	_retry.one_shot = true
-	_retry.wait_time = 0.25
+	_retry.wait_time = 0.10
 	_retry.timeout.connect(resume_pending)
 	add_child(_retry)
 	set_process(false)
@@ -248,8 +248,16 @@ func _after_draw() -> void:
 		captures += 1
 		_io_job = _current
 		_io_kind = "write"
-		_io = Work.start(_write.bind(directory,_current.key,pixels),get_tree())
+		_io = Work.start(_write.bind(directory,_current.key,pixels,_saved_picture_keys()),get_tree())
 	_release()
+
+func _saved_picture_keys() -> PackedStringArray:
+	# Keep every current car when one design creates many historical versions.
+	# Snapshot on the owner thread; the file worker never reads player records.
+	var keys := PackedStringArray()
+	if records != null:
+		for vehicle: String in VehicleCatalog.IDS: keys.append(Icons.appearance_key(vehicle,records))
+	return keys
 
 func _release() -> void:
 	_capture_generation += 1
@@ -283,14 +291,14 @@ func _exit_tree() -> void:
 
 static func _read(cancelled: Callable, path: String) -> Dictionary:
 	var file := FileAccess.open(path,FileAccess.READ)
-	if file == null or file.get_length() > 131072 or cancelled.call(): return {}
+	if file == null or file.get_length() > SIZE.x*SIZE.y*4+65536 or cancelled.call(): return {}
 	var bytes: PackedByteArray = file.get_buffer(file.get_length())
-	if bytes.size()<33 or bytes.slice(0,8)!=PackedByteArray([137,80,78,71,13,10,26,10]) or bytes.slice(16,24)!=PackedByteArray([0,0,0,176,0,0,0,112]): return {}
+	if bytes.size()<33 or bytes.slice(0,8)!=PackedByteArray([137,80,78,71,13,10,26,10]) or bytes.slice(16,24)!=PackedByteArray([0,0,2,0,0,0,1,32]): return {}
 	var pixels := Image.new()
 	if pixels.load_png_from_buffer(bytes)!=OK or pixels.get_size()!=SIZE: return {}
 	return {"image":pixels}
 
-static func _write(cancelled: Callable, path: String, key: String, pixels: Image) -> Dictionary:
+static func _write(cancelled: Callable, path: String, key: String, pixels: Image, saved_keys: PackedStringArray = PackedStringArray()) -> Dictionary:
 	pixels.convert(Image.FORMAT_RGBA8)
 	for y: int in range(SIZE.y):
 		if cancelled.call(): return {}
@@ -313,5 +321,9 @@ static func _write(cancelled: Callable, path: String, key: String, pixels: Image
 	for name: String in folder.get_files():
 		if name.ends_with(".png") and name.trim_suffix(".png").length()==64 and name.trim_suffix(".png").is_valid_hex_number(): files.append({"name":name,"time":FileAccess.get_modified_time(path.path_join(name))})
 	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.time<b.time)
-	while files.size()>FILE_LIMIT: DirAccess.remove_absolute(path.path_join(files.pop_front().name))
+	var excess: int = files.size()-FILE_LIMIT
+	for file: Dictionary in files:
+		if excess <= 0: break
+		if file.name.trim_suffix(".png") in saved_keys: continue
+		if DirAccess.remove_absolute(path.path_join(file.name)) == OK: excess -= 1
 	return {} if cancelled.call() else {"image":pixels}

@@ -1,0 +1,29 @@
+from pathlib import Path
+import json
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+cases=[
+ ('published-budget','res://tests/test_garage_environment_budget.gd','gl_compatibility',True,['--reference-room=res://../build/garage-70-2026-11-14/before/workshop_v1.scn']),
+ ('final-cleanup','res://tests/test_garage_mesh_cleanup.gd','gl_compatibility',True,[]),
+ ('retained-detail-policy','res://tests/test_garage_prop_detail.gd','gl_compatibility',True,[]),
+]
+for renderer in ('gl_compatibility','mobile'):
+    for label,script in (
+      ('capture','res://tests/test_garage_first_capture.gd'),
+      ('reflections','res://tests/test_garage_opening_reflections.gd'),
+      ('tools','res://tests/test_garage_opening_tools.gd'),
+      ('app','res://../build/garage-fast-entry-2026-11-14/live_entry_foreground.gd')):
+        cases.append((label+'-'+renderer,script,renderer,False,[]))
+cases += [('prepared','res://tests/check_prepared_assets.gd','gl_compatibility',True,[])]
+rows=[]
+for name,script,renderer,headless,options in cases:
+    command=[sys.executable,'scripts/run_garage_70.py',name,'--script',script,'--renderer',renderer]
+    if headless: command.append('--headless')
+    command+=options
+    process=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    print(name,process.returncode,process.stdout[-200:],flush=True)
+    rows.append(dict(name=name,exit_code=process.returncode))
+    (WORK/'verification.json').write_text(json.dumps(rows,indent=2))

@@ -19,6 +19,7 @@ func run_garage(app: Node, parent: Control = null) -> void:
 	# A prepared studio transfers directly; an early visit presents the page
 	# with a neutral car while the exact saved live studio prepares underneath.
 	page.cached_carousel = true
+	page.shared_header_cache = app.header_car_cache
 	page.prepared_pictures=app._garage_preloader.picture_pool() if is_instance_valid(app._garage_preloader) else {}
 	page.preview_can_render=func() -> bool: return app._publishing_slots_foreground and app._background_work_allowed() and not app.header_car_cache.capture_active() and (app.menu_page_motion==null or not app.menu_page_motion.is_running())
 	if is_instance_valid(app._garage_preloader): page.preloaded_showroom=app._garage_preloader.take()

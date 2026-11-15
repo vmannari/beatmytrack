@@ -1,0 +1,65 @@
+Copy these task-owned helpers into build/garage-fast-entry-2026-11-14 before use.
+
+PREPARE COMPARISON
+from pathlib import Path
+import os
+import shutil
+import stat
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=ROOT/'build/garage-fast-entry-2026-11-14'
+BAKE=WORK/'bake/game'
+if len(sys.argv)>1: BAKE=Path(sys.argv[1]).resolve()
+for name in ('control','candidate'):
+    project=WORK/name/'game'
+    assert project.is_relative_to(WORK)
+    for source in BAKE.iterdir():
+        if source.name in ('.godot','ui','android','tmp','build'): continue
+        target=project/source.name
+        if source.is_dir():
+            if target.exists():
+                assert getattr(target.lstat(),'st_file_attributes',0)&stat.FILE_ATTRIBUTE_REPARSE_POINT, target
+                target.rmdir()
+            subprocess.run(['powershell','-NoProfile','-Command',
+                'New-Item -ItemType Junction -Path $env:BMT_LINK -Target $env:BMT_TARGET | Out-Null'],
+                env=dict(os.environ,BMT_LINK=str(target),BMT_TARGET=str(source)),check=True)
+        else: shutil.copy2(source,target)
+    for source in (ROOT/'game/ui').iterdir():
+        if source.is_file(): shutil.copy2(source,project/'ui'/source.name)
+        elif not (project/'ui'/source.name).exists():
+            subprocess.run(['powershell','-NoProfile','-Command',
+                'New-Item -ItemType Junction -Path $env:BMT_LINK -Target $env:BMT_TARGET | Out-Null'],
+                env=dict(os.environ,BMT_LINK=str(project/'ui'/source.name),BMT_TARGET=str(source)),check=True)
+    if name=='control':
+        for filename in ('garage_opening_showroom.gd','garage_reflections.gd','garage_preview_cache.gd','garage_page.gd'):
+            shutil.copy2(WORK/'before'/filename,project/'ui'/filename)
+    for filename in ('global_script_class_cache.cfg','extension_list.cfg','uid_cache.bin'):
+        shutil.copy2(BAKE/'.godot'/filename,project/'.godot'/filename)
+print('Matched source shadows prepared')
+
+RUN COMPARISON
+from pathlib import Path
+import json
+import subprocess
+import sys
+ROOT=Path(__file__).resolve().parents[2]
+WORK=ROOT/'build/garage-fast-entry-2026-11-14'
+prefix='final-cold' if '--final' in sys.argv else 'cold'
+for renderer in ('gl_compatibility','mobile'):
+    rounds=range(4) if renderer=='gl_compatibility' else range(2)
+    for number in rounds:
+        for mode in (('control','candidate') if number%2==0 else ('candidate','control')):
+            label=f'{prefix}-{renderer}-{mode}-{number}'
+            command=[sys.executable,'scripts/run_garage_fast_entry.py',label,'--project',str(WORK/mode/'game'),
+                '--script','res://tests/profile_garage_fast_entry.gd','--renderer',renderer,'--fitted']
+            result=subprocess.run(command,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+            assert result.returncode==0,result.stdout[-2000:]
+            data=json.loads((WORK/label/'report.json').read_text())
+            receipt=json.loads((WORK/label/'run.json').read_text())
+            assert not receipt['changed_inputs'],receipt['changed_inputs']
+            assert data['ready'] and data['selection_matches'] and data['same_studio']
+            assert data['base_hits']>0 and data['base_key_matches'] and not data['source_differences'],data
+            assert not data['cached_before']['res://ui/garage_page.gd']
+            print(label, data['events'][-1]['ms'], 'max frame',data['max_frame_ms'],flush=True)

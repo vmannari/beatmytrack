@@ -28,7 +28,9 @@ func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 		var view := SubViewport.new()
 		view.name = "FloorReflection" if index == 0 else "PedestalReflection"
 		view.world_3d = owner.showroom_viewport.find_world_3d()
-		view.msaa_3d = Viewport.MSAA_2X
+		# An opening studio specifies its final sampling before native targets
+		# are created, avoiding a second set of cold render pipelines.
+		view.msaa_3d = source.reflection_msaa if "reflection_msaa" in source else Viewport.MSAA_2X
 		view.scaling_3d_scale = 1.0
 		view.mesh_lod_threshold = 0.5
 		view.transparent_bg = true

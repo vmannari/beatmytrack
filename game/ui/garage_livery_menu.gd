@@ -317,8 +317,6 @@ func refresh() -> void:
 		if index==preview_index:
 			pattern_shelf.show_choice(str(row.get_meta("pattern_title")),not previewing,owned,cost,index,pattern_tiles.size(),"Patterns")
 	if page.section=="customise" and page._customise_tab=="livery" and is_visible_in_tree():
-		page._compare_button.visible = true
-		page._compare_button.disabled = not previewing
 		page._preview_hint.hide()
 		_reveal_pattern.call_deferred()
 	_queue_pattern_icons.call_deferred()

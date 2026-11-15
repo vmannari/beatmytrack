@@ -27,22 +27,21 @@ static func mesh(parent: Node3D, at: Vector3, shape: Mesh, material: Material) -
 	return node
 
 static func tube_sides(radius: float) -> int:
-	if radius <= 0.012: return 12
-	if radius <= 0.035: return 16
-	return 20
+	# Four cardinal samples keep tiny shafts' exact bounds and analytic normals.
+	if radius <= 0.015: return 4
+	if radius <= 0.035: return 8
+	return 12
 
 static func lathe_sides(radius: float) -> int:
 	# Preserve all profile rows and their analytic normals. Small turned fittings
-	# need fewer azimuth samples; the large compressor/tyre silhouettes keep 48.
-	if radius < 0.035: return 16
-	if radius < 0.09: return 24
-	if radius < 0.24: return 32
-	return 48
+	# use compact azimuth samples while retaining smooth analytical normals.
+	if radius < 0.035: return 8
+	if radius < 0.09: return 8
+	if radius < 0.24: return 12
+	return 16
 
-static func ring_sides(outer: float) -> int:
-	if outer <= 0.05: return 16
-	if outer <= 0.128: return 24
-	return 32
+static func ring_sides(_outer: float) -> int:
+	return 8
 
 static func tube(parent: Node3D, a: Vector3, b: Vector3, radius: float, material: Material, sides: int = 0) -> MeshInstance3D:
 	# Explicit polygon counts (hex fasteners, authored controls) remain exact.
@@ -70,7 +69,7 @@ static func ring(parent: Node3D, at: Vector3, inner: float, outer: float, materi
 		shape.inner_radius = inner
 		shape.outer_radius = outer
 		shape.rings = sides
-		shape.ring_segments = 8
+		shape.ring_segments = 4
 		meshes[key] = shape
 	var node: MeshInstance3D = mesh(parent,at,meshes[key],material)
 	node.rotation.x = PI*0.5
@@ -126,7 +125,18 @@ static func forged_face(parent: Node3D, at: Vector3, outline: PackedVector2Array
 
 static func bolt(parent: Node3D, at: Vector3, radius: float = 0.018) -> void:
 	tube(parent,at-Vector3(0,0,0.005),at+Vector3(0,0,0.005),radius,metal(),6)
-	box(parent,at-Vector3(0,0,0.006),Vector3(radius*0.8,0.004,0.006),rubber())
+	face_mark(parent,at+Vector3(-radius*0.4,0,-0.009),at+Vector3(radius*0.4,0,-0.009),0.002,rubber())
+
+static func face_mark(parent: Node3D, a: Vector3, b: Vector3, half_width: float, material: Material) -> MeshInstance3D:
+	# Printed/recessed front marks need no hidden closed sides or rear face.
+	var across:=Vector3(-(b-a).y,(b-a).x,0).normalized()*half_width
+	var normal: Vector3=(b-a).cross(across).normalized()
+	if normal.z>0: normal=-normal
+	var tool:=SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	GarageEnvironment._polygon(tool,[a-across,b-across,b+across,a+across],normal)
+	tool.index()
+	return mesh(parent,Vector3.ZERO,tool.commit(),material)
 
 static func handle(parent: Node3D, a: Vector3, b: Vector3, depth: float = 0.045, radius: float = 0.014) -> void:
 	var front_a: Vector3 = a-Vector3(0,0,depth)
@@ -293,7 +303,9 @@ static func _square(parent: Node3D, at: Vector3) -> void:
 	_stock(parent,at,"WorkshopSquare")
 	box(parent,at,Vector3(0.045,0.46,0.016),metal())
 	box(parent,at+Vector3(0.105,-0.20,0),Vector3(0.23,0.06,0.026),rubber())
-	for index: int in range(12): box(parent,at+Vector3(0,-0.16+index*0.031,-0.010),Vector3(0.013 if index%3 else 0.024,0.003,0.003),steel())
+	for index: int in range(12):
+		var half_width: float=0.0065 if index%3 else 0.012
+		face_mark(parent,at+Vector3(-half_width,-0.16+index*0.031,-0.0115),at+Vector3(half_width,-0.16+index*0.031,-0.0115),0.0015,steel())
 
 static func cabinet(parent: Node3D) -> void:
 	box(parent,Vector3(0,0.86,0),Vector3(3.9,1.55,0.98),steel())
@@ -335,9 +347,15 @@ static func workbench(parent: Node3D) -> void:
 	# Framed perforated backboard with varied full-sized hand tools.
 	box(parent,Vector3(0,2.14,0.59),Vector3(4.20,1.36,0.07),frame)
 	box(parent,Vector3(0,2.14,0.542),Vector3(4.00,1.18,0.035),GarageEnvironment.surface("toolboard","47565e",0.25,0.58))
-	for row: int in range(7):
-		for col: int in range(26):
-			tube(parent,Vector3(-1.9+col*0.151,1.61+row*0.174,0.520),Vector3(-1.9+col*0.151,1.61+row*0.174,0.515),0.011,rubber(),12)
+	# These dark surface marks are not open bores. One masked surface retains
+	# all 182 positions instead of giving each mark a closed cylinder.
+	var holes:=QuadMesh.new()
+	holes.size=Vector2(4.0,1.18)
+	var perforations:=ShaderMaterial.new()
+	perforations.shader=preload("res://ui/garage_pegboard.gdshader")
+	var board: MeshInstance3D=mesh(parent,Vector3(0,2.14,0.514),holes,perforations)
+	board.name="PegboardPerforations"
+	board.rotation.y=PI
 	for x: float in [-1.96,1.96]:
 		for y: float in [1.61,2.67]: bolt(parent,Vector3(x,y,0.505),0.016)
 	_spanner(parent,Vector3(-1.65,2.13,0.48),0.42,true)
@@ -435,8 +453,8 @@ static func compressor(parent: Node3D) -> void:
 	tube(parent,Vector3(0.35,0.75,-0.193),Vector3(0.35,0.75,-0.202),0.057,GarageEnvironment.surface("gaugedial","d7d7c8",0,0.68))
 	for index: int in range(9):
 		var angle: float = -PI*0.72+index*PI*1.44/8
-		tube(parent,Vector3(0.35+sin(angle)*0.040,0.75+cos(angle)*0.040,-0.206),Vector3(0.35+sin(angle)*0.049,0.75+cos(angle)*0.049,-0.206),0.003,rubber(),8)
-	tube(parent,Vector3(0.35,0.75,-0.208),Vector3(0.38,0.782,-0.208),0.004,paint(),8)
+		face_mark(parent,Vector3(0.35+sin(angle)*0.040,0.75+cos(angle)*0.040,-0.209),Vector3(0.35+sin(angle)*0.049,0.75+cos(angle)*0.049,-0.209),0.003,rubber())
+	face_mark(parent,Vector3(0.35,0.75,-0.212),Vector3(0.38,0.782,-0.212),0.004,paint())
 	tube(parent,Vector3(0.42,0.59,-0.14),Vector3(0.42,0.66,-0.14),0.035,rubber())
 	for index: int in range(4): ring(parent,Vector3(0.45,0.39,-0.04-index*0.035),0.145,0.159,rubber())
 	tube(parent,Vector3(0.42,0.59,-0.18),Vector3(0.52,0.52,-0.18),0.012,rubber())

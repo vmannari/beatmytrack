@@ -1,7 +1,9 @@
 extends "res://ui/rivalry_simple_car.gd"
 ## Header-only small-model renderer. Garage, awards and authored art keep their
 ## existing studios. Reuse the real fitted geometry and production livery UVs.
-const LOD_BIAS: float = 0.35
+const LOD_BIAS: float = 0.25
+const DRIVER_CLOTH: Shader = preload("res://vehicle/kart_driver_cloth.gdshader")
+static var _cloth_picture: Shader
 var deferred_render: bool = false
 
 class IconCar extends CarVisual:
@@ -27,13 +29,34 @@ func _init() -> void:
 func _create_car() -> CarVisual:
 	return IconCar.new()
 
+func _material(source: Material) -> ShaderMaterial:
+	if source is ShaderMaterial and source.shader == DRIVER_CLOTH:
+		# Retain the live garment's complete panels, seams, zip, vertex colours
+		# and weave. Only replace lighting for the image's fixed, unlit studio.
+		var finish: ShaderMaterial = source.duplicate()
+		finish.shader = cloth_picture_shader()
+		return finish
+	return super._material(source)
+
+static func cloth_picture_shader() -> Shader:
+	if _cloth_picture == null:
+		var code: String = DRIVER_CLOTH.code
+		code = code.replace("render_mode diffuse_burley, specular_schlick_ggx;","render_mode unshaded;")
+		code = code.replace("varying vec3 garment_position;","varying vec3 garment_position;\nvarying vec3 picture_world_normal;")
+		code = code.replace("garment_position = VERTEX;","garment_position = VERTEX;\n\tpicture_world_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);")
+		var lighting: String = "vec3 n = normalize(picture_world_normal);\n\tfloat key = max(dot(n, normalize(vec3(-0.65, 0.85, 0.55))), 0.0);\n\tfloat fill = max(dot(n, normalize(vec3(0.8, 0.3, -0.5))), 0.0);\n\tpigment *= vec3(0.43, 0.48, 0.53) + vec3(0.62, 0.59, 0.53) * key + vec3(0.16, 0.19, 0.23) * fill;\n\t"
+		code = code.replace("ALBEDO = OUTPUT_IS_SRGB",lighting+"ALBEDO = OUTPUT_IS_SRGB")
+		_cloth_picture = Shader.new()
+		_cloth_picture.code = code
+	return _cloth_picture
+
 func _prepare_materials() -> void:
 	super._prepare_materials()
 	# Select existing prepared mesh distance levels. Never simplify or read
 	# mesh buffers on the runtime capture path, including on Vulkan.
 	viewport.mesh_lod_threshold = 1.0
 	for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
-		part.lod_bias = LOD_BIAS
+		part.lod_bias = 0.35 if vehicle_id=="super_rally" else LOD_BIAS
 		part.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 
 func _refresh() -> void:

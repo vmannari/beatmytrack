@@ -21,9 +21,13 @@ class WorkshopGateTests(unittest.TestCase):
         self.write(checker.SCENE, "accepted scene")
         self.receipt = {
             "generator": "res://" + checker.GENERATOR,
+            "engine": "pinned-test-engine",
             "sources": {p: checker.digest(self.game / p) for p in [checker.GENERATOR, "vehicle/car_mesh_lods.gd"]},
             "scene_sha256": checker.digest(self.game / checker.SCENE),
         }
+        self.plan = {"schema": checker.SCHEMA, "engine": self.receipt["engine"],
+                     "sources": self.receipt["sources"].copy(), "meshes": {"test": {"keep": True}}}
+        self.save_plan()
         self.save_receipt()
 
     def write(self, path, text):
@@ -33,6 +37,39 @@ class WorkshopGateTests(unittest.TestCase):
 
     def save_receipt(self):
         self.write("assets/garage/workshop_v1.provenance.json", json.dumps(self.receipt))
+
+    def save_plan(self):
+        self.write(checker.RECIPE, json.dumps(self.plan))
+        self.receipt["reduction"] = {"path": checker.RECIPE, "schema": checker.SCHEMA,
+                                     "sha256": checker.digest(self.game / checker.RECIPE)}
+
+    def test_changed_plan(self):
+        self.write(checker.RECIPE, "changed plan")
+        with self.assertRaisesRegex(ValueError, "Changed or missing workshop reduction"):
+            checker.check(self.root)
+
+    def test_plan_source_binding(self):
+        self.plan["sources"]["vehicle/car_mesh_lods.gd"] = "wrong"
+        self.save_plan(); self.save_receipt()
+        with self.assertRaisesRegex(ValueError, "Stale workshop reduction"):
+            checker.check(self.root)
+
+    def test_plan_engine_binding(self):
+        self.plan["engine"] = "other engine"
+        self.save_plan(); self.save_receipt()
+        with self.assertRaisesRegex(ValueError, "Stale workshop reduction"):
+            checker.check(self.root)
+
+    def test_missing_plan(self):
+        (self.game / checker.RECIPE).unlink()
+        with self.assertRaises(OSError):
+            checker.check(self.root)
+
+    def test_plan_fixed_path(self):
+        self.receipt["reduction"]["path"] = "../another.json"
+        self.save_receipt()
+        with self.assertRaisesRegex(ValueError, "Changed or missing workshop reduction"):
+            checker.check(self.root)
 
     def test_accepted_is_read_only(self):
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}

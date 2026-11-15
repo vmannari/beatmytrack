@@ -1,0 +1,63 @@
+from pathlib import Path
+import hashlib
+import json
+import shutil
+import statistics
+import subprocess
+import sys
+
+ROOT=Path(__file__).resolve().parents[2]
+WORK=Path(__file__).resolve().parent
+PROJECT=WORK/'snapshot/game'
+ROOM=PROJECT/'assets/garage/workshop_v1.scn'
+def inputs():
+    result={}
+    for folder in ('ui','core','vehicle','rendering','persistence','backend','track','soundtrack'):
+        for p in (PROJECT/folder).rglob('*'):
+            if p.is_file() and p.suffix in ('.gd','.gdshader','.gdshaderinc','.tscn','.tres','.json'):
+                result[p.relative_to(PROJECT).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+    for folder in ('assets/vehicles/modular_car_bases_v1','assets/vehicles/modular_kits_v1','assets/garage/cars_v1','assets/menu/header_car_templates_v1'):
+        for p in (PROJECT/folder).rglob('*.scn'): result[p.relative_to(PROJECT).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+    return result
+before=inputs()
+(WORK/'fixed-inputs.json').write_text(json.dumps(before,indent=2))
+rows=[]
+def run(renderer,variant,round_number,warm=False):
+    label=('warm' if warm else 'sample')+'-'+renderer+'-'+str(round_number)+'-'+variant
+    shutil.copy2(WORK/'variants'/(variant+'.scn'),ROOM)
+    command=[sys.executable,str(WORK/'run.py'),label,'--project',str(PROJECT),'--renderer',renderer]
+    process=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    log=(WORK/'runs'/label/'run.log').read_text()
+    errors=[s for s in log.splitlines() if s.startswith(('ERROR:','SCRIPT ERROR:'))]
+    assert process.returncode==0 and not errors,(label,errors,process.stdout[-1500:])
+    report=json.loads((WORK/'runs'/label/'report.json').read_text())
+    assert report['ready'] and report['same_studio'] and report['selection_matches']
+    assert report['base_hits']>=1 and report['base_key_matches'] and not report['source_differences'],report
+    assert not any(report['cached_before'].values()),'Cold-import fixture was preloaded'
+    record=dict(renderer=renderer,variant=variant,round=round_number,warmup=warm,
+        entry_ms=next(e['ms'] for e in report['events'] if e['stage']=='live_ready'),
+        navigation_ms=report['events'][0]['ms'],max_frame_ms=report['max_frame_ms'],reentry_ms=report['reentry_ms'],
+        main_primitives=report['main_primitives'],main_draws=report['main_draws'],
+        reflection_primitives=report['reflection_primitives'],car_triangles=report['car_triangles'],label=label)
+    rows.append(record);(WORK/'samples.json').write_text(json.dumps(rows,indent=2))
+    print(label,round(record['entry_ms'],1),'ms',record['main_primitives'],'primitives',flush=True)
+for renderer in ('gl_compatibility','mobile'):
+    for variant in ('current','half','empty'): run(renderer,variant,0,True)
+    for index,order in enumerate((('current','half','empty'),('empty','half','current'),('half','current','empty')),1):
+        for variant in order: run(renderer,variant,index)
+after=inputs()
+changed=[p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)]
+assert not changed,changed
+assert len(set(r['car_triangles'] for r in rows))==1,'Car geometry changed'
+summary={}
+for renderer in ('gl_compatibility','mobile'):
+    summary[renderer]={}
+    for variant in ('current','half','empty'):
+        values=[r for r in rows if not r['warmup'] and r['renderer']==renderer and r['variant']==variant]
+        summary[renderer][variant]={key:statistics.median(r[key] for r in values) for key in
+            ('entry_ms','navigation_ms','max_frame_ms','main_primitives','main_draws','reentry_ms')}
+        summary[renderer][variant]['entry_range_ms']=[min(r['entry_ms'] for r in values),max(r['entry_ms'] for r in values)]
+(WORK/'summary.json').write_text(json.dumps(summary,indent=2))
+(WORK/'fence.json').write_text(json.dumps(dict(input_count=len(before),changed_inputs=changed,car_triangles=rows[0]['car_triangles']),indent=2))
+shutil.copy2(WORK/'variants/current.scn',ROOM)
+print('SUMMARY',json.dumps(summary),flush=True)

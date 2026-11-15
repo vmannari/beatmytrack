@@ -6,7 +6,7 @@ const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio
 
 func _sources() -> Dictionary:
 	var sources: Dictionary = {}
-	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","game/tests/support/asset_bake_errors.gd","scripts/bake_garage_previews.gd"]:
+	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/ui/garage_mesh_reduction.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","game/tests/support/asset_bake_errors.gd","scripts/bake_garage_previews.gd"]:
 		sources[path] = FileAccess.get_sha256("res://../"+path)
 	for directory: String in ["res://vehicle","res://ui"]:
 		for name: String in DirAccess.get_files_at(directory):

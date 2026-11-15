@@ -91,20 +91,22 @@ func prepare(draw: Callable, current: Callable) -> bool:
 		for index: int in range(pending.size()-1,-1,-1):
 			var node: Object = pending[index].node.get_ref()
 			if not is_instance_valid(node): pending.remove_at(index); continue
-			pending[index].key = Key.geometry_key(node,materials)
 		for entry: Dictionary in pending:
 			if not groups.has(entry.key): groups.append(entry.key)
 			if groups.size() >= _batch_programs: break
 		for key: String in groups:
-			if _local_warmed.has(str(epoch)+context+key):
-				for index: int in range(pending.size()-1,-1,-1):
-					if pending[index].key == key: pending.remove_at(index)
-				continue
+			var ready: bool = _local_warmed.has(str(epoch)+context+key)
 			var shown: int = 0
 			for index: int in range(pending.size()-1,-1,-1):
-				if pending[index].key != key or shown >= Key.OBJECTS_PER_PROGRAM: continue
+				if pending[index].key != key: continue
 				var entry: Dictionary = pending[index]
 				var node: Object = entry.node.get_ref()
+				# Only the scheduled group needs fresh keys. A changed finish moves
+				# to its actual group before either drawing or accepting local reuse.
+				entry.key = Key.geometry_key(node,materials)
+				if entry.key != key: continue
+				if ready: pending.remove_at(index); continue
+				if shown >= Key.OBJECTS_PER_PROGRAM: continue
 				if _copy(node,camera) == null: node.show()
 				submitted.append(entry)
 				pending.remove_at(index)
@@ -128,9 +130,10 @@ func prepare(draw: Callable, current: Callable) -> bool:
 			_fast_draws = 0
 			_batch_programs = 1
 		var valid_keys: Dictionary = {}
+		materials = {} # The awaited draw may have changed finishes in place.
 		for entry: Dictionary in submitted:
 			var node: Object = entry.node.get_ref()
-			var valid: bool = valid_context and is_instance_valid(node) and Key.geometry_key(node) == entry.key
+			var valid: bool = valid_context and is_instance_valid(node) and Key.geometry_key(node,materials) == entry.key
 			valid_keys[entry.key] = bool(valid_keys.get(entry.key,true)) and valid
 			if not valid: pending.append(entry)
 		for key: String in valid_keys:
@@ -141,6 +144,10 @@ func prepare(draw: Callable, current: Callable) -> bool:
 			# The final complete main view and both reflection draws still
 			# precede live reveal; other instances need no repeated program draw.
 			for index: int in range(pending.size()-1,-1,-1):
+				if pending[index].key != key: continue
+				var node: Object = pending[index].node.get_ref()
+				if not is_instance_valid(node): pending.remove_at(index); continue
+				pending[index].key = Key.geometry_key(node,materials)
 				if pending[index].key == key: pending.remove_at(index)
 	return current.is_valid() and current.call()
 

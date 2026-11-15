@@ -94,37 +94,10 @@ func run() -> void:
 	check(menu.pattern_tiles[2].selected and menu.pattern_tiles[2].status.text=="PREVIEWING" and menu.pattern_shelf.counter.text=="03 / 49","paint list has selected state and actual count")
 	check(menu.pattern_tiles[0].checkmark.visible and menu.pattern_shelf.equip.text.contains("750"),"equipped check and explicit price remain")
 	check(page.showroom.camera.transform.is_equal_approx(camera),"paint selection preserves Garage angle and zoom")
-	var hold := InputEventScreenTouch.new()
-	hold.index = 19
-	hold.position = page._compare_button.get_global_rect().get_center()
-	hold.pressed = true
-	root.push_input(hold,true)
-	check(page.showroom.livery==page.draft and not page._compare_livery.is_empty(),"paint compare shows equipped paint")
-	await capture("paint-compare-equipped")
-	hold = hold.duplicate() as InputEventScreenTouch
-	hold.pressed = false
-	hold.position = Vector2(3,3)
-	root.push_input(hold,true)
-	check(page.showroom.livery.pattern==page._preset_value(2).pattern and page._compare_livery.is_empty(),"outside release restores selected paint")
-	hold = hold.duplicate() as InputEventScreenTouch
-	hold.pressed = true
-	hold.position = page._compare_button.get_global_rect().get_center()
-	root.push_input(hold,true)
-	menu.pattern_tiles[3].pressed.emit()
-	hold = hold.duplicate() as InputEventScreenTouch
-	hold.pressed = false
-	root.push_input(hold,true)
-	check(page.showroom.livery.pattern==page._preset_value(3).pattern and page._compare_livery.is_empty(),"new paint during hold cannot restore stale preview")
-	menu.pattern_tiles[2].pressed.emit()
-	hold = hold.duplicate() as InputEventScreenTouch
-	hold.pressed = true
-	root.push_input(hold,true)
+	check(page.find_child("GarageHoldToCompare",true,false)==null,"paint preview omits the hold comparison control")
 	shop.scope = "fixture/bob"
 	shop.changed.emit()
-	hold = hold.duplicate() as InputEventScreenTouch
-	hold.pressed = false
-	root.push_input(hold,true)
-	check(page._cosmetic_preview.is_empty() and page._compare_livery.is_empty() and page.showroom.livery==page.draft,"account change during paint comparison restores equipped paint")
+	check(page._cosmetic_preview.is_empty() and page.showroom.livery==page.draft,"account change restores equipped paint")
 	shop.scope = "fixture/alice"
 	shop.changed.emit()
 	menu.pattern_tiles[2].pressed.emit()
@@ -145,7 +118,7 @@ func run() -> void:
 		var icon_size: Vector2 = menu.pattern_tiles[2].car_icon.size
 		check(icon_size.x>=96 and icon_size.y>=72 and icon_size.x<=112 and icon_size.y<=76,"paint car fills the reclaimed number space and row height")
 		await capture("paint-list-"+str(dimensions.x))
-	check(page.records.settings==saved and shop.purchases==0,"layout and compare leave persistence/purchases unchanged")
+	check(page.records.settings==saved and shop.purchases==0,"layout leaves persistence/purchases unchanged")
 	await tap_icon(0,true)
 	await icons_ready()
 	check(page.showroom.livery==page.draft and page._cosmetic_preview.is_empty() and not menu.pattern_shelf.equip.visible,"equipped row restores the actual saved paint without resetting its palette")

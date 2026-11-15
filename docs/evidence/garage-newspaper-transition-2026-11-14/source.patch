@@ -1,0 +1,602 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -17,6 +17,7 @@
+ const LIVERY_NAMES: Array[String] = ["Midnight"]
+ const LIVERY_COLORS: Array[Array] = [["273b50", "ced7dc"]]
+ const MENU_MOVE_SECONDS: float = 0.32
++const NEWS_MOVE_SECONDS: float = 0.22
+ var progressive_entry: bool=false
+ var preloaded_showroom: CarShowroom
+ var preview_can_render: Callable
+@@ -39,6 +40,9 @@
+ var _gallery_departing: bool = false
+ var _layout_presented: bool = false
+ var _section_request: int = 0
++var _news_pending: bool = false
++var _news_opening: bool = false
++var _news_underlay_visible: bool = false
+ 
+ var records: LocalRecords
+ var news_client: Node
+@@ -381,8 +385,10 @@
+ 	_departures.clear()
+ 
+ func _prepare_menu_move() -> void:
++	_reset_news_opening()
+ 	if _menu_motion != null: _menu_motion.kill()
+ 	_clear_departures()
++	_news_underlay_visible = preview.visible
+ 	_menu_starts = {preview:preview.get_rect()}
+ 	if gallery.visible: _menu_starts[gallery] = gallery.get_rect()
+ 	# Navigation stays attached and interactive while only the content departs.
+@@ -412,14 +418,41 @@
+ 	if not _layout_presented or not is_visible_in_tree():
+ 		_finish_menu_move()
+ 		return
+-	_menu_weight = 0.0
++	_news_opening = section == "news"
++	_menu_weight = 0.01 if _news_opening else 0.0
++	if _news_opening:
++		tools_panel.modulate.a = _menu_weight
++		tools_panel.z_index = 1
++		_set_panel_input(tools_panel,false)
+ 	_menu_motion = create_tween()
+-	_menu_motion.tween_property(self,"_menu_weight",1.0,MENU_MOVE_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
++	_menu_motion.tween_property(self,"_menu_weight",1.0,NEWS_MOVE_SECONDS if _news_opening else MENU_MOVE_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT if _news_opening else Tween.EASE_IN_OUT)
+ 	_menu_motion.tween_callback(_finish_menu_move)
++	if _news_opening:
++		# Draw the real paper once before timing its entrance. A late shader
++		# or layout draw must not consume the whole animation before it appears.
++		_menu_motion.pause()
++		_present_menu_layout()
++		_begin_news_move(_menu_motion)
++
++func _begin_news_move(motion: Tween) -> void:
++	if DisplayServer.get_name() == "headless": await get_tree().process_frame
++	else: await RenderingServer.frame_post_draw
++	if is_inside_tree() and _news_opening and _menu_motion == motion and motion.is_valid(): motion.play()
++
++func _reset_news_opening() -> void:
++	if not _news_opening: return
++	_news_opening = false
++	preview.modulate.a = 1.0
++	gallery.modulate.a = 1.0
++	tools_panel.modulate.a = 1.0
++	tools_panel.z_index = 0
++	_set_panel_input(tools_panel,true)
++	preview.visible = section not in ["news","achievements"]
+ 
+ func _finish_menu_move() -> void:
+ 	if _menu_motion != null: _menu_motion.kill()
+ 	_menu_motion = null
++	_reset_news_opening()
+ 	_menu_weight = 1.0
+ 	_menu_starts.clear()
+ 	_clear_departures()
+@@ -428,6 +461,11 @@
+ 	_present_menu_layout()
+ 
+ func _place_menu_panel(panel: Control, destination: Rect2, direction: String) -> void:
++	if _news_opening and panel == tools_panel:
++		panel.position = destination.position+Vector2(24.0*(1.0-_menu_weight),0)
++		panel.size = destination.size
++		panel.modulate.a = _menu_weight
++		return
+ 	var start: Rect2 = _menu_starts.get(panel,destination)
+ 	var weight: float = _menu_weight
+ 	if not _menu_starts.has(panel) and _menu_motion != null:
+@@ -466,13 +504,19 @@
+ 		_preview_slot.custom_minimum_size.y = preview_height
+ 		preview.custom_minimum_size.y = preview_height
+ 		_sync_menu_minimums()
+-	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
+-	_layout_workshop_overlay()
+-	if is_instance_valid(view_hint): view_hint.visible = section not in ["customise","tuning"] or preview.size.x >= 420
++	if preview.visible:
++		if _news_opening:
++			preview.position = _menu_starts[preview].position
++			preview.size = _menu_starts[preview].size
++			preview.modulate.a = 1.0-_menu_weight
++		else: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
++	if not _news_opening:
++		_layout_workshop_overlay()
++		if is_instance_valid(view_hint): view_hint.visible = section not in ["customise","tuning"] or preview.size.x >= 420
+ 	var rail_rect: Rect2 = _slot_rect(_rail_slot)
+ 	rail.position = rail_rect.position
+ 	rail.size = rail_rect.size
+-	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
++	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(main if section == "news" else _tools_slot),"right")
+ 	_place_menu_panel(actions,_slot_rect(_actions_slot),"bottom")
+ 	if section == "cars":
+ 		var target: Rect2 = _slot_rect(gallery_slot)
+@@ -481,10 +525,17 @@
+ 		_place_menu_panel(gallery,target,"bottom")
+ 	elif _gallery_departing:
+ 		var target: Rect2 = _menu_starts[gallery]
+-		target.position.y = size.y+16
+-		_place_menu_panel(gallery,target,"bottom")
++		if _news_opening:
++			gallery.position = target.position
++			gallery.modulate.a = 1.0-_menu_weight
++		else:
++			target.position.y = size.y+16
++			_place_menu_panel(gallery,target,"bottom")
+ 	for entry: Dictionary in _departures:
+-		entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
++		if _news_opening:
++			entry.panel.position = entry.start.position
++			entry.panel.modulate.a = 1.0-_menu_weight
++		else: entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
+ 	_layout_presented = true
+ 
+ func _layout_workshop_overlay() -> void:
+@@ -549,13 +600,19 @@
+ 	_workshop_wash_required = not clean
+ 	for button: Button in _workshop_tabs.get_children(): _style_workshop_button(button)
+ 
++func _set_news_pending(waiting: bool) -> void:
++	if _news_pending == waiting: return
++	_news_pending = waiting
++	_build_rail()
++
+ func _build_rail() -> void:
+ 	var destinations: Array = [["cars", "Select car"], ["workshop", "Workshop"], ["records", "Record player"], ["trophies", "Trophy wall"]]
+ 	destinations.append(["news","News"])
+ 	rail.add_theme_constant_override("separation",8 if destinations.size() > 5 else 12)
++	var selected_section: String = "news" if _news_pending else section
+ 	for entry: Array in destinations:
+ 		var destination: String = entry[0]
+-		var active: bool = destination == section or (destination == "workshop" and section in ["customise","tuning","care"])
++		var active: bool = destination == selected_section or (destination == "workshop" and selected_section in ["customise","tuning","care"])
+ 		var button_name: String = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
+ 		var button: Button = rail.get_node_or_null(NodePath(button_name))
+ 		if button == null:
+@@ -598,6 +655,18 @@
+ 			button.add_theme_stylebox_override(state,style)
+ 		button.custom_minimum_size = Vector2(60,52 if destinations.size() > 5 else 60)
+ 		button.tooltip_text = entry[1]
++		if destination == "news":
++			var waiting: Control = button.get_node_or_null("NewsWaiting")
++			if waiting == null:
++				waiting = preload("res://ui/garage_news_wait.gd").new()
++				waiting.name = "NewsWaiting"
++				button.add_child(waiting)
++				waiting.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
++				waiting.offset_left = -19
++				waiting.offset_top = -19
++				waiting.offset_right = -3
++				waiting.offset_bottom = -3
++			waiting.visible = _news_pending
+ 
+ func _create_showroom() -> void:
+ 	draft = VehicleLivery.for_car(records.settings, vehicle_id)
+@@ -978,6 +1047,7 @@
+ 	_finish_car_preview()
+ 	_section_request += 1
+ 	var request: int = _section_request
++	_set_news_pending(next == "news")
+ 	if progressive_entry and is_instance_valid(showroom) and showroom.preparing and not showroom.interaction_ready and next not in ["cars","news","achievements"]:
+ 		_opening_section=next
+ 		return
+@@ -986,10 +1056,15 @@
+ 	if next == "car": next = "customise"
+ 	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
+ 	if next == "news" and news_client != null:
+-		if not is_visible_in_tree(): return
++		if not is_visible_in_tree():
++			_set_news_pending(false)
++			return
+ 		var entry_service: Node = news_client
+ 		var ready: bool = await entry_service.prepare_entry()
+-		if not ready or not is_inside_tree() or not is_visible_in_tree() or request != _section_request or entry_service != news_client: return
++		if request != _section_request: return
++		_set_news_pending(false)
++		if not ready or not is_inside_tree() or not is_visible_in_tree() or entry_service != news_client: return
++	_set_news_pending(false)
+ 	_finish_tools(next != section or section != "customise")
+ 	if is_instance_valid(_compare_button): _compare_button.hide()
+ 	if next in ["customise","tuning","care"]: _workshop_wash_required = not _clean_for_customisation()
+@@ -1012,7 +1087,7 @@
+ 	_update_wash_status()
+ 	# The newspaper takes the desk. Keep the live car attached and dormant so
+ 	# leaving News restores the same car, camera, condition and reflection rig.
+-	preview.visible = next not in ["news","achievements"]
++	preview.visible = next not in ["news","achievements"] or (next == "news" and _news_underlay_visible and _layout_presented)
+ 	_preview_column.visible = next not in ["news","achievements"]
+ 	_preview_slot.visible = next not in ["news","achievements"]
+ 	_actions_slot.visible = next not in ["news","achievements","customise","tuning"]
+@@ -1027,10 +1102,11 @@
+ 	elif next == "records": tools_panel.add_theme_stylebox_override("panel",StudioStyle.panel(12))
+ 	if next == "cars": _car_menu_open = false
+ 	elif next not in ["trophies","records","news","achievements"]: _car_menu_open = true
+-	showroom.set_trophy_view(next == "trophies")
+-	showroom.set_record_view(next == "records")
+-	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else _car_name(vehicle_id)
+-	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"] and (not progressive_entry or showroom.interaction_ready)
++	if next != "news":
++		showroom.set_trophy_view(next == "trophies")
++		showroom.set_record_view(next == "records")
++		heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else _car_name(vehicle_id)
++		preview.get_node("GarageViewControls").visible = next not in ["trophies","records"] and (not progressive_entry or showroom.interaction_ready)
+ 	pickers.clear()
+ 	wash_button = null
+ 	_presets = null
+@@ -1102,6 +1178,11 @@
+ 		_build_tuning()
+ 	elif section == "news":
+ 		var news_menu := preload("res://ui/garage_news_menu.gd").new()
++		# The paper occupies the main area. Give its first layout that final
++		# size, so the entrance moves a finished sheet without resizing it.
++		tools_panel.size = main.size
++		tools.size = main.size
++		news_menu.size = main.size
+ 		news_menu.page = self
+ 		news_menu.service = news_client
+ 		tools.add_child(news_menu)
+@@ -1622,6 +1703,7 @@
+ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree():
+ 		_section_request += 1
++		_set_news_pending(false)
+ 		_cancel_car_preview()
+ 		if is_instance_valid(_purchase_dialog): _purchase_dialog.hide()
+ 		_finish_tools()
+@@ -1746,8 +1828,12 @@
+ func _notification(what: int) -> void:
+ 	if what==NOTIFICATION_APPLICATION_FOCUS_OUT: _end_part_compare()
+ 
+-func _process(_delta: float) -> void:
++func _process(delta: float) -> void:
+ 	if showroom == null or not is_visible_in_tree(): return
++	if _news_opening and _menu_motion != null:
++		# Keep intermediate paper frames after a stalled draw. Normal 30/60 Hz
++		# entrances retain their duration; an isolated long frame cannot skip it.
++		_menu_motion.set_speed_scale(minf(1.0,(1.0/30.0)/maxf(delta,0.0001)))
+ 	_present_menu_layout()
+ 	if _workbench_focus_pending and _menu_motion == null:
+ 		_workbench_focus_pending = false
+diff --git a/game/ui/garage_news_menu.gd b/game/ui/garage_news_menu.gd
+--- a/game/ui/garage_news_menu.gd
++++ b/game/ui/garage_news_menu.gd
+@@ -41,6 +41,8 @@
+ var _tagline: Label
+ var _layout_size := Vector2.ZERO
+ var _layout_queued: bool = false
++var _content_layout := Vector2i(-1,-1)
++var _rendered_news: Dictionary = {}
+ var _spread: PanelContainer
+ var _story_motion: Tween
+ var _tab_turn: bool = false
+@@ -227,7 +229,10 @@
+ 	if not is_inside_tree() or size.is_equal_approx(_layout_size): return
+ 	_layout_size = size
+ 	_layout_header()
+-	if _tab != "ranking": _render()
++	if _tab != "ranking" and _content_layout != _editorial_layout(): _render()
++
++func _editorial_layout() -> Vector2i:
++	return Vector2i(1 if size.x >= 1360 else 0,1 if size.y < 620 else 0)
+ 
+ func _layout_header() -> void:
+ 	var narrow: bool = size.x < 900
+@@ -298,7 +303,9 @@
+ func _changed() -> void:
+ 	if not _active(): return
+ 	if _tab == "ranking": return
+-	_render()
++	if _tab == "news" and not _stories().is_empty(): _mark_story_read(_stories()[_index()],_using_examples())
++	if _tab == "news" and (_story_motion == null or _tab_turn) and _rendered_news == _news_state(): _update_feed_status()
++	else: _render()
+ 	if _waiting and service != null and not service.busy:
+ 		_waiting = false
+ 		_open.call_deferred()
+@@ -312,6 +319,29 @@
+ 	if not _active() or _tab != "news" or service == null: return
+ 	_poll_count += 1
+ 	await service.refresh(true)
++
++func _news_state() -> Dictionary:
++	var stories: Array = _stories()
++	var examples: bool = _using_examples()
++	var read: Array[bool] = []
++	for item: Dictionary in stories: read.append(_story_read(item,examples))
++	var appearance: Dictionary = {}
++	if not stories.is_empty():
++		var item: Dictionary = stories[_index()]
++		var vehicle: String = str(item.get("vehicle_id",""))
++		var file_photo: bool = vehicle.is_empty() and item.get("kind","") == "milestone"
++		if file_photo: vehicle = VehicleCatalog.selected
++		if vehicle in VehicleCatalog.IDS: appearance = _story_appearance(item,vehicle,file_photo)
++	return {"scope":"examples" if examples else service.scope() if service != null else "","stories":stories,"read":read,"appearance":appearance,"signed":service != null and service.client.signed_in(),"available":service != null and service.available(),"error":service.error if service != null else "","cursor":service.next_cursor if service != null else ""}
++
++func _update_feed_status() -> void:
++	var examples: bool = _using_examples()
++	var stories: Array = _stories()
++	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
++	_refresh_button.disabled = service == null or not service.available() or service.busy
++	_previous.disabled = _index() == 0
++	_next.disabled = stories.is_empty() or (_index() >= stories.size()-1 and not can_more) or (not examples and service != null and service.busy)
++	_status.text = "UPDATING YOUR EDITION…" if (_tab == "news" and stories.is_empty()) or (service != null and (service.busy or service.refreshing)) else "PERSONAL EDITION"
+ 
+ func _send_friend() -> void:
+ 	if not _active() or service == null or _entry.text.strip_edges().is_empty(): return
+@@ -516,6 +546,8 @@
+ 
+ func _render(direction: int = 0, tab_turn: bool = false) -> void:
+ 	if not is_instance_valid(_list): return
++	_content_layout = _editorial_layout()
++	_rendered_news.clear()
+ 	if is_instance_valid(_brief_scroll) and not _brief_restore_pending: _brief_offset = _brief_scroll.scroll_vertical
+ 	_brief_scroll = null
+ 	_brief_restore_pending = false
+@@ -567,15 +599,12 @@
+ 		_selected_id = ""
+ 		_brief_offset = 0
+ 	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
+-	_refresh_button.disabled = service == null or not service.available() or service.busy
+ 	_previous.visible = _tab == "news"
+ 	_next.visible = _tab == "news"
+ 	_navigation_separator.visible = _tab == "news"
+-	_previous.disabled = _index() == 0
+-	_next.disabled = stories.is_empty() or (_index() >= stories.size()-1 and not can_more) or (not examples and service != null and service.busy)
++	_update_feed_status()
+ 	_account_button.visible = _tab != "friends" and (service == null or not service.client.signed_in())
+ 	_folio.text = "DRIVERS' DIRECTORY" if _tab == "friends" else "THE PERSONAL EDITION"
+-	_status.text = "UPDATING YOUR EDITION…" if service != null and (service.busy or service.refreshing) else "PERSONAL EDITION"
+ 	if _tab == "ranking":
+ 		_folio.text = "WORLD RANKING"
+ 		_status.text = "COMPACT CIRCUIT"
+@@ -605,11 +634,13 @@
+ 		# existing loading status without printing or marking a fallback story.
+ 		_status.text = "UPDATING YOUR EDITION…"
+ 		_folio.text = ""
++		_rendered_news = _news_state().duplicate(true)
+ 		return
+ 	var index: int = _index()
+ 	var item: Dictionary = stories[index]
+ 	_selected_id = str(item.get("id",""))
+ 	if _active(): _mark_story_read(item,examples)
++	_rendered_news = _news_state().duplicate(true)
+ 	_folio.text = GameText.message("STORY %02d / %02d  ·  %s") % [index+1,stories.size(),Time.get_date_string_from_unix_time(int(item.get("created_at",0)))]
+ 	var columns := HBoxContainer.new()
+ 	columns.name = "EditorialColumns"
+@@ -794,7 +825,7 @@
+ 			view.podium_presentation = true
+ 			view.fit_to_frame = true
+ 			view.cooperative_build = true
+-			view.build_budget_us = 24000
++			view.build_budget_us = 4000
+ 			view.custom_minimum_size.y = 116 if short_page else 132
+ 			view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 			view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+diff --git a/game/backend/news_client.gd b/game/backend/news_client.gd
+--- a/game/backend/news_client.gd
++++ b/game/backend/news_client.gd
+@@ -132,7 +132,7 @@
+ 	if not available(): return true
+ 	while busy:
+ 		if not _reading_feed and (Time.get_ticks_msec()-_fetched_at < 60000 or not error.is_empty()): return true
+-		await get_tree().process_frame
++		await changed
+ 		if not is_inside_tree() or epoch != _epoch or identity != scope(): return false
+ 	if Time.get_ticks_msec()-_fetched_at < 60000: return true
+ 	feed_loaded = false
+@@ -141,7 +141,7 @@
+ 	# A usable GET response may precede a slow daily POST. It is enough to
+ 	# open the paper; its existing polling handles ongoing daily generation.
+ 	while busy and _fetched_at == previous and error.is_empty():
+-		await get_tree().process_frame
++		await changed
+ 		if not is_inside_tree() or epoch != _epoch or identity != scope(): return false
+ 	return epoch == _epoch and identity == scope()
+ 
+diff --git a/game/tests/test_garage_news_livery.gd b/game/tests/test_garage_news_livery.gd
+--- a/game/tests/test_garage_news_livery.gd
++++ b/game/tests/test_garage_news_livery.gd
+@@ -59,7 +59,7 @@
+ 			check(not menu.find_child("NewsCarPhoto",true,false).visible,"stock photograph is hidden once the actual car is ready")
+ 			check(not menu.find_child("NewsCarLoading",true,false).visible,"preparation message clears when the car is ready")
+ 	check(menu.find_child("NewsPhotoFrame",true,false).get_theme_stylebox("panel") is StyleBoxEmpty,"picture has no border")
+-	check(menu.find_child("NewsPhotoCaption",true,false).text == "Bob · Compact / 01","caption identifies the featured driver and car")
++	check(menu.find_child("NewsPhotoCaption",true,false).text == "Bob · Rally","caption identifies the featured driver and car")
+ 	check(menu.find_child("NewsArticle",true,false).get_theme_font_size("font_size") == 14,"article copy uses the smaller size")
+ 	check(backend.calls.is_empty(),"rendering the cached appearance needs no extra API requests")
+ 	var garage := GaragePage.new()
+diff --git a/game/ui/garage_news_wait.gd b/game/ui/garage_news_wait.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_news_wait.gd
+@@ -0,0 +1,16 @@
++extends Control
++## A small pending-action cue; sleeps whenever the News button is not waiting.
++var _angle: float = 0.0
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	visibility_changed.connect(func() -> void: set_process(is_visible_in_tree()))
++	set_process(is_visible_in_tree())
++
++func _process(delta: float) -> void:
++	_angle = fmod(_angle+delta*TAU,TAU)
++	queue_redraw()
++
++func _draw() -> void:
++	draw_circle(size*0.5,7.0,MenuStyle.ACCENT,true,-1,true)
++	draw_arc(size*0.5,4.5,_angle,_angle+TAU*0.7,20,MenuStyle.INK,1.8,true)
+diff --git a/game/tests/test_garage_news_transition.gd b/game/tests/test_garage_news_transition.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_news_transition.gd
+@@ -0,0 +1,171 @@
++extends "res://tests/test_garage_news_entry.gd"
++## Draw-frame observations of feedback, paper motion and retained article work.
++var sampling: bool = false
++var samples: Array[Dictionary] = []
++var leads: Array[int] = []
++var cars: Array[int] = []
++var timings: Dictionary = {}
++var built_leads: Array[int] = []
++var built_cars: Array[int] = []
++var tracking_builds: bool = false
++var original_heading: Rect2
++var heading_stable: bool = true
++
++func track_build(node: Node) -> void:
++	if not tracking_builds: return
++	if node.name == "LeadStory": built_leads.append(node.get_instance_id())
++	if node.name == "NewsLiveryCar": built_cars.append(node.get_instance_id())
++
++func sample() -> void:
++	if not sampling or page.section != "news": return
++	var menu: Node = page.tools.find_child("GarageNewsMenu",true,false)
++	if menu == null: return
++	if page._menu_motion != null and page.preview.visible and not page.heading.get_global_rect().is_equal_approx(original_heading): heading_stable = false
++	var lead: Node = menu.find_child("LeadStory",true,false)
++	if lead != null and not leads.has(lead.get_instance_id()): leads.append(lead.get_instance_id())
++	var car: Node = menu.find_child("NewsLiveryCar",true,false)
++	if car != null and not cars.has(car.get_instance_id()): cars.append(car.get_instance_id())
++	samples.append({"alpha":page.tools_panel.modulate.a,"offset":page.tools_panel.position.x-page._slot_rect(page.main).position.x,"preview":page.preview.visible,"motion":page._menu_motion != null,"story":menu._selected_id,"car_ready":car != null and car.presentation_ready})
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	var suffix: String = "baseline" if "--baseline" in OS.get_cmdline_user_args() else "final"
++	output = ProjectSettings.globalize_path("res://../build/news-transition-20261114/"+suffix+"-"+RenderingServer.get_current_rendering_method()+"-"+DisplayServer.get_name())
++	DirAccess.make_dir_recursive_absolute(output)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(output.path_join("tracks"))
++	app.records = LocalRecords.new(output.path_join("records.json"))
++	app.cloud_root_override = output.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	GameSoundtrack.instance().music_enabled = false
++	app._show_screen("garage")
++	page = app._retained_garage
++	if DisplayServer.get_name() == "headless": process_frame.connect(sample)
++	else: RenderingServer.frame_post_draw.connect(sample)
++	node_added.connect(track_build)
++	await settle()
++	var original_car: Node = page.showroom.car
++	var original_view: SubViewport = page.showroom.showroom_viewport
++	original_heading = page.heading.get_global_rect()
++	var backend := Fixture.Backend.new()
++	root.add_child(backend)
++	backend.remote_items = [story("actual-story",2400)]
++	backend.delay_reply = true
++	backend.delay_refresh = true
++	var service := News.new()
++	service.client = backend
++	service.read_state_path = output.path_join("read-state.cfg")
++	root.add_child(service)
++	service.identity_changed()
++	service.items = [story("stale-story",1000)]
++	service.feed_loaded = true
++	page.news_client = service
++	var clicked: int = Time.get_ticks_usec()
++	page._navigate_section("news")
++	var news_button: Button = page.rail.get_node("GarageNews")
++	check(news_button.get_theme_stylebox("normal").bg_color == MenuStyle.ACCENT,"tap immediately highlights News while its read is pending")
++	await frames(8)
++	check(page.section == "cars" and page.preview.visible,"pending news keeps the current Garage responsive")
++	await capture("pending-feedback")
++	sampling = true
++	tracking_builds = true
++	backend.delay_reply = false
++	var released: int = Time.get_ticks_usec()
++	while page.section != "news" and Time.get_ticks_usec()-released < 5000000: await frame()
++	check(page.section == "news","received edition starts its entrance")
++	timings["response_to_commit_ms"] = (Time.get_ticks_usec()-released)/1000.0
++	while page._menu_motion != null: await frame()
++	timings["response_to_settled_ms"] = (Time.get_ticks_usec()-released)/1000.0
++	timings["click_to_settled_ms"] = (Time.get_ticks_usec()-clicked)/1000.0
++	await frames(5)
++	sampling = false
++	var visible_samples: Array = samples.filter(func(row: Dictionary) -> bool: return row.alpha > 0.01)
++	check(not visible_samples.is_empty() and absf(visible_samples[0].offset) <= 32.0,"paper enters within a short distance of its final position")
++	check(samples.any(func(row: Dictionary) -> bool: return row.alpha > 0.05 and row.alpha < 0.95),"paper eases into view instead of arriving as an opaque full-width slide")
++	check(samples.any(func(row: Dictionary) -> bool: return row.motion and row.preview),"original Garage remains under the incoming paper")
++	check(samples.all(func(row: Dictionary) -> bool: return row.story == "actual-story"),"entrance never exposes a temporary story")
++	check(leads.size() == 1,"layout and entry status keep one lead article during the entrance")
++	check(page.tools_panel.modulate.a == 1.0 and not page.preview.visible and not page.gallery.visible,"settled newspaper is opaque and suspends the showroom")
++	check(page.showroom.car == original_car and page.showroom.showroom_viewport == original_view,"entrance retains the actual Garage resources")
++	check(heading_stable,"the outgoing Garage title keeps its original position and width")
++	var menu: Node = page.tools.find_child("GarageNewsMenu",true,false)
++	var lead_id: int = menu.find_child("LeadStory",true,false).get_instance_id()
++	backend.delay_refresh = false
++	await frames(10)
++	check(menu.find_child("LeadStory",true,false).get_instance_id() == lead_id,"daily POST completion updates status without rebuilding the article")
++	check(backend.calls.size() == 2,"opening uses only the original GET and daily POST")
++	check(built_leads.size() == 1,"entry and daily status construct only one article")
++	await capture("settled-paper")
++	var entrance_samples: Array = samples.duplicate(true)
++	var entrance_builds: int = built_leads.size()
++	tracking_builds = false
++	page._show_section("cars")
++	await settle()
++	service.items = [{"id":"own-car","kind":"milestone","count":2400,"track_name":"Underpass","created_at":1792152000}]
++	service._fetched_at = Time.get_ticks_msec()
++	leads.clear()
++	cars.clear()
++	samples.clear()
++	sampling = true
++	tracking_builds = true
++	built_leads.clear()
++	built_cars.clear()
++	var before: int = backend.calls.size()
++	var cached_clicked: int = Time.get_ticks_usec()
++	page._navigate_section("news")
++	timings["cached_call_ms"] = (Time.get_ticks_usec()-cached_clicked)/1000.0
++	check(page.section == "news" and backend.calls.size() == before,"fresh cache begins its entrance without a network delay")
++	while page._menu_motion != null: await frame()
++	await frames(10)
++	sampling = false
++	check(leads.size() == 1 and cars.size() == 1,"the own-car photograph is constructed once through the entrance")
++	check(built_leads.size() == 1 and built_cars.size() == 1,"cached entry never builds discarded articles or car models")
++	menu = page.tools.find_child("GarageNewsMenu",true,false)
++	var car_view: Node = menu.find_child("NewsLiveryCar",true,false)
++	var deadline: int = Time.get_ticks_msec()+20000
++	while is_instance_valid(car_view) and not car_view.presentation_ready and Time.get_ticks_msec() < deadline: await frame()
++	check(car_view != null and car_view.presentation_ready,"the actual fitted car photograph becomes ready")
++	check(samples.any(func(row: Dictionary) -> bool: return row.motion and row.car_ready),"the actual car photograph is ready during the entrance")
++	await capture("own-car-ready")
++	tracking_builds = false
++	var cached_samples: Array = samples.duplicate(true)
++	var cached_builds: Dictionary = {"articles":built_leads.size(),"cars":built_cars.size()}
++	page._show_section("cars")
++	await settle()
++	page._navigate_section("news")
++	await frame()
++	var stalled_motion: Tween = page._menu_motion
++	stalled_motion.pause()
++	page._process(0.4)
++	stalled_motion.custom_step(0.4)
++	page._present_menu_layout()
++	check(page.tools_panel.modulate.a > 0.05 and page.tools_panel.modulate.a < 0.95,"a 400 ms frame still presents an intermediate paper frame")
++	page._navigate_section("cars")
++	await settle()
++	check(page.preview.visible and page.gallery.visible and page.preview.modulate.a == 1.0 and page.gallery.modulate.a == 1.0,"interruption restores the normal Garage opacity and layout")
++	check(page._departures.is_empty(),"interruption frees outgoing controls")
++	var receipt := FileAccess.open(output.path_join("motion.json"),FileAccess.WRITE)
++	receipt.store_string(JSON.stringify({"timings":timings,"entrance_samples":entrance_samples,"entrance_articles":entrance_builds,"cached_samples":cached_samples,"cached_builds":cached_builds},"\t"))
++	receipt.close()
++	if "--capture-motion" in OS.get_cmdline_user_args() and DisplayServer.get_name() != "headless":
++		service.items = backend.remote_items.duplicate(true)
++		service._fetched_at = Time.get_ticks_msec()
++		page._navigate_section("news")
++		await frame()
++		var motion: Tween = page._menu_motion
++		motion.pause()
++		for step: int in range(13):
++			await frame()
++			await capture("motion-%02d" % step)
++			if motion.is_valid():
++				motion.set_speed_scale(1.0)
++				motion.custom_step(0.022)
++		await settle()
++	app.queue_free()
++	service.queue_free()
++	backend.queue_free()
++	await frames(15)
++	print("NEWS TRANSITION: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(timings)])
++	quit(1 if failures else 0)

@@ -1,0 +1,1136 @@
+--- /dev/null
++++ b/game/ui/garage_car_stats.gd
+@@ -0,0 +1,130 @@
++extends PanelContainer
++## Browsing information only; measurements use a clean, straight, unboosted launch.
++const SUMMARIES: Dictionary = {
++	"compact":"Agile and forgiving. A versatile choice for mixed circuits.",
++	"kart":"Quick off the line. Tight turns and strong grip; low speed on long straights.",
++	"forklift":"Rear-wheel steering swings the tail wide. Strong traction, low top speed.",
++	"electric":"Instant rear-wheel power. Responsive steering and controlled power slides.",
++	"hovercraft":"Fan-powered air cushion with long, flowing slides. Steer early to hold your line.",
++	"super_rally":"Rally's agile, forgiving handling with stronger acceleration and a higher top speed."
++}
++static var _measurements: Dictionary = {}
++var vehicle_id: String = ""
++var _stack: VBoxContainer
++var _speed: Label
++var _acceleration: Label
++var _description: Label
++var _weight_row: HBoxContainer
++var _weight: Label
++var _unit_margins: Array[MarginContainer] = []
++var _compact: bool = false
++var _built: bool = false
++
++static func performance(id: String) -> Dictionary:
++	id = VehicleCatalog.valid_id(id)
++	if _measurements.has(id): return _measurements[id]
++	var config: HandlingConfig = VehicleCatalog.config(id,HandlingSelection.ORIGINAL_PLUS_INDEX)
++	# Offline canonical measurements keep simulation construction out of browsing.
++	# A changed tune must be measured again rather than showing an old figure.
++	var launch: Array = preload("res://ui/garage_performance_data.gd").LAUNCHES.get(id,[])
++	var seconds: float = float(launch[1]) if launch.size() == 2 and launch[0] == JSON.stringify(config.snapshot()).sha256_text() else -1.0
++	var result: Dictionary = {"top_speed":roundi(config.maximum_speed*3.6),"acceleration":seconds,"mass":roundi(config.mass)}
++	_measurements[id] = result
++	return result
++
++func _ready() -> void:
++	name = "GarageCarStats"
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	focus_mode = Control.FOCUS_NONE
++	_stack = VBoxContainer.new()
++	_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_stack.add_theme_constant_override("separation",12)
++	add_child(_stack)
++	var metrics := HBoxContainer.new()
++	metrics.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	metrics.add_theme_constant_override("separation",18)
++	_stack.add_child(metrics)
++	_speed = _metric(metrics,"Top speed","km/h","GarageStatTopSpeed")
++	var rule := VSeparator.new()
++	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	metrics.add_child(rule)
++	_acceleration = _metric(metrics,"0–60 km/h","s","GarageStatAcceleration")
++	_weight_row = HBoxContainer.new()
++	_weight_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_stack.add_child(_weight_row)
++	var weight_caption: Label = MenuStyle.label("Weight",14,true)
++	weight_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_weight_row.add_child(weight_caption)
++	_weight = MenuStyle.label("",16)
++	_weight.name = "GarageStatWeight"
++	GameText.user_text(_weight)
++	_weight_row.add_child(_weight)
++	var divider := HSeparator.new()
++	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_stack.add_child(divider)
++	_description = MenuStyle.label("",14)
++	_description.name = "GarageCarDescription"
++	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	_stack.add_child(_description)
++	_built = true
++	_apply_density()
++	set_vehicle(vehicle_id if not vehicle_id.is_empty() else VehicleCatalog.selected)
++
++func _metric(parent: HBoxContainer, caption: String, unit: String, node_name: String) -> Label:
++	var column := VBoxContainer.new()
++	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	column.add_theme_constant_override("separation",0)
++	parent.add_child(column)
++	var title: Label = MenuStyle.label(caption,13,true)
++	column.add_child(title)
++	var row := HBoxContainer.new()
++	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	row.add_theme_constant_override("separation",5)
++	column.add_child(row)
++	var number: Label = MenuStyle.label("",38)
++	number.name = node_name
++	number.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	GameText.user_text(number)
++	row.add_child(number)
++	var suffix: Label = MenuStyle.label(unit,13,true)
++	var unit_margin := MarginContainer.new()
++	unit_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	unit_margin.size_flags_vertical = Control.SIZE_SHRINK_END
++	_unit_margins.append(unit_margin)
++	row.add_child(unit_margin)
++	unit_margin.add_child(suffix)
++	return number
++
++func set_vehicle(id: String) -> void:
++	vehicle_id = VehicleCatalog.valid_id(id)
++	if not _built: return
++	var data: Dictionary = performance(vehicle_id)
++	_speed.text = str(data.top_speed)
++	_acceleration.text = "%.1f" % data.acceleration if data.acceleration >= 0.0 else "—"
++	GameText.bind(_weight,"{weight} kg",{"weight":str(data.mass)})
++	GameText.bind(_description,SUMMARIES[vehicle_id])
++	reset_size()
++
++func fit_in_preview(dimensions: Vector2) -> void:
++	var compact: bool = dimensions.y < 260.0
++	if compact != _compact:
++		_compact = compact
++		_apply_density()
++	var inset: float = 12.0 if compact else 24.0
++	position = Vector2(inset,inset)
++	size.x = clampf(dimensions.x*(0.30 if compact else 0.245),248.0 if compact else 220.0,300.0)
++	size.y = get_combined_minimum_size().y
++
++func _apply_density() -> void:
++	var style: StyleBoxFlat = MenuStyle.card(12 if _compact else 18)
++	style.bg_color = Color(MenuStyle.PANEL,0.94)
++	style.set_corner_radius_all(8)
++	add_theme_stylebox_override("panel",style)
++	if not _built: return
++	_stack.add_theme_constant_override("separation",6 if _compact else 12)
++	_weight_row.visible = not _compact
++	for number: Label in [_speed,_acceleration]: number.add_theme_font_size_override("font_size",28 if _compact else 38)
++	for margin: MarginContainer in _unit_margins: margin.add_theme_constant_override("margin_bottom",4 if _compact else 8)
++	_description.add_theme_font_size_override("font_size",12 if _compact else 14)
++	_description.add_theme_constant_override("line_spacing",0 if _compact else 3)
+--- /dev/null
++++ b/game/ui/garage_performance_data.gd
+@@ -0,0 +1,11 @@
++extends RefCounted
++# Generated by tests/bake_garage_performance.gd: clean, straight, unboosted 0–60 km/h.
++const PHYSICS_VERSION: String = "arcade-planar-0.77"
++const LAUNCHES: Dictionary = {
++	"compact":["8baea3700f862a563f1f47f46dd511e21fb2187277efebf94eebc1d3cb1bafb9",1.176186016921],
++	"kart":["6365a7fd75150925c961de04933fbc238de7ca0e7202b0e1c2cfe1ff66f751cb",0.788435426905],
++	"forklift":["35f199342d5fdc07471bb00bc4a39ae5c024fc08031fa5836610db5256e09d50",2.818488544275],
++	"electric":["df57a390f90f09b9449035aeb7b00701b49454225c18fba420b016a96b04a93d",0.873676327049],
++	"hovercraft":["d596a12c9a654391f7ae881662162595170a6c2ef6418eb1ec2dd1b36b4db9cc",0.890280930850],
++	"super_rally":["e023ce00b49bf8eab1f9cd849b21ea41e217910585c5464549ebc8f9bac822c9",0.962376179226]
++}
+--- /dev/null
++++ b/game/tests/bake_garage_performance.gd
+@@ -0,0 +1,35 @@
++extends SceneTree
++## Refresh UI launch figures after a canonical handling change; no rendering or saves.
++func _initialize() -> void:
++	run.call_deferred()
++
++func run() -> void:
++	var rows: Array[String] = []
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id,HandlingSelection.ORIGINAL_PLUS_INDEX)
++		var signature: String = JSON.stringify(config.snapshot()).sha256_text()
++		var simulation := VehicleSimulation.new(config)
++		var drive: DriveFrame = DriveFrame.sample(0,1,0)
++		var target: float = 60.0/3.6
++		var seconds: float = -1.0
++		if config.maximum_speed > target:
++			for tick: int in range(20*VehicleSimulation.TICK_RATE):
++				var before: float = simulation.state.velocity.length()
++				simulation.step(drive)
++				var after: float = simulation.state.velocity.length()
++				if after >= target:
++					seconds = (tick+inverse_lerp(before,after,target))*VehicleSimulation.STEP
++					break
++		rows.append("\t\"%s\":[\"%s\",%.12f]" % [id,signature,seconds])
++		simulation = null
++		drive = null
++		config = null
++	var source: String = "extends RefCounted\n# Generated by tests/bake_garage_performance.gd: clean, straight, unboosted 0–60 km/h.\nconst PHYSICS_VERSION: String = \"%s\"\nconst LAUNCHES: Dictionary = {\n%s\n}\n" % [VehicleSimulation.PHYSICS_VERSION,",\n".join(rows)]
++	var file := FileAccess.open("res://ui/garage_performance_data.gd",FileAccess.WRITE)
++	if file == null:
++		quit(1)
++		return
++	file.store_string(source)
++	file.close()
++	print("GARAGE_PERFORMANCE_BAKE ",rows.size()," cars")
++	quit.call_deferred()
+--- /dev/null
++++ b/game/tests/test_garage_car_stats.gd
+@@ -0,0 +1,186 @@
++extends SceneTree
++## GCS01–GCS04: actual Garage browsing, truthful stats, input and responsive layout.
++const Stats = preload("res://ui/garage_car_stats.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String
++var page: GaragePage
++var measurements: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, caption: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		printerr("FAIL: ",caption)
++
++func settle(count: int = 8) -> void:
++	for frame: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func check_content(id: String) -> void:
++	var data: Dictionary = Stats.performance(id)
++	var config: HandlingConfig = VehicleCatalog.config(id)
++	check(preload("res://ui/garage_performance_data.gd").PHYSICS_VERSION == VehicleSimulation.PHYSICS_VERSION,"launch measurement physics version "+id)
++	check(float(data.acceleration) >= 0.0,"current tune has a qualified launch measurement "+id)
++	check(page._car_stats.vehicle_id == id,"stats follow browsed car "+id)
++	check(int(page._car_stats._speed.text) == roundi(config.maximum_speed*3.6),"top speed matches race configuration "+id)
++	check(int(data.mass) == roundi(config.mass),"weight matches race configuration "+id)
++	check(page._car_stats._description.text == GameText.message(Stats.SUMMARIES[id]),"short description matches car "+id)
++	# Replay the displayed rounded launch time with the actual clean-road simulation.
++	var sim := VehicleSimulation.new(config)
++	var drive: DriveFrame = DriveFrame.sample(0,1,0)
++	var target_tick: int = ceili(float(data.acceleration)*VehicleSimulation.TICK_RATE)
++	for tick: int in range(target_tick-1): sim.step(drive)
++	check(sim.state.velocity.length()*3.6 < 60.0,"car has not reached 60 before measured tick "+id)
++	sim.step(drive)
++	check(sim.state.velocity.length()*3.6 >= 60.0,"car reaches 60 at measured tick "+id)
++	measurements[id] = data
++
++func check_layout() -> void:
++	var panel: Control = page._car_stats
++	check(page.preview.get_global_rect().encloses(panel.get_global_rect()),"stats fit inside preview "+str(root.size))
++	check(panel.get_global_rect().encloses(page._car_stats._description.get_global_rect()),"description fits panel "+str(root.size))
++	var title_rect: Rect2 = page.heading.get_global_rect()
++	var title_width: float = page.heading.get_theme_font("font").get_string_size(page.heading.text,HORIZONTAL_ALIGNMENT_LEFT,-1,page.heading.get_theme_font_size("font_size")).x
++	var painted_title := Rect2(Vector2(title_rect.get_center().x-title_width*0.5,title_rect.position.y),Vector2(title_width,title_rect.size.y))
++	check(not panel.get_global_rect().intersects(painted_title),"stats clear centered car title "+str(root.size))
++	check(not panel.get_global_rect().intersects(page.view_hint.get_global_rect()),"stats clear drag hint "+str(root.size))
++	check(not panel.get_global_rect().intersects(page.gallery.get_global_rect()),"stats clear carousel "+str(root.size))
++	check_pass_through(panel)
++
++func check_pass_through(node: Node) -> void:
++	if node is Control: check(node.mouse_filter == Control.MOUSE_FILTER_IGNORE,"information passes drag input: "+node.name)
++	for child: Node in node.get_children(): check_pass_through(child)
++
++func drag_over_stats(touch: bool) -> void:
++	var point: Vector2 = page._car_stats.get_global_rect().get_center()
++	var initial_yaw: float = page.showroom.yaw
++	if touch:
++		var press := InputEventScreenTouch.new()
++		press.index = 4
++		press.position = point
++		press.pressed = true
++		root.push_input(press,true)
++		var drag := InputEventScreenDrag.new()
++		drag.index = 4
++		drag.position = point+Vector2(20,0)
++		drag.relative = Vector2(20,0)
++		root.push_input(drag,true)
++		press = press.duplicate()
++		press.pressed = false
++		root.push_input(press,true)
++	else:
++		var press := InputEventMouseButton.new()
++		press.position = point
++		press.global_position = point
++		press.button_index = MOUSE_BUTTON_LEFT
++		press.pressed = true
++		root.push_input(press,true)
++		var motion := InputEventMouseMotion.new()
++		motion.position = point+Vector2(20,0)
++		motion.global_position = motion.position
++		motion.relative = Vector2(20,0)
++		motion.button_mask = MOUSE_BUTTON_MASK_LEFT
++		root.push_input(motion,true)
++		press = press.duplicate()
++		press.pressed = false
++		root.push_input(press,true)
++	check(not is_equal_approx(page.showroom.yaw,initial_yaw),"touch drag turns car through stats" if touch else "mouse drag turns car through stats")
++	page.showroom.yaw = initial_yaw
++	page.showroom._orbit()
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	# Initialize the test's canonical verifier before App begins worker asset reads.
++	VehicleSimulation.new(VehicleCatalog.config("compact")).step(DriveFrame.sample(0,1,0))
++	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-car-stats-2026-11-14/"+RenderingServer.get_current_rendering_method())
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = ProjectSettings.globalize_path(argument.trim_prefix("--evidence-root="))
++	DirAccess.make_dir_recursive_absolute(output)
++	var folder: String = ProjectSettings.globalize_path("res://../build/garage-car-stats-2026-11-14/app-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings = {"music_enabled":false,"selected_car":"compact","tutorial_complete":true}
++	app.library = TrackLibrary.new(folder)
++	app.cloud_root_override = folder.path_join("cloud")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	page = app.root_ui.find_child("GaragePage",true,false)
++	while page == null or not page.showroom.showroom_ready:
++		await process_frame
++		page = app.root_ui.find_child("GaragePage",true,false)
++	await settle(12)
++	page._finish_menu_move()
++	var settings: Dictionary = app.records.settings.duplicate(true)
++	var started: int = Time.get_ticks_usec()
++	for id: String in VehicleCatalog.IDS: Stats.performance(id)
++	var measurement_ms: float = (Time.get_ticks_usec()-started)/1000.0
++	for index: int in range(VehicleCatalog.IDS.size()):
++		page.preview_car(index)
++		page.gallery.ensure_control_visible(page.cards.get_child(index))
++		page.showroom.finish_car_transition()
++		await settle()
++		check_content(VehicleCatalog.IDS[index])
++		check_layout()
++		await capture(VehicleCatalog.IDS[index]+"-1280")
++	drag_over_stats(false)
++	drag_over_stats(true)
++	# Immediate browsing and cancellation must keep title, card and stats coherent.
++	page._queue_car_preview(1)
++	check(page._car_stats.vehicle_id == "kart" and page.heading.text == "KART","stats update in the input callback")
++	page._queue_car_preview(3)
++	check(page._car_stats.vehicle_id == "electric","latest pending choice owns stats")
++	page._cancel_car_preview()
++	check(page._car_stats.vehicle_id == page.vehicle_id,"cancel restores displayed car stats")
++	page._show_section("care")
++	check(not page._car_stats.visible,"stats hidden while washing")
++	page._show_section("customise")
++	check(not page._car_stats.visible,"stats hidden in workshop")
++	page._show_section("cars")
++	page._finish_menu_move()
++	check(page._car_stats.visible,"returning to cars restores stats")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1720,900),Vector2i(2560,1354)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		await settle(15)
++		for index: int in [2,5]:
++			page.preview_car(index)
++			page.gallery.ensure_control_visible(page.cards.get_child(index))
++			page.showroom.finish_car_transition()
++			await settle()
++			check_layout()
++			await capture(VehicleCatalog.IDS[index]+"-"+str(dimensions.x))
++	# Existing installation language choices also need readable compact descriptions.
++	root.size = Vector2i(960,540)
++	root.content_scale_size = root.size
++	await settle()
++	for locale: String in ["fr","es","de","pt_BR","ja","ko","nl","it","fi","sv","nb"]:
++		GameFonts.configure(locale)
++		TranslationServer.set_locale(locale)
++		GameText.refresh(self)
++		for id: String in VehicleCatalog.IDS:
++			page._car_stats.set_vehicle(id)
++			await settle(2)
++			check(page.preview.get_global_rect().encloses(page._car_stats.get_global_rect()),"compact localized panel fits "+locale+"/"+id)
++			check(page._car_stats.get_global_rect().encloses(page._car_stats._description.get_global_rect()),"compact localized description fits "+locale+"/"+id)
++			check(page._car_stats._description.text == GameText.message(Stats.SUMMARIES[id]),"localized car summary "+locale+"/"+id)
++	TranslationServer.set_locale("en")
++	GameFonts.configure("en")
++	GameText.refresh(self)
++	page._car_stats.set_vehicle(page.vehicle_id)
++	check(app.records.settings == settings,"browsing leaves saved selection and cosmetics unchanged")
++	app.queue_free()
++	await settle()
++	var report: Dictionary = {"checks":checks,"failures":failures,"measurement_ms":measurement_ms,"cars":measurements}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("GARAGE_CAR_STATS ",JSON.stringify(report))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/probe_garage_stats_entry.gd
+@@ -0,0 +1,38 @@
++extends SceneTree
++## Separate the new information panel from the actual App's studio preparation.
++class EmptyStats extends PanelContainer:
++	func set_vehicle(_id: String) -> void: pass
++	func fit_in_preview(_dimensions: Vector2) -> void: pass
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var script: GDScript = load("res://ui/garage_page.gd")
++	script.source_code = script.source_code.replace('preload("res://ui/garage_car_stats.gd").new()','load("res://tests/probe_garage_stats_entry.gd").EmptyStats.new()')
++	if script.reload() != OK:
++		quit(1)
++		return
++	var folder: String = ProjectSettings.globalize_path("res://../build/garage-car-stats-2026-11-14/control-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings = {"music_enabled":false,"selected_car":"compact","tutorial_complete":true}
++	app.library = TrackLibrary.new(folder)
++	app.cloud_root_override = folder.path_join("cloud")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	print("GARAGE_STATS_CONTROL_SHOW_BEGIN")
++	app._show_screen("garage")
++	print("GARAGE_STATS_CONTROL_SHOW_END")
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	while page == null or not page.showroom.showroom_ready:
++		await process_frame
++		page = app.root_ui.find_child("GaragePage",true,false)
++	while page.showroom.preparing: await process_frame
++	print("GARAGE_STATS_CONTROL_READY")
++	app.queue_free()
++	await process_frame
++	quit()
+--- /dev/null
++++ b/scripts/run_garage_car_stats.py
+@@ -0,0 +1,46 @@
++"""Run Garage stats checks with disposable storage and the pinned dev entry point."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/garage-car-stats-2026-11-14"
++name = sys.argv[1] if len(sys.argv) > 1 else "headless"
++script = sys.argv[2] if len(sys.argv) > 2 else "res://tests/test_garage_car_stats.gd"
++OUT.mkdir(parents=True, exist_ok=True)
++profile = ROOT / "build/garage-car-stats-2026-11-14" / name
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile / "local"),
++           BMT_API_URL="", BMT_DEV_AUTH_KEY="")
++command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
++           str(ROOT / "scripts/dev.ps1"), "-Action", "TestScript", "-ScriptPath", script,
++           "-CommandTimeoutSeconds", "240", "-TestArgument", f"--evidence-root={OUT / name}"]
++renderer = name.partition("-")[0]
++if renderer in ("gl_compatibility", "mobile"):
++    command += ["-Graphical", "-RenderingMethod", renderer]
++if "--direct" in sys.argv[3:]:
++    # Follow-up checks retain the identity already written by the dev entry point.
++    engine = r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"
++    version = subprocess.check_output([engine, "--version"], text=True).strip()
++    assert version == (ROOT / "godot-version.txt").read_text().strip(), version
++    command = [engine, "--path", str(ROOT / "game"), "--audio-driver", "Dummy", "--script", script]
++    command += ["--rendering-method", renderer] if renderer in ("gl_compatibility", "mobile") else ["--headless"]
++    command += ["--", f"--evidence-root={OUT / name}"]
++start = time.monotonic()
++with (OUT / f"{name}.log").open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
++    try:
++        code = process.wait(timeout=270)
++    except subprocess.TimeoutExpired:
++        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=log, stderr=subprocess.STDOUT)
++        process.wait()
++        code = "timeout"
++receipt = {"command": command, "exit_code": code, "seconds": round(time.monotonic() - start, 3)}
++(OUT / f"{name}.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++print(json.dumps(receipt))
++print("\n".join((OUT / f"{name}.log").read_text(encoding="utf-8").splitlines()[-18:]))
++raise SystemExit(0 if code == 0 else 1)
+--- /dev/null
++++ b/scripts/translations/garage_car_stats_2026_11_14.tsv
+@@ -0,0 +1,8 @@
++# English|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Top speed|Vitesse max.|Velocidad máxima|Höchstgeschwindigkeit|Velocidade máxima|最高速度|최고 속도|Topsnelheid|Velocità massima|Huippunopeus|Toppfart|Toppfart
++Weight|Poids|Peso|Gewicht|Peso|重量|중량|Gewicht|Peso|Paino|Vikt|Vekt
++0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h|0–60 km/h
++{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg|{weight} kg
++Rear-wheel steering swings the tail wide. Strong traction, low top speed.|Les roues arrière directrices font déporter l'arrière. Forte motricité, vitesse de pointe réduite.|La dirección trasera hace que la parte de atrás se abra. Gran tracción y baja velocidad máxima.|Die Hinterradlenkung lässt das Heck weit ausschwenken. Viel Traktion, geringe Höchstgeschwindigkeit.|A direção traseira faz a traseira abrir nas curvas. Muita tração e baixa velocidade máxima.|後輪操舵でリアが大きく振れます。強いトラクションと低めの最高速度が特徴。|후륜 조향으로 뒷부분이 크게 돌아갑니다. 접지력이 강하고 최고 속도는 낮습니다.|Achterwielbesturing laat de achterkant ver uitzwaaien. Veel tractie, lage topsnelheid.|Lo sterzo posteriore fa allargare la coda. Forte trazione, velocità massima ridotta.|Takapyöräohjaus heittää perän ulos. Vahva vetopito ja matala huippunopeus.|Bakhjulsstyrning får bakänden att svepa ut. Bra dragkraft, låg toppfart.|Bakhjulsstyring får bakenden til å svinge langt ut. God trekkraft, lav toppfart.
++Instant rear-wheel power. Responsive steering and controlled power slides.|Puissance instantanée aux roues arrière. Direction réactive et dérapages contrôlés à l'accélération.|Potencia instantánea a las ruedas traseras. Dirección ágil y derrapes controlados al acelerar.|Sofortige Kraft an den Hinterrädern. Direkte Lenkung und kontrollierte Drifts unter Last.|Potência instantânea nas rodas traseiras. Direção ágil e derrapagens controladas ao acelerar.|後輪へ瞬時に伝わるパワー。反応のよいステアリングで、アクセルを使ったドリフトを自在に。|뒷바퀴에 즉시 전달되는 동력. 민첩한 조향과 제어하기 쉬운 파워 슬라이드.|Direct vermogen op de achterwielen. Responsieve besturing en beheerste powerslides.|Potenza istantanea alle ruote posteriori. Sterzo reattivo e derapate controllate in accelerazione.|Välitön takavetovoima. Herkkä ohjaus ja hallitut kaasuluistot.|Omedelbar kraft till bakhjulen. Följsam styrning och kontrollerade sladdar med gasen.|Umiddelbar kraft til bakhjulene. Presis styring og kontrollerte sladder med gassen.
++Fan-powered air cushion with long, flowing slides. Steer early to hold your line.|Coussin d'air propulsé par ventilateurs et longues glissades fluides. Anticipez les virages pour tenir votre trajectoire.|Colchón de aire con ventiladores y derrapes largos y fluidos. Gira con antelación para mantener la trazada.|Luftkissen mit Gebläseantrieb und langen, fließenden Drifts. Früh einlenken, um die Linie zu halten.|Colchão de ar movido a ventiladores, com derrapagens longas e fluidas. Vire cedo para manter a trajetória.|ファンで進むエアクッション。長く滑らかに滑ります。早めの操舵でラインを保ちましょう。|팬으로 추진하는 공기 쿠션과 길고 부드러운 슬라이드. 일찍 조향해 주행 라인을 유지하세요.|Luchtkussen met ventilatoraandrijving en lange, vloeiende slides. Stuur vroeg om je lijn vast te houden.|Cuscino d'aria a ventole con lunghe derapate fluide. Sterza in anticipo per tenere la traiettoria.|Puhaltimilla kulkeva ilmatyyny liukuu pitkin, pehmein kaarin. Ohjaa ajoissa, niin pysyt ajolinjalla.|Fläktdriven luftkudde med långa, mjuka sladdar. Styr tidigt för att hålla spåret.|Viftedrevet luftpute med lange, jevne sladder. Styr tidlig for å holde sporet.
+--- /dev/null
++++ b/docs/GARAGE_CAR_STATS_2026_11_14.md
+@@ -0,0 +1,46 @@
++# Garage car selection: performance and descriptions
++
++GCS01–GCS04, 14 November 2026. Implemented the owner's marked left-hand information area with the existing Garage navy, Barlow fonts, yellow figures, fine borders and rounded cards.
++
++The panel follows the browsed car immediately, including pending choices and cancellation. It shows configured top speed, clean unboosted 0–60 km/h acceleration, weight and a short driving description. All six cars exceed 60 km/h, allowing the same acceleration comparison for the 80 km/h Forklift. Compact windows retain both performance figures and the complete description, omit weight, and move the drag hint beside the panel. Mouse and touch drags pass through it. Workshop, washing and other sections hide it.
++
++Acceleration is measured offline by the unchanged canonical 120 Hz simulation. The generated data records each complete handling snapshot's SHA-256; a mismatched tune shows an unavailable acceleration figure until rebaked. Top speed and weight come directly from the car's current configuration. Tests also compare the physics version and independently replay the crossing tick. Browsing does not construct a simulation or load race features to calculate figures.
++
++| Car | Top speed | 0–60 km/h | Weight |
++|---|---:|---:|---:|
++| Rally | 166 km/h | 1.2 s | 1050 kg |
++| Kart | 140 km/h | 0.8 s | 260 kg |
++| Forklift | 80 km/h | 2.8 s | 2800 kg |
++| Volt | 190 km/h | 0.9 s | 1680 kg |
++| Hover | 130 km/h | 0.9 s | 560 kg |
++| Super Rally | 198 km/h | 1.0 s | 1050 kg |
++
++These are game handling figures. The acceleration measurement uses a clean straight road, full throttle and no countdown bonus; race conditions can differ. Cosmetic kits do not change these numbers.
++
++Changed sources: `game/ui/garage_car_stats.gd`, generated `game/ui/garage_performance_data.gd`, narrow integration additions in `game/ui/garage_page.gd`, `game/tests/test_garage_car_stats.gd`, `game/tests/bake_garage_performance.gd`, `game/tests/probe_garage_stats_entry.gd`, `scripts/run_garage_car_stats.py`, `scripts/translations/garage_car_stats_2026_11_14.tsv`, seven entries in each of the twelve language catalogues and source template, and the linked status notes. Existing translations and concurrent Garage changes are retained.
++
++Actual commands and outcomes (pinned Godot 4.7.2; disposable application storage, empty backend URL):
++
++```powershell
++# Initial checks used scripts/dev.ps1 through this runner.
++python scripts/run_garage_car_stats.py headless
++python scripts/run_garage_car_stats.py gl_compatibility
++# Final follow-ups use the same pinned executable without restamping identity.
++python scripts/run_garage_car_stats.py bake res://tests/bake_garage_performance.gd --direct
++python scripts/run_garage_car_stats.py headless res://tests/test_garage_car_stats.gd --direct
++python scripts/run_garage_car_stats.py gl_compatibility res://tests/test_garage_car_stats.gd --direct
++python scripts/run_garage_car_stats.py selection res://tests/test_garage_selection_feedback.gd --direct
++python scripts/run_garage_car_stats.py parser res://tests/check_model_refinement_parse.gd --direct
++```
++
++Final actual-App stats checks: **567/0 headless, 579/0 Compatibility**, covering all six cars, saved-state preservation, immediate/latest/cancelled choices, section visibility, real mouse/touch drag routing, 960×540 through 2560×1354 windows, and all eleven translated language choices. Existing selection regression: **20/0 headless**. Production parser: **573/0**. Targeted catalogue validation: **84/0**, seven messages across twelve languages, including placeholders and encoding. Native captures and machine-readable command receipts are in [evidence](evidence/garage-car-stats-2026-11-14/). These are desktop correctness checks, not phone latency or performance claims.
++
++Visible results: [1280-pixel Super Rally](evidence/garage-car-stats-2026-11-14/gl_compatibility/super_rally-1280.png), [compact layout](evidence/garage-car-stats-2026-11-14/gl_compatibility/super_rally-960.png), and all six standard views in that directory.
++
++Initial short layouts overlapped the drag hint (headless 331/2, native 343/2); moving the compact hint and correcting spacing resolved this. Longer French/Dutch compact descriptions then exposed four bounds failures (555/4), resolved by the wider compact panel and line spacing. Retained initial logs show these findings; no assertions were relaxed. Loading the complete authored translation table initially rejected the unrelated malformed first row in `track_editor_review_fixes.tsv`; only this task's seven messages were appended and validated, without rebuilding unrelated translations.
++
++Desktop Mobile attempts did not finish Garage preparation. The separate actual-App control replaces the information panel with an empty component in process memory, without modifying production files; it also stops progressing after `GARAGE_STATS_CONTROL_SHOW_END`. That control was stopped after 76.578 seconds. The existing synchronous Mobile selection regression also stalled before results. Only verified task-owned processes were terminated. These attempts do not qualify Mobile App entry, identify its root cause, or establish a renderer regression caused by this panel. Raw receipts/logs are retained. The initial runtime-measurement approach was replaced with offline data so selection has no simulation construction cost.
++
++The six-car offline bake writes the expected data and exits zero, but its standalone process retains a six-object/three-resource shutdown diagnostic; this is not reported as a clean shutdown. Final actual-App headless and Compatibility runs exit cleanly. Repeated bake output is byte-identical, and the independent actual-App crossing checks validate its figures.
++
++No vehicle geometry, canonical simulation, handling resource, owner save, existing owner process, device, export or backend operation was changed by this task. Owner appearance review and physical-phone qualification remain. The source-only checkpoint and its forward/reverse verification are recorded in `evidence/garage-car-stats-2026-11-14/checkpoint.json`; generated identity changes from the initial dev runs and unrelated concurrent work are excluded. Main-index staging was not performed. Prescribed build retention cleanup was run at completion; recent/protected output can remain above the target.
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -79,6 +79,7 @@
+ var cards: HBoxContainer
+ var preview: Control
+ var heading: Label
++var _car_stats: PanelContainer
+ var tools: VBoxContainer
+ var rail: VBoxContainer
+ var main: VBoxContainer
+@@ -195,6 +196,9 @@
+ 	preview.add_child(heading)
+ 	heading.position = Vector2(24, 14)
+ 	heading.size = Vector2(520, 46)
++	_car_stats = preload("res://ui/garage_car_stats.gd").new()
++	preview.add_child(_car_stats)
++	_car_stats.set_vehicle(vehicle_id)
+ 	_preview_hint = MenuStyle.label("",16)
+ 	_preview_hint.name = "GarageCosmeticPreviewHint"
+ 	_preview_hint.add_theme_color_override("font_color",MenuStyle.ACCENT)
+@@ -539,6 +543,11 @@
+ 	_layout_presented = true
+ 
+ func _layout_workshop_overlay() -> void:
++	if is_instance_valid(_car_stats) and _car_stats.visible:
++		_car_stats.fit_in_preview(preview.size)
++	var view_controls: Control = preview.get_node_or_null("GarageViewControls")
++	if is_instance_valid(view_controls):
++		view_controls.offset_left = _car_stats.get_rect().end.x+16.0 if _car_stats.visible and preview.size.y < 260.0 else 24.0
+ 	if is_instance_valid(heading):
+ 		heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER if section == "cars" else HORIZONTAL_ALIGNMENT_LEFT
+ 		heading.size.x = maxf(100,preview.size.x-48)
+@@ -909,6 +918,7 @@
+ 	var serial: int = _car_preview_serial
+ 	_pending_car_index = index
+ 	heading.text = _car_name(VehicleCatalog.IDS[index])
++	_car_stats.set_vehicle(VehicleCatalog.IDS[index])
+ 	_update_cards()
+ 	if VehicleCatalog.IDS[index] == vehicle_id:
+ 		_pending_car_index = -1
+@@ -925,6 +935,7 @@
+ 	if _pending_car_index < 0: return
+ 	_pending_car_index = -1
+ 	heading.text = _car_name(vehicle_id)
++	_car_stats.set_vehicle(vehicle_id)
+ 	_update_cards()
+ 
+ func _finish_car_preview() -> void:
+@@ -938,6 +949,7 @@
+ 	if chosen != vehicle_id:
+ 		vehicle_id = chosen
+ 		heading.text = _car_name(vehicle_id)
++		_car_stats.set_vehicle(vehicle_id)
+ 		_replace_showroom_car()
+ 	_update_cards()
+ 
+@@ -988,6 +1000,7 @@
+ 	vehicle_id = VehicleCatalog.selected
+ 	_selected_vehicle_id = vehicle_id
+ 	heading.text = _car_name(vehicle_id)
++	_car_stats.set_vehicle(vehicle_id)
+ 	_replace_showroom_car()
+ 	_show_section("cars")
+ 	_update_cards()
+@@ -1106,6 +1119,7 @@
+ 	select_button = null
+ 	records_menu = null
+ 	gallery_slot.visible = section == "cars"
++	_car_stats.visible = section == "cars"
+ 	tools_panel.visible = section not in ["cars", "care", "trophies"] and not _customisation_locked
+ 	_build_rail()
+ 	if section == "cars":
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11818,9 +11818,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Confirm or discard the pending previews before changing tools."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Top speed"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Weight"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Instant rear-wheel power. Responsive steering and controlled power slides."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Confirmez ou abandonnez les aperçus en attente avant de changer d’outil."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Vitesse max."
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Poids"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Les roues arrière directrices font déporter l'arrière. Forte motricité, vitesse de pointe réduite."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Puissance instantanée aux roues arrière. Direction réactive et dérapages contrôlés à l'accélération."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Coussin d'air propulsé par ventilateurs et longues glissades fluides. Anticipez les virages pour tenir votre trajectoire."
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Confirma o descarta las vistas previas pendientes antes de cambiar de herramienta."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Velocidad máxima"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Peso"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "La dirección trasera hace que la parte de atrás se abra. Gran tracción y baja velocidad máxima."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Potencia instantánea a las ruedas traseras. Dirección ágil y derrapes controlados al acelerar."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Colchón de aire con ventiladores y derrapes largos y fluidos. Gira con antelación para mantener la trazada."
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Bestätige oder verwirf die ausstehenden Vorschauen, bevor du das Werkzeug wechselst."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Höchstgeschwindigkeit"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Gewicht"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Die Hinterradlenkung lässt das Heck weit ausschwenken. Viel Traktion, geringe Höchstgeschwindigkeit."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Sofortige Kraft an den Hinterrädern. Direkte Lenkung und kontrollierte Drifts unter Last."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Luftkissen mit Gebläseantrieb und langen, fließenden Drifts. Früh einlenken, um die Linie zu halten."
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Confirme ou descarte as prévias pendentes antes de mudar de ferramenta."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Velocidade máxima"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Peso"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "A direção traseira faz a traseira abrir nas curvas. Muita tração e baixa velocidade máxima."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Potência instantânea nas rodas traseiras. Direção ágil e derrapagens controladas ao acelerar."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Colchão de ar movido a ventiladores, com derrapagens longas e fluidas. Vire cedo para manter a trajetória."
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11673,9 +11673,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "ツールを変更する前に、保留中のプレビューを確定または破棄してください。"
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "最高速度"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "重量"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "後輪操舵でリアが大きく振れます。強いトラクションと低めの最高速度が特徴。"
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "後輪へ瞬時に伝わるパワー。反応のよいステアリングで、アクセルを使ったドリフトを自在に。"
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "ファンで進むエアクッション。長く滑らかに滑ります。早めの操舵でラインを保ちましょう。"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11673,9 +11673,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "도구를 변경하기 전에 대기 중인 미리보기를 확정하거나 버리세요."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "최고 속도"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "중량"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "후륜 조향으로 뒷부분이 크게 돌아갑니다. 접지력이 강하고 최고 속도는 낮습니다."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "뒷바퀴에 즉시 전달되는 동력. 민첩한 조향과 제어하기 쉬운 파워 슬라이드."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "팬으로 추진하는 공기 쿠션과 길고 부드러운 슬라이드. 일찍 조향해 주행 라인을 유지하세요."
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Bevestig of verwerp de openstaande voorbeelden voordat je van gereedschap wisselt."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Topsnelheid"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Gewicht"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Achterwielbesturing laat de achterkant ver uitzwaaien. Veel tractie, lage topsnelheid."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Direct vermogen op de achterwielen. Responsieve besturing en beheerste powerslides."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Luchtkussen met ventilatoraandrijving en lange, vloeiende slides. Stuur vroeg om je lijn vast te houden."
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Conferma o scarta le anteprime in sospeso prima di cambiare strumento."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Velocità massima"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Peso"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Lo sterzo posteriore fa allargare la coda. Forte trazione, velocità massima ridotta."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Potenza istantanea alle ruote posteriori. Sterzo reattivo e derapate controllate in accelerazione."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Cuscino d'aria a ventole con lunghe derapate fluide. Sterza in anticipo per tenere la traiettoria."
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Vahvista tai hylkää keskeneräiset esikatselut ennen työkalun vaihtamista."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Huippunopeus"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Paino"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Takapyöräohjaus heittää perän ulos. Vahva vetopito ja matala huippunopeus."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Välitön takavetovoima. Herkkä ohjaus ja hallitut kaasuluistot."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Puhaltimilla kulkeva ilmatyyny liukuu pitkin, pehmein kaarin. Ohjaa ajoissa, niin pysyt ajolinjalla."
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Bekräfta eller kasta de väntande förhandsvisningarna innan du byter verktyg."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Toppfart"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Vikt"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Bakhjulsstyrning får bakänden att svepa ut. Bra dragkraft, låg toppfart."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Omedelbar kraft till bakhjulen. Följsam styrning och kontrollerade sladdar med gasen."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Fläktdriven luftkudde med långa, mjuka sladdar. Styr tidigt för att hålla spåret."
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11704,9 +11704,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr "Bekreft eller forkast de ventende forhåndsvisningene før du bytter verktøy."
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr "Toppfart"
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr "Vekt"
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr "0–60 km/h"
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr "{weight} kg"
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr "Bakhjulsstyring får bakenden til å svinge langt ut. God trekkraft, lav toppfart."
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr "Umiddelbar kraft til bakhjulene. Presis styring og kontrollerte sladder med gassen."
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr "Viftedrevet luftpute med lange, jevne sladder. Styr tidlig for å holde sporet."
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11515,9 +11515,30 @@
+ msgid "Confirm or discard the pending previews before changing tools."
+ msgstr ""
+ 
+-
+-
+-
+-
+-
+-
++#: ui/garage_car_stats.gd
++msgid "Top speed"
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "Weight"
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "0–60 km/h"
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "{weight} kg"
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "Rear-wheel steering swings the tail wide. Strong traction, low top speed."
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "Instant rear-wheel power. Responsive steering and controlled power slides."
++msgstr ""
++
++#: ui/garage_car_stats.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early to hold your line."
++msgstr ""
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-CAR-STATS-20261114 -->
++## Garage car selection shows performance and a short description (2026-11-14)
++GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
++<!-- /GARAGE-CAR-STATS-20261114 -->
++
+ <!-- DAILY-PAGE-LOADING-20261114 -->
+ ## Track of the Day restores saved presentation and coalesces reads (2026-11-14)
+ DPL01-DPL03: Five-minute, eight-snapshot/128KiB atomic presentation cache survives restart; exact origin/account/event/car/result scopes, server expiry, malformed-input guards and fresh race authority remain. Activation retains active retry clocks and reuses 30-second RAM standings; disk standings refresh in background. Local delayed-response Compatibility saved-page sample410.447to27.986ms, Mobile42.731ms; fresh-process577.594ms includes first-use scripts, no uncached/device latency claim. New31/0 headless and33/0 each desktop renderer, retained entry14/0/preparing5/0/refinement20/0, actual Daily install7/0 and parser571/0 pass. Original control25/5 rejects; broader medal115/2 reproduces on task-start sources. Separate-process3/0+4/0 retains2-object/1-resource shutdown diagnostics; final longer native runs clean. Eight-source normalized checkpoint exact both directions; no shared index staging, live backend/device/export/deployment or owner-save/process action. [Changes, commands, captures and limits](docs/DAILY_PAGE_LOADING_2026_11_14.md).
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-CAR-STATS-20261114 -->
++## Garage car selection shows performance and a short description (2026-11-14)
++GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](docs/GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
++<!-- /GARAGE-CAR-STATS-20261114 -->
++
+ <!-- DAILY-PAGE-LOADING-20261114 -->
+ ## Track of the Day reopens from a short-lived saved page (2026-11-14)
+ DPL01-DPL03: Scoped five-minute snapshots restore track/standings before network; activation coalesces active reads and reuses fresh RAM responses. Existing race revalidation remains. Local Compatibility saved-page sample410.447to27.986ms; Mobile42.731ms, no first-ever/device speed claim. Focused31/0 headless/33/0 each desktop renderer, retained14/0+5/0+20/0, actual Daily7/0 and production571/0 pass. Original control rejects; broader medal115/2 reproduces unchanged, and short process-restart assertions pass with retained shutdown diagnostics. [Sources, checkpoint, views, commands and remaining acceptance](docs/DAILY_PAGE_LOADING_2026_11_14.md). No device test, live backend request, export/deployment, owner-save/process action or main-index staging.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-CAR-STATS-20261114 -->
++## Garage car selection shows performance and a short description (2026-11-14)
++GCS01-GCS04: left-hand navy/yellow information panel follows immediate, pending and cancelled choices; top speed, offline measured 0-60 km/h, weight and short descriptions match all six cars. Compact layout retains performance/description and passes drag input. Actual App 567/0 headless and 579/0 Compatibility, selection20/0, production573/0 and targeted translations84/0 pass. Desktop Mobile entry/control stalls and standalone bake shutdown diagnostics remain documented; no Mobile/phone or latency claim. [Changes, native views, commands and limits](GARAGE_CAR_STATS_2026_11_14.md). No handling/model authoring, device/export/backend operation, owner-save/process change or main-index staging.
++<!-- /GARAGE-CAR-STATS-20261114 -->
++
+ <!-- DAILY-PAGE-LOADING-20261114 -->
+ ## Track of the Day loading improved (2026-11-14)
+ DPL01-DPL03: Short-lived bounded saved presentation, coalesced activation and fresh race revalidation. Local saved-page410.447to27.986ms Compatibility sample; first-use scripts and uncached server preparation remain. New31/0 headless/33/0 each desktop renderer, actual Daily7/0 and parser571/0 pass; original control rejects. Broader medal failures reproduce on originals; short restart retains teardown diagnostics. [Implementation, actual checks, captures, source checkpoint and limits](DAILY_PAGE_LOADING_2026_11_14.md). Owner/device acceptance remains; no device/export/backend/deployment/owner-save/process/main-index action.

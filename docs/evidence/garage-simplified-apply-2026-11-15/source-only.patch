@@ -1,0 +1,585 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,6 +3,11 @@
+ RFL01-RFL04: six satin slats, quieter dark lattice, smooth bowed surround and opaque prismatic round optics replace dense repeated hardware and the faceted central bulb/shade stack. Racing front2638to1846(-30.02%), full front4726to2086(-55.86%); whole Rally16653to15861(-4.76%), fitted24450to23658/full102556to99916. Two exact non-front frame migrations retain prior savings, fit and handling. Stock buffers-7.08%/two fewer surfaces; front studio20695to19903 primitives,64to62 Compatibility/58to56 Mobile draws. Existing176px icon+46primitives(+0.24%) retained as a local tradeoff; no FPS/device claim. Source6/0, prepared30/0 with ten other stock/full masters exact, retained grille270/0, Rally modules1441/0 and shared Challenger consumer1436/0, corrected daylight24pairs101/0/night8pairs37/0, App8/0/icons496/0 each desktop renderer, driving72/0/parser577/0 and full551-resource2267/0 pass. Two Garage/one header pictures,3 imports,6-photo174-source catalogue and18698-input fence pass; seven unrelated keys exact. Root-scale fixture error and initial legacy/parser/night findings retained; exact GPU, root-transform and glazing controls qualify final comparisons without relaxed assertions. Challenger geometry sources unmodified; conservative shared dependency requires cache-only refresh. Source-only checkpoint and standard retention recorded; concurrent Garage/index preserved. Reload/owner appearance remains; no device/export/backend/deployment/owner-save/process or main-index action. [Changes, comparisons, commands and limits](docs/RALLY_FRONT_REFINEMENT_2026_11_15.md).
+ <!-- /RALLY-FRONT-20261115 -->
+ 
++<!-- GARAGE-SIMPLIFIED-APPLIED-20261115 -->
++## Simplified Garage applied after owner review (2026-11-15)
++GSA01-GSA03: Owner applies the review candidate with intact lettering/drawer-front batches. Offline existing-LOD index selection and exact encoded-vertex compaction reduce workshop29245to16826; platform1816 unchanged; default environment31075to18656(-39.96%, -86.09% original). Scene445071to281179bytes; mesh payload1520084to931060; extra125318-byte source-fallback plan is separately packaged. Prepared entry adds no recipe read/simplifier. Source/budget82/0, integrity494/0, cleanup20/0, transactions25/0, Python12pass, parser577/0 and complete551-resource2267/0 pass. Native pairs202/0, first capture90/0, reflections26/0, tools16/0, App45/0 and playlist63/0 each desktop renderer pass. Earlier tight image gate retains35/84pass and49/84fail each as visible coarse-detail tradeoffs; no assertion weakened, no dependable load-time/FPS/device gain claim. Workshop29-source, catalogue6/174-source, six portraits25418-input and12 native imports qualify;556 car outputs and all modular car keys exact. Final1301-input fence stable; passing final App45/0 each follows retained concurrent Rally-photo/identity rejection and actual portrait/import refresh. Initial helper/fixture failures retained. Fifteen-file normalized checkpoint exact both directions; standard retention33.07GiB remains recent/protected, no task pin. [Changes, native views, commands, checkpoint and limits](docs/GARAGE_SIMPLIFIED_APPLIED_2026_11_15.md). Reload/owner appearance and physical-device acceptance remain; no vehicle/handling authoring, owner-save/process action, device/export/backend/deployment or main-index action.
++<!-- /GARAGE-SIMPLIFIED-APPLIED-20261115 -->
++
+ <!-- CHALLENGER-REFERENCE-FORM-20261115 -->
+ ## Challenger front and bonnet follow the supplied reference (2026-11-15)
+ CRF01-CRF04: Progressive broader nose, rounded white aperture rim and coplanar four-projector carrier, regular downturned bonnet and shared upper-wing chart replace the rejected pinched front, bonnet folds and cowl dent. Factory alloys are larger/darker; tyre radius, wheel centres, roof/rear source positions, scale and handling remain. Covered inward nose returns are removed after an outward-skin proof; native packing differs <=0.068mm. Native30/0 rejects baseline30/12; shoulder support/tangents/outward checks pass, while eight superseded exact-bonnet/bounds/packing/silhouette controls remain rejected. Raw49462/82452tri fits50k/85k; production44702 fixed/editable. Allocation17/0, contours172/0, fitted316/0, modules1436/0, physics3677/0, wash1655/0, driving72/0, parser576/0, opacity30/0 and actual App13/0 each desktop renderer pass. Complete551-resource2267/0, scoped84-resource349/0, photo173-source,58 imports and workshop28-source pass. Mobile App retains2-object/1-resource teardown diagnostic; no AAA/pixel/FPS/device/whole-project acceptance claim. Native48/four legacy controls and four-source exact checkpoint retained; initial outline/symmetry/cache/version rejections documented. [Implementation, final views, commands and limits](docs/CHALLENGER_REFERENCE_FORM_2026_11_15.md). Restart/owner appearance remains; no owner-save/process, device/export/backend/deployment or main-index action. Standard retention recorded; no task pin.
+--- a/game/ui/garage_environment.gd
++++ b/game/ui/garage_environment.gd
+@@ -5,6 +5,7 @@
+ const DECK_RADIUS: float = 3.65
+ const ROOF_CUTAWAY_HEIGHT: float = 4.95
+ const MeshCleanup = preload("res://ui/garage_mesh_cleanup.gd")
++const MeshReduction = preload("res://ui/garage_mesh_reduction.gd")
+ static var surfaces: Dictionary = {}
+ static var architecture_scene: PackedScene
+ static var cabinet_meshes: Dictionary = {}
+@@ -136,6 +137,7 @@
+ 		preload("res://ui/garage_record_station.gd").build(shell)
+ 		_batch(roof)
+ 		_batch(shell)
++		MeshReduction.apply(shell)
+ 		_set_owner(shell, shell)
+ 		var prepared := PackedScene.new()
+ 		if prepared.pack(shell) == OK: architecture_scene = prepared
+@@ -267,6 +269,9 @@
+ 		merged.name = "PreparedGarageMesh"
+ 		merged.mesh = (groups[source] as SurfaceTool).commit()
+ 		merged.material_override = source
++		# Keep readable lettering and continuous coloured cabinet fronts.
++		if source == surfaces.get("brandlettergold") or source == surfaces.get("benchdrawers") or source == GarageFurnishings.paint():
++			merged.set_meta("garage_keep_detail", true)
+ 		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		root.add_child(merged)
+ 
+--- /dev/null
++++ b/game/ui/garage_mesh_reduction.gd
+@@ -0,0 +1,139 @@
++extends RefCounted
++## Offline-selected indices only. Normal Garage entry loads the prepared scene;
++## source construction applies this bounded plan without running a simplifier.
++const PATH: String="res://assets/garage/workshop_v1.reduction.json"
++const SCHEMA: String="garage-mesh-reduction-1"
++const Cleanup=preload("res://ui/garage_mesh_cleanup.gd")
++static var enabled: bool=true
++static var _recipes: Dictionary={}
++
++static func signature(mesh: ArrayMesh) -> String:
++	var streams: Array=[mesh.custom_aabb]
++	for surface: int in range(mesh.get_surface_count()):
++		streams.append([mesh.surface_get_primitive_type(surface),mesh.surface_get_arrays(surface)])
++	return var_to_bytes(streams).hex_encode().sha256_text()
++
++static func _indices(bytes: PackedByteArray,count: int) -> PackedInt32Array:
++	var stride: int=2 if count<=65536 else 4
++	var result:=PackedInt32Array()
++	for at: int in range(0,bytes.size(),stride): result.append(bytes.decode_u16(at) if stride==2 else bytes.decode_u32(at))
++	return result
++
++static func _encoded(indices: PackedInt32Array) -> String:
++	return Marshalls.raw_to_base64(indices.to_byte_array().compress(FileAccess.COMPRESSION_DEFLATE))
++
++static func _decoded(value: String) -> PackedInt32Array:
++	var bytes: PackedByteArray=Marshalls.base64_to_raw(value).decompress_dynamic(16*1024*1024,FileAccess.COMPRESSION_DEFLATE)
++	var result:=PackedInt32Array()
++	if bytes.size()%4!=0: return result
++	for at: int in range(0,bytes.size(),4): result.append(bytes.decode_u32(at))
++	return result
++
++static func _encode_remapped(indices: PackedInt32Array,remap: PackedInt32Array,count: int) -> PackedByteArray:
++	var stride: int=2 if count<=65536 else 4
++	var result:=PackedByteArray();result.resize(indices.size()*stride)
++	for at: int in range(indices.size()):
++		if stride==2: result.encode_u16(at*stride,remap[indices[at]])
++		else: result.encode_u32(at*stride,remap[indices[at]])
++	return result
++
++static func plan(mesh: ArrayMesh,keep: bool=false) -> Dictionary:
++	var entry: Dictionary={"keep":keep,"surfaces":[]}
++	if keep or mesh.get_blend_shape_count()>0:
++		entry.keep=true;return entry
++	for packet: Dictionary in mesh.get("_surfaces"):
++		if int(packet.format)&(Mesh.ARRAY_FORMAT_BONES|Mesh.ARRAY_FORMAT_WEIGHTS) or int(packet.primitive)!=Mesh.PRIMITIVE_TRIANGLES or not packet.has("index_data") or packet.index_data.is_empty():
++			entry.keep=true;entry.surfaces=[];return entry
++		var count: int=packet.vertex_count
++		var master: PackedInt32Array=_indices(packet.index_data,count)
++		var original_count: int=master.size()
++		var levels: Array=packet.get("lods",[])
++		var selected_size: float=0
++		var best: float=0.5
++		for at: int in range(0,levels.size(),2):
++			var candidate: PackedInt32Array=_indices(levels[at+1],count)
++			var error: float=absf(float(candidate.size())/original_count-0.5)
++			if not candidate.is_empty() and error<best:
++				master=candidate;selected_size=float(levels[at]);best=error
++		var retained: Array=[]
++		for at: int in range(0,levels.size(),2):
++			if float(levels[at])>selected_size:
++				retained.append([float(levels[at]),_encoded(_indices(levels[at+1],count))])
++		entry.surfaces.append({"vertices":count,"master":_encoded(master),"lods":retained})
++	return entry
++
++static func generate(holder: Node) -> Dictionary:
++	var result: Dictionary={"schema":SCHEMA,"engine":Engine.get_version_info().string,"target_fraction":0.5,"meshes":{}}
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		if not part.mesh is ArrayMesh: continue
++		var key: String=signature(part.mesh)
++		var keep: bool=part.get_meta("garage_keep_detail",false)
++		if not result.meshes.has(key) or keep: result.meshes[key]=plan(part.mesh,keep)
++	return result
++
++static func _mesh(source: ArrayMesh,entry: Dictionary) -> ArrayMesh:
++	if not entry.get("surfaces") is Array or entry.surfaces.size()!=source.get_surface_count(): return null
++	var packets: Array=source.get("_surfaces").duplicate(true)
++	for surface: int in range(packets.size()):
++		var packet: Dictionary=packets[surface]
++		if not entry.surfaces[surface] is Dictionary: return null
++		var spec: Dictionary=entry.surfaces[surface]
++		var count: int=packet.vertex_count
++		if count!=int(spec.get("vertices",0)) or not spec.get("master") is String or not spec.get("lods") is Array: return null
++		var master: PackedInt32Array=_decoded(spec.master)
++		if master.is_empty() or master.size()%3!=0: return null
++		var union: PackedInt32Array=master.duplicate()
++		var levels: Array=[]
++		for value: Variant in spec.lods:
++			if not value is Array or value.size()!=2 or not value[1] is String: return null
++			var level: Array=value
++			var indices: PackedInt32Array=_decoded(level[1])
++			if indices.is_empty() or indices.size()%3!=0: return null
++			levels.append([float(level[0]),indices]);union.append_array(indices)
++		var used:=PackedByteArray();used.resize(count)
++		for index: int in union:
++			if index<0 or index>=count: return null
++			used[index]=1
++		var remap:=PackedInt32Array();remap.resize(count)
++		var next: int=0
++		for at: int in range(count):
++			if used[at]: remap[at]=next;next+=1
++		Cleanup.compact(packet,union)
++		packet.index_count=master.size();packet.index_data=_encode_remapped(master,remap,next)
++		packet.lods=[]
++		for level: Array in levels:
++			packet.lods.append(level[0]);packet.lods.append(_encode_remapped(level[1],remap,next))
++	var result:=ArrayMesh.new();result.set("_surfaces",packets)
++	result.custom_aabb=source.custom_aabb;result.shadow_mesh=source.shadow_mesh
++	result.lightmap_size_hint=source.lightmap_size_hint
++	result.resource_name=source.resource_name;result.resource_local_to_scene=source.resource_local_to_scene
++	result.resource_scene_unique_id=source.resource_scene_unique_id
++	for key: StringName in source.get_meta_list(): result.set_meta(key,source.get_meta(key))
++	return result
++
++static func apply(holder: Node,data: Dictionary={}) -> Dictionary:
++	var stats: Dictionary={"matched":0,"kept":0,"missing":0,"invalid":0}
++	if not enabled: return stats
++	if data.is_empty():
++		if _recipes.is_empty() and FileAccess.file_exists(PATH):
++			var parsed: Variant=JSON.parse_string(FileAccess.get_file_as_string(PATH))
++			if parsed is Dictionary: _recipes=parsed
++		data=_recipes
++	if data.get("schema","")!=SCHEMA or data.get("engine","")!=Engine.get_version_info().string or not data.get("meshes") is Dictionary:
++		stats.invalid=1;return stats
++	var keys: Dictionary={}
++	var meshes: Dictionary={}
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		if not part.mesh is ArrayMesh: continue
++		var source: ArrayMesh=part.mesh
++		if not keys.has(source): keys[source]=signature(source)
++		var key: String=keys[source]
++		if not data.meshes.has(key): stats.missing+=1;continue
++		if not data.meshes[key] is Dictionary: stats.invalid+=1;continue
++		var entry: Dictionary=data.meshes[key]
++		stats.matched+=1
++		if entry.get("keep",false): stats.kept+=1;continue
++		if not meshes.has(source): meshes[source]=_mesh(source,entry)
++		if meshes[source]==null: stats.invalid+=1;continue
++		part.mesh=meshes[source]
++	return stats
+--- /dev/null
++++ b/game/ui/garage_mesh_reduction.gd.uid
+@@ -0,0 +1 @@
++uid://b81hvxi0eqr0c
+--- a/game/tests/bake_garage_architecture.gd
++++ b/game/tests/bake_garage_architecture.gd
+@@ -10,6 +10,7 @@
+ 	"ui/garage_record_station.gd","ui/garage_furnishings.gd","ui/garage_materials.gd",
+ 	"ui/garage_workshop.gd","ui/garage_plant.gd",
+ 	"ui/garage_mesh_cleanup.gd","rendering/mesh_vertex_packing.gd",
++	"ui/garage_mesh_reduction.gd",
+ 	"ui/garage_plant_leaf.gdshader","ui/garage_plant_ceramic.gdshader",
+ 	"ui/garage_pegboard.gdshader",
+ 	"ui/garage_timber.gdshader","ui/garage_audio_wood.gdshader","ui/garage_vinyl.gdshader",
+@@ -31,7 +32,8 @@
+ 	var folder: String = "res://assets/garage"
+ 	for arg: String in OS.get_cmdline_user_args():
+ 		if arg.begins_with("--output="): folder = arg.trim_prefix("--output=")
+-	var error: Error = transaction.begin(folder, ["workshop_v1.scn", "workshop_v1.provenance.json"])
++	var outputs: Array[String] = ["workshop_v1.scn", "workshop_v1.reduction.json", "workshop_v1.provenance.json"]
++	var error: Error = transaction.begin(folder, outputs)
+ 	if error != OK:
+ 		push_error("Workshop bake is locked or cannot create candidates")
+ 		quit(1); return
+@@ -41,14 +43,35 @@
+ 	var car := preload("res://tests/support/garage_architecture_car.gd").new()
+ 	world.add_child(car)
+ 	GarageEnvironment.architecture_scene=null
++	GarageEnvironment.MeshReduction.enabled=false
+ 	GarageEnvironment.build(world,car,false,false)
++	GarageEnvironment.MeshReduction.enabled=true
+ 	var path: String=transaction.candidate("workshop_v1.scn")
+ 	error=ResourceSaver.save(GarageEnvironment.architecture_scene,path,ResourceSaver.FLAG_COMPRESS)
+ 	if error == OK: error = preload("res://tests/support/garage_mesh_lods.gd").new().bake(path)
++	if error == OK:
++		var holder: Node=ResourceLoader.load(path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP).instantiate()
++		var recipe: Dictionary=GarageEnvironment.MeshReduction.generate(holder)
++		recipe.sources=hashes
++		var stats: Dictionary=GarageEnvironment.MeshReduction.apply(holder,recipe)
++		print("GARAGE_REDUCTION ",stats)
++		if stats.matched==0 or stats.missing!=0 or stats.invalid!=0: error=ERR_INVALID_DATA
++		var reduced:=PackedScene.new()
++		if error==OK: error=reduced.pack(holder)
++		if error==OK: error=ResourceSaver.save(reduced,path,ResourceSaver.FLAG_COMPRESS)
++		holder.free()
++		if error==OK:
++			var plan_file:=FileAccess.open(transaction.candidate("workshop_v1.reduction.json"),FileAccess.WRITE)
++			if plan_file==null: error=FileAccess.get_open_error()
++			else:
++				plan_file.store_string(JSON.stringify(recipe)+"\n");plan_file.flush()
++				error=plan_file.get_error();plan_file.close()
+ 	if error==OK:
+ 		var provenance: Dictionary={"origin":"Original authored GarageEnvironment architecture; no generated art or external models.",
+ 			"generator":"res://tests/bake_garage_architecture.gd","engine":Engine.get_version_info().string,
+ 			"sources":hashes,"scene_sha256":FileAccess.get_sha256(path),
++			"reduction":{"path":"assets/garage/workshop_v1.reduction.json","schema":GarageEnvironment.MeshReduction.SCHEMA,
++				"sha256":FileAccess.get_sha256(transaction.candidate("workshop_v1.reduction.json"))},
+ 			"validation":"test_menu_responsiveness.gd compares every node transform, mesh array and finish with a fresh procedural build."}
+ 		var file:=FileAccess.open(transaction.candidate("workshop_v1.provenance.json"),FileAccess.WRITE)
+ 		if file==null: error=FileAccess.get_open_error()
+@@ -59,7 +82,7 @@
+ 			file.close()
+ 	if error == OK and bake_errors.failed(): error = ERR_INVALID_DATA
+ 	if error == OK and hashes != _sources(): error = ERR_BUSY
+-	if error == OK: error = transaction.publish(["workshop_v1.scn", "workshop_v1.provenance.json"])
++	if error == OK: error = transaction.publish(outputs)
+ 	transaction.close()
+ 	print("GARAGE_ARCHITECTURE_BAKE ",error)
+ 	world.free()
+--- a/game/tests/test_garage_environment_budget.gd
++++ b/game/tests/test_garage_environment_budget.gd
+@@ -85,6 +85,8 @@
+ 	for arg: String in OS.get_cmdline_user_args():
+ 		if arg.begins_with("--candidate-room="): path=arg.trim_prefix("--candidate-room=")
+ 		if arg.begins_with("--reference-room="): reference_path=arg.trim_prefix("--reference-room=")
++		if arg.begins_with("--candidate-recipe="):
++			GarageEnvironment.MeshReduction._recipes=JSON.parse_string(FileAccess.get_file_as_string(arg.trim_prefix("--candidate-recipe=")))
+ 	var prepared: PackedScene=load(path)
+ 	var candidate: Node=prepared.instantiate()
+ 	if not reference_path.is_empty():
+@@ -104,8 +106,8 @@
+ 	var room_triangles: int=triangles(candidate)
+ 	var pedestal: Node=GarageEnvironment.pedestal_scene.instantiate()
+ 	var pedestal_triangles: int=triangles(pedestal)
+-	check(room_triangles<=29270,"workshop meets the further reduction budget")
+-	check(room_triangles+pedestal_triangles+14<=31100,"environment is at least 25 percent below the prior 41467")
++	check(room_triangles<=18170,"workshop meets the simplified budget")
++	check(room_triangles+pedestal_triangles+14<=20000,"environment is at least 35 percent below the prior 31075")
+ 	for name: String in ["GarageWorkbench","GarageToolStorage","GarageTyreRack","GarageDisplayPlant","GarageCompressor","GarageTrophyWall","GarageRecordStation","GarageDrain"]:
+ 		check(candidate.find_child(name,true,false)!=null,"authored object retained "+name)
+ 	for index: int in range(6): check(candidate.find_child("AwardSlot_"+str(index),true,false)!=null,"earned-award attachment retained "+str(index))
+--- /dev/null
++++ b/game/tests/test_garage_mesh_reduction.gd
+@@ -0,0 +1,79 @@
++extends SceneTree
++const Reducer=preload("res://ui/garage_mesh_reduction.gd")
++var checks: int=0
++var failures: int=0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks+=1
++	if not ok: failures+=1;printerr("GARAGE_REDUCTION_FAIL ",label)
++
++func records(packet: Dictionary) -> Array:
++	var result: Array=[]
++	var count: int=packet.vertex_count
++	var format: int=packet.format
++	var ps: int=RenderingServer.mesh_surface_get_format_vertex_stride(format,count)
++	var ns: int=RenderingServer.mesh_surface_get_format_normal_tangent_stride(format,count)
++	var ats: int=RenderingServer.mesh_surface_get_format_attribute_stride(format,count)
++	var raw: PackedByteArray=packet.vertex_data
++	var attributes: PackedByteArray=packet.get("attribute_data",PackedByteArray())
++	for index: int in range(count):
++		result.append([raw.slice(index*ps,(index+1)*ps),raw.slice(count*ps+index*ns,count*ps+(index+1)*ns),attributes.slice(index*ats,(index+1)*ats)])
++	return result
++
++func run() -> void:
++	var path: String=Reducer.PATH
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--candidate-recipe="): path=arg.trim_prefix("--candidate-recipe=")
++	var data: Dictionary=JSON.parse_string(FileAccess.get_file_as_string(path))
++	var world:=Node3D.new();root.add_child(world)
++	var car: CarVisual=preload("res://tests/support/garage_architecture_car.gd").new();world.add_child(car)
++	Reducer.enabled=false;GarageEnvironment.architecture_scene=null
++	GarageEnvironment.build(world,car,false,false)
++	Reducer.enabled=true
++	var holder: Node=GarageEnvironment.architecture_scene.instantiate()
++	var controls: Dictionary={}
++	var originals: Dictionary={}
++	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
++		controls[part]=[part.mesh,part.transform,part.material_override,part.layers,part.cast_shadow]
++		if part.mesh is ArrayMesh: originals[part.mesh]=var_to_bytes(part.mesh.get("_surfaces"))
++	var stats: Dictionary=Reducer.apply(holder,data)
++	check(stats.matched==92 and stats.kept==3 and stats.invalid==0 and stats.missing==0,"complete recipe and protected batches")
++	var reduced: int=0
++	for part: MeshInstance3D in controls:
++		var control: Array=controls[part]
++		var source: Mesh=control[0]
++		check([part.transform,part.material_override,part.layers,part.cast_shadow]==control.slice(1),"instance placement and finish retained")
++		if not source is ArrayMesh:
++			check(part.mesh==source,"primitive unchanged");continue
++		check(var_to_bytes(source.get("_surfaces"))==originals[source],"source buffers untouched")
++		if part.get_meta("garage_keep_detail",false): check(part.mesh==source,"protected lettering and fronts exact")
++		if part.mesh==source: continue
++		reduced+=1
++		check(part.mesh.get_aabb()==source.get_aabb() and part.mesh.custom_aabb==source.custom_aabb,"culling bounds retained")
++		for surface: int in range(source.get_surface_count()):
++			var packet: Dictionary=part.mesh.get("_surfaces")[surface]
++			var prior: Array=records(source.get("_surfaces")[surface])
++			var subset: bool=true
++			for row: Array in records(packet): subset=subset and row in prior
++			check(subset,"every encoded position/normal/tangent/UV/colour record is original")
++			var valid: bool=true
++			var levels: Array=[0.0,packet.index_data];levels.append_array(packet.get("lods",[]))
++			for at: int in range(1,levels.size(),2):
++				var indices: PackedInt32Array=Reducer._indices(levels[at],packet.vertex_count)
++				valid=valid and not indices.is_empty() and indices.size()%3==0
++				for index: int in indices: valid=valid and index>=0 and index<packet.vertex_count
++			check(valid,"master and every retained distance level have valid remapped indices")
++	check(reduced==89,"all eligible mesh instances use the recipe")
++	var sample: ArrayMesh=originals.keys()[0]
++	check(Reducer._mesh(sample,{"surfaces":[]})==null,"wrong surface count rejected")
++	var key: String=Reducer.signature(sample)
++	var bad: Dictionary=data.duplicate(true);bad.meshes.erase(key)
++	check(Reducer.apply(holder,{"schema":"obsolete"}).invalid==1,"obsolete recipe rejected")
++	var fixture:=Node3D.new();var instance:=MeshInstance3D.new();instance.mesh=sample;fixture.add_child(instance)
++	check(Reducer.apply(fixture,bad).missing==1 and instance.mesh==sample,"unknown mesh retains original geometry")
++	bad=data.duplicate(true);bad.meshes[key]={"surfaces":[]}
++	check(Reducer.apply(fixture,bad).invalid==1 and instance.mesh==sample,"invalid recipe retains original geometry")
++	fixture.free();holder.free();world.free()
++	print("GARAGE_MESH_REDUCTION ",checks," checks, ",failures," failures")
++	await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_mesh_reduction.gd.uid
+@@ -0,0 +1 @@
++uid://b2vtvxura4g7s
+--- a/game/export_presets.cfg
++++ b/game/export_presets.cfg
+@@ -6,7 +6,7 @@
+ dedicated_server=false
+ custom_features=""
+ export_filter="all_resources"
+-include_filter="assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
++include_filter="assets/garage/workshop_v1.reduction.json,assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
+ ; Superseded authoring revisions; see scripts/obsolete_export_assets.json.
+ exclude_filter="tests/*,music/*,assets/audio/score_v1/*,backend/runner.gd,backend/generate_fixture.gd,backend/generate_test_driver.gd,backend/test_client.gd,platform/windows/*,platform/track_geometry/*.dll,assets/audio/ambience/desert_dune_sand.wav,assets/audio/ambience/desert_wind.wav,assets/audio/ambience/desert_wind_b.wav,assets/audio/ambience/desert_wind_c.wav,assets/audio/ambience/night_cicadas.wav,assets/audio/ambience/storm_rain_recorded.wav,assets/audio/ambience/winter_gale_a.wav,assets/audio/ambience/winter_gale_b.wav,assets/audio/menu_exploration_v1/exploration_menu_loop.wav,assets/audio/storm_rumble.wav,assets/audio/vehicles/road.wav,assets/audio/vehicles/wind.wav,assets/audio/vehicles/water.wav,assets/audio/vehicles/sand_roll.wav,assets/audio/vehicles/sand.wav,assets/audio/vehicles/sand_debris.wav,assets/audio/vehicles/kerb_roll.wav,assets/audio/vehicles/loose.wav,assets/audio/vehicles/grass.wav,assets/audio/locked_in_v1/desert_groove.ogg,assets/audio/locked_in_v1/desert_hook.ogg,assets/audio/locked_in_v1/desert_lock.ogg,assets/audio/locked_in_v1/desert_pulse.ogg,assets/audio/locked_in_v1/desert_soar.ogg,assets/audio/locked_in_v1/desert_wide.ogg,assets/audio/locked_in_v1/night_city_groove.ogg,assets/audio/locked_in_v1/night_city_hook.ogg,assets/audio/locked_in_v1/night_city_lock.ogg,assets/audio/locked_in_v1/night_city_pulse.ogg,assets/audio/locked_in_v1/night_city_soar.ogg,assets/audio/locked_in_v1/night_city_wide.ogg,assets/audio/locked_in_v1/pine_groove.ogg,assets/audio/locked_in_v1/pine_hook.ogg,assets/audio/locked_in_v1/pine_lock.ogg,assets/audio/locked_in_v1/pine_pulse.ogg,assets/audio/locked_in_v1/pine_soar.ogg,assets/audio/locked_in_v1/pine_wide.ogg,assets/audio/locked_in_v1/storm_groove.ogg,assets/audio/locked_in_v1/storm_hook.ogg,assets/audio/locked_in_v1/storm_lock.ogg,assets/audio/locked_in_v1/storm_pulse.ogg,assets/audio/locked_in_v1/storm_soar.ogg,assets/audio/locked_in_v1/storm_wide.ogg,assets/audio/locked_in_v1/winter_groove.ogg,assets/audio/locked_in_v1/winter_hook.ogg,assets/audio/locked_in_v1/winter_lock.ogg,assets/audio/locked_in_v1/winter_pulse.ogg,assets/audio/locked_in_v1/winter_soar.ogg,assets/audio/locked_in_v1/winter_wide.ogg,assets/audio/locked_in_v1/menu_theme.wav,assets/audio/storm_rain.wav,assets/audio/vehicles/wet_road.wav,assets/vehicles/compact_coachwork_v1/*,assets/vehicles/compact_coachwork_v2/*,assets/vehicles/electric_aligned_doors_v1/*,assets/vehicles/electric_coachwork_v10/*,assets/vehicles/electric_coachwork_v11/*,assets/vehicles/electric_coachwork_v12/*,assets/vehicles/electric_coachwork_v13/*,assets/vehicles/electric_coachwork_v14/*,assets/vehicles/electric_coachwork_v15/*,assets/vehicles/electric_coachwork_v16/*,assets/vehicles/electric_coachwork_v17/*,assets/vehicles/electric_coachwork_v20/*,assets/vehicles/electric_coachwork_v21/*,assets/vehicles/electric_coachwork_v22/*,assets/vehicles/electric_coachwork_v23/*,assets/vehicles/electric_curved_rear_glass_sides_v1/*,assets/vehicles/electric_curved_rear_window_v1/*,assets/vehicles/electric_extended_hatch_seam_v1/*,assets/vehicles/electric_painted_rear_quarters_v1/*,assets/vehicles/electric_rear_hatch_seam_v1/*,assets/vehicles/electric_rear_hatch_seam_v2/*,assets/vehicles/electric_reference_car_nose_v1/*,assets/vehicles/electric_reference_hood_v1/*,assets/vehicles/electric_reference_lower_cowl_v1/*,assets/vehicles/electric_reference_premium_v1/*,assets/vehicles/electric_reference_rounded_body_v1/*,assets/vehicles/electric_reference_rounded_doors_v1/*,assets/vehicles/electric_reference_slim_v1/*,assets/vehicles/electric_reference_smooth_nose_v1/*,assets/vehicles/electric_reference_sport_nose_v1/*,assets/vehicles/electric_reference_sports_v1/*,assets/vehicles/electric_reference_straight_sides_v1/*,assets/vehicles/electric_reference_tapered_hood_v1/*,assets/vehicles/electric_reference_v1/*,assets/vehicles/electric_reference_v2/*,assets/vehicles/electric_reference_v3/*,assets/vehicles/electric_roof_trunk_sills_v1/*,assets/vehicles/electric_smooth_hatch_seam_v1/*,assets/vehicles/electric_smooth_hatch_seam_v2/*,assets/vehicles/electric_sport_fastback_v1/*,assets/vehicles/electric_sport_fenders_v1/*,assets/vehicles/electric_subtle_fenders_v1/*,assets/vehicles/electric_visible_kits_v2/*,assets/vehicles/electric_wider_lower_doors_v1/*,assets/vehicles/electric_wider_sills_trunk_v1/*,assets/vehicles/hovercraft_sport_v3/*,assets/menu/challenges/entry-create-v1.png,assets/menu/challenges/entry-create-v2.png,assets/menu/challenges/entry-find-play-v1.png,assets/menu/challenges/entry-find-play-v2.png,assets/menu/challenges/group-race-v1.png,assets/menu/challenges/group-race-v2.png,assets/menu/challenges/one-to-one-v1.png,assets/menu/challenges/one-to-one-v2.png,assets/menu/challenges/three-by-three-v1.png,assets/menu/challenges/three-by-three-v2.png,assets/menu/challenges/three-by-three-v3.png,assets/menu/challenges/three-by-three-v4.png,assets/menu/challenges/three-by-three-v5.png,assets/menu/challenges/three-by-three-v6.png,assets/menu/challenges/three-by-three-v7.png,assets/menu/challenges/three-by-three-v8.png"
+ export_path="../build/android/circuit01-debug.apk"
+@@ -47,7 +47,7 @@
+ dedicated_server=false
+ custom_features=""
+ export_filter="all_resources"
+-include_filter="assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
++include_filter="assets/garage/workshop_v1.reduction.json,assets/garage/selection_portraits_v1/*.png,assets/garage/selection_portraits_v1/provenance.json,rendering/biome_shader_profiles.json,vehicle/prepared_asset_dependencies.json,assets/fonts/multilingual/notosansjp/OFL.txt,assets/fonts/multilingual/notosanskr/OFL.txt,assets/fonts/multilingual/googlesans/OFL.txt,localization/languages.json,localization/country_names.json,assets/countries/UNICODE-LICENSE.txt,assets/audio/vehicles/NOTICE.txt,assets/audio/vehicles/manifest.json,assets/audio/locked_in_v1/NOTICE.txt,assets/audio/locked_in_v1/manifest.json,assets/audio/locked_in_v1/CC0-LICENSE.txt,assets/countries/countries.json,assets/countries/LICENSE-flag-icons.txt,assets/audio/compressed/manifest.json,assets/audio/compressed/NOTICE.txt,assets/audio/ambience/NOTICE.txt,assets/audio/ambience/source_licenses.json,assets/fonts/libre_baskerville/OFL.txt,persistence/achievement_catalog.json,platform/track_geometry/NOTICE.txt,resources/cloud_tracks/*.json,legal/*.txt,assets/fonts/OFL.txt,vehicle/GODOT-DUST-SHADER-LICENSE.txt,platform/windows/*LICENSE*.txt,platform/windows/GCC-COPYING3.txt,platform/windows/GCC-RUNTIME-EXCEPTION.txt,assets/vehicles/electric_hoods_v5/manifest.json,assets/vehicles/car_detail_v1/*.json"
+ ; Superseded authoring revisions; see scripts/obsolete_export_assets.json.
+ exclude_filter="tests/*,music/*,assets/audio/score_v1/*,backend/runner.gd,backend/generate_fixture.gd,backend/generate_test_driver.gd,backend/test_client.gd,platform/windows/*,platform/track_geometry/*.dll,assets/audio/ambience/desert_dune_sand.wav,assets/audio/ambience/desert_wind.wav,assets/audio/ambience/desert_wind_b.wav,assets/audio/ambience/desert_wind_c.wav,assets/audio/ambience/night_cicadas.wav,assets/audio/ambience/storm_rain_recorded.wav,assets/audio/ambience/winter_gale_a.wav,assets/audio/ambience/winter_gale_b.wav,assets/audio/menu_exploration_v1/exploration_menu_loop.wav,assets/audio/storm_rumble.wav,assets/audio/vehicles/road.wav,assets/audio/vehicles/wind.wav,assets/audio/vehicles/water.wav,assets/audio/vehicles/sand_roll.wav,assets/audio/vehicles/sand.wav,assets/audio/vehicles/sand_debris.wav,assets/audio/vehicles/kerb_roll.wav,assets/audio/vehicles/loose.wav,assets/audio/vehicles/grass.wav,assets/audio/locked_in_v1/desert_groove.ogg,assets/audio/locked_in_v1/desert_hook.ogg,assets/audio/locked_in_v1/desert_lock.ogg,assets/audio/locked_in_v1/desert_pulse.ogg,assets/audio/locked_in_v1/desert_soar.ogg,assets/audio/locked_in_v1/desert_wide.ogg,assets/audio/locked_in_v1/night_city_groove.ogg,assets/audio/locked_in_v1/night_city_hook.ogg,assets/audio/locked_in_v1/night_city_lock.ogg,assets/audio/locked_in_v1/night_city_pulse.ogg,assets/audio/locked_in_v1/night_city_soar.ogg,assets/audio/locked_in_v1/night_city_wide.ogg,assets/audio/locked_in_v1/pine_groove.ogg,assets/audio/locked_in_v1/pine_hook.ogg,assets/audio/locked_in_v1/pine_lock.ogg,assets/audio/locked_in_v1/pine_pulse.ogg,assets/audio/locked_in_v1/pine_soar.ogg,assets/audio/locked_in_v1/pine_wide.ogg,assets/audio/locked_in_v1/storm_groove.ogg,assets/audio/locked_in_v1/storm_hook.ogg,assets/audio/locked_in_v1/storm_lock.ogg,assets/audio/locked_in_v1/storm_pulse.ogg,assets/audio/locked_in_v1/storm_soar.ogg,assets/audio/locked_in_v1/storm_wide.ogg,assets/audio/locked_in_v1/winter_groove.ogg,assets/audio/locked_in_v1/winter_hook.ogg,assets/audio/locked_in_v1/winter_lock.ogg,assets/audio/locked_in_v1/winter_pulse.ogg,assets/audio/locked_in_v1/winter_soar.ogg,assets/audio/locked_in_v1/winter_wide.ogg,assets/audio/locked_in_v1/menu_theme.wav,assets/audio/storm_rain.wav,assets/audio/vehicles/wet_road.wav,assets/vehicles/compact_coachwork_v1/*,assets/vehicles/compact_coachwork_v2/*,assets/vehicles/electric_aligned_doors_v1/*,assets/vehicles/electric_coachwork_v10/*,assets/vehicles/electric_coachwork_v11/*,assets/vehicles/electric_coachwork_v12/*,assets/vehicles/electric_coachwork_v13/*,assets/vehicles/electric_coachwork_v14/*,assets/vehicles/electric_coachwork_v15/*,assets/vehicles/electric_coachwork_v16/*,assets/vehicles/electric_coachwork_v17/*,assets/vehicles/electric_coachwork_v20/*,assets/vehicles/electric_coachwork_v21/*,assets/vehicles/electric_coachwork_v22/*,assets/vehicles/electric_coachwork_v23/*,assets/vehicles/electric_curved_rear_glass_sides_v1/*,assets/vehicles/electric_curved_rear_window_v1/*,assets/vehicles/electric_extended_hatch_seam_v1/*,assets/vehicles/electric_painted_rear_quarters_v1/*,assets/vehicles/electric_rear_hatch_seam_v1/*,assets/vehicles/electric_rear_hatch_seam_v2/*,assets/vehicles/electric_reference_car_nose_v1/*,assets/vehicles/electric_reference_hood_v1/*,assets/vehicles/electric_reference_lower_cowl_v1/*,assets/vehicles/electric_reference_premium_v1/*,assets/vehicles/electric_reference_rounded_body_v1/*,assets/vehicles/electric_reference_rounded_doors_v1/*,assets/vehicles/electric_reference_slim_v1/*,assets/vehicles/electric_reference_smooth_nose_v1/*,assets/vehicles/electric_reference_sport_nose_v1/*,assets/vehicles/electric_reference_sports_v1/*,assets/vehicles/electric_reference_straight_sides_v1/*,assets/vehicles/electric_reference_tapered_hood_v1/*,assets/vehicles/electric_reference_v1/*,assets/vehicles/electric_reference_v2/*,assets/vehicles/electric_reference_v3/*,assets/vehicles/electric_roof_trunk_sills_v1/*,assets/vehicles/electric_smooth_hatch_seam_v1/*,assets/vehicles/electric_smooth_hatch_seam_v2/*,assets/vehicles/electric_sport_fastback_v1/*,assets/vehicles/electric_sport_fenders_v1/*,assets/vehicles/electric_subtle_fenders_v1/*,assets/vehicles/electric_visible_kits_v2/*,assets/vehicles/electric_wider_lower_doors_v1/*,assets/vehicles/electric_wider_sills_trunk_v1/*,assets/vehicles/hovercraft_sport_v3/*,assets/menu/challenges/entry-create-v1.png,assets/menu/challenges/entry-create-v2.png,assets/menu/challenges/entry-find-play-v1.png,assets/menu/challenges/entry-find-play-v2.png,assets/menu/challenges/group-race-v1.png,assets/menu/challenges/group-race-v2.png,assets/menu/challenges/one-to-one-v1.png,assets/menu/challenges/one-to-one-v2.png,assets/menu/challenges/three-by-three-v1.png,assets/menu/challenges/three-by-three-v2.png,assets/menu/challenges/three-by-three-v3.png,assets/menu/challenges/three-by-three-v4.png,assets/menu/challenges/three-by-three-v5.png,assets/menu/challenges/three-by-three-v6.png,assets/menu/challenges/three-by-three-v7.png,assets/menu/challenges/three-by-three-v8.png"
+ export_path="../build/android/circuit01-arm64.apk"
+--- a/scripts/check_garage_workshop.py
++++ b/scripts/check_garage_workshop.py
+@@ -8,6 +8,8 @@
+ ROOT = Path(__file__).resolve().parents[1]
+ GENERATOR = "tests/bake_garage_architecture.gd"
+ SCENE = "assets/garage/workshop_v1.scn"
++RECIPE = "assets/garage/workshop_v1.reduction.json"
++SCHEMA = "garage-mesh-reduction-1"
+ 
+ 
+ def digest(path):
+@@ -37,7 +39,15 @@
+             raise ValueError(f"Stale workshop source: {source}; rebake architecture")
+     if digest(game / SCENE) != receipt.get("scene_sha256"):
+         raise ValueError("Changed workshop scene; rebake architecture")
+-    print(f"GARAGE_WORKSHOP: exact scene, {len(sources)} current source hashes")
++    reduction = receipt.get("reduction", {})
++    if (reduction.get("path") != RECIPE or reduction.get("schema") != SCHEMA
++            or reduction.get("sha256") != digest(game / RECIPE)):
++        raise ValueError("Changed or missing workshop reduction plan; rebake architecture")
++    plan = json.loads((game / RECIPE).read_text(encoding="utf-8"))
++    if (plan.get("schema") != SCHEMA or plan.get("engine") != receipt.get("engine")
++            or plan.get("sources") != sources or not plan.get("meshes")):
++        raise ValueError("Stale workshop reduction plan; rebake architecture")
++    print(f"GARAGE_WORKSHOP: exact scene and reduction plan, {len(sources)} current source hashes")
+ 
+ 
+ if __name__ == "__main__":
+--- a/scripts/test_garage_workshop.py
++++ b/scripts/test_garage_workshop.py
+@@ -21,9 +21,13 @@
+         self.write(checker.SCENE, "accepted scene")
+         self.receipt = {
+             "generator": "res://" + checker.GENERATOR,
++            "engine": "pinned-test-engine",
+             "sources": {p: checker.digest(self.game / p) for p in [checker.GENERATOR, "vehicle/car_mesh_lods.gd"]},
+             "scene_sha256": checker.digest(self.game / checker.SCENE),
+         }
++        self.plan = {"schema": checker.SCHEMA, "engine": self.receipt["engine"],
++                     "sources": self.receipt["sources"].copy(), "meshes": {"test": {"keep": True}}}
++        self.save_plan()
+         self.save_receipt()
+ 
+     def write(self, path, text):
+@@ -33,6 +37,39 @@
+ 
+     def save_receipt(self):
+         self.write("assets/garage/workshop_v1.provenance.json", json.dumps(self.receipt))
++
++    def save_plan(self):
++        self.write(checker.RECIPE, json.dumps(self.plan))
++        self.receipt["reduction"] = {"path": checker.RECIPE, "schema": checker.SCHEMA,
++                                     "sha256": checker.digest(self.game / checker.RECIPE)}
++
++    def test_changed_plan(self):
++        self.write(checker.RECIPE, "changed plan")
++        with self.assertRaisesRegex(ValueError, "Changed or missing workshop reduction"):
++            checker.check(self.root)
++
++    def test_plan_source_binding(self):
++        self.plan["sources"]["vehicle/car_mesh_lods.gd"] = "wrong"
++        self.save_plan(); self.save_receipt()
++        with self.assertRaisesRegex(ValueError, "Stale workshop reduction"):
++            checker.check(self.root)
++
++    def test_plan_engine_binding(self):
++        self.plan["engine"] = "other engine"
++        self.save_plan(); self.save_receipt()
++        with self.assertRaisesRegex(ValueError, "Stale workshop reduction"):
++            checker.check(self.root)
++
++    def test_missing_plan(self):
++        (self.game / checker.RECIPE).unlink()
++        with self.assertRaises(OSError):
++            checker.check(self.root)
++
++    def test_plan_fixed_path(self):
++        self.receipt["reduction"]["path"] = "../another.json"
++        self.save_receipt()
++        with self.assertRaisesRegex(ValueError, "Changed or missing workshop reduction"):
++            checker.check(self.root)
+ 
+     def test_accepted_is_read_only(self):
+         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+--- a/scripts/bake_garage_previews.gd
++++ b/scripts/bake_garage_previews.gd
+@@ -6,7 +6,7 @@
+ 
+ func _sources() -> Dictionary:
+ 	var sources: Dictionary = {}
+-	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","game/tests/support/asset_bake_errors.gd","scripts/bake_garage_previews.gd"]:
++	for path: String in ["game/ui/garage_mesh_cleanup.gd","game/ui/garage_mesh_reduction.gd","game/rendering/mesh_vertex_packing.gd","game/tests/support/asset_bake_transaction.gd","game/tests/support/asset_bake_errors.gd","scripts/bake_garage_previews.gd"]:
+ 		sources[path] = FileAccess.get_sha256("res://../"+path)
+ 	for directory: String in ["res://vehicle","res://ui"]:
+ 		for name: String in DirAccess.get_files_at(directory):
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -14,7 +14,7 @@
+         'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_thumbnail_studio.gd', 'game/ui/garage_car_cache.gd',
+         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
+         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
+-        'game/ui/garage_mesh_cleanup.gd', 'game/rendering/mesh_vertex_packing.gd',
++        'game/ui/garage_mesh_cleanup.gd', 'game/ui/garage_mesh_reduction.gd', 'game/rendering/mesh_vertex_packing.gd',
+         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
+         'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd',
+         'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
+--- /dev/null
++++ b/scripts/run_garage_simplified.py
+@@ -0,0 +1,8 @@
++"""Run isolated offline checks for the simplified Garage."""
++import run_garage_first_entry as runner
++
++runner.OUT = runner.ROOT / "build/garage-simplified-apply-2026-11-15"
++runner.DEFAULT_SCRIPT = "res://tests/test_garage_environment_budget.gd"
++
++if __name__ == "__main__":
++    raise SystemExit(runner.main())
+--- /dev/null
++++ b/docs/GARAGE_SIMPLIFIED_APPLIED_2026_11_15.md
+@@ -0,0 +1,84 @@
++# Simplified Garage applied — 15 November 2026
++
++The owner requested applying the smaller Garage after the review-only experiment. This change applies the same offline index-selection method, with complete material batches protected for the gold lettering and the red/blue drawer fronts. Vehicle geometry, handling, camera and menu layout are outside this change.
++
++## Requirements and result
++
++- **GSA01:** publish a reproducible reduced workshop for normal entry and source fallback.
++- **GSA02:** retain named objects, attachments, transforms, finishes, lighting, animation and interaction routing.
++- **GSA03:** qualify current prepared assets, native appearance and cache provenance without claiming a loading-speed or device improvement.
++
++| Geometry | Previous | Applied |
++|---|---:|---:|
++| Workshop | 29,245 | 16,826 |
++| Physical platform | 1,816 | 1,816 |
++| Floor and contact | 14 | 14 |
++| Default environment | 31,075 | **18,656** |
++
++This is **39.96% fewer environment triangles** in this step and 86.09% fewer than the original 134,089. The 17,985-triangle review candidate was more aggressive: keeping the lettering and cabinet-front batches costs 671 triangles. The current car is additional to the environment total.
++
++The compressed workshop scene falls from 445,071 to 281,179 bytes (36.82%). Unique ArrayMesh payload falls from 1,520,084 to 931,060 bytes (38.75%). There are still 109 mesh instances and 96 unique meshes; this does not establish fewer draw calls or better FPS. A separate 125,318-byte generated source-fallback plan is also packaged; the scene-file reduction is not the total package saving.
++
++## Implementation
++
++`game/ui/garage_mesh_reduction.gd` selects the existing offline-generated LOD nearest half of each eligible ArrayMesh's master index count. It compacts complete original encoded vertex records and remaps retained lower LODs. It does not fit new positions, resample attributes or alter primitives, skinning or blend shapes. Protected batches retain their original master and LODs.
++
++Normal Garage entry loads the reduced prepared scene directly. A fresh procedural build applies the preselected recipe only after batching. No mesh simplifier or recipe read is added to the normal prepared entry path. Unknown or invalid recipes retain the original geometry; source/prepared equality and the strengthened triangle budget expose missing recipes.
++
++The architecture producer disables recipe application while constructing its full source, generates ordinary native LODs, selects the recipe and publishes the scene, recipe and provenance through the existing transaction with the manifest last. Its receipt binds all 29 declared source hashes, the scene hash, recipe hash, schema and engine. The export gate checks those bindings. Both export presets include the generated JSON. The catalogue producer and preview identity include the new helper dependency.
++
++The environment budget is strengthened from 31,100 to 20,000 triangles; all previous checks remain. The new integrity regression checks exact original encoded position/normal/tangent/UV/colour records, source-buffer immutability, master/lower-LOD index ranges, culling bounds, protected batches, instance placement/finish and conservative invalid/missing-plan handling.
++
++## Verification and appearance
++
++Initial qualification on the published scene:
++
++| Check | Actual outcome |
++|---|---|
++| Source/prepared geometry, budget and prior named-object layout | 82 checks, 0 failures |
++| Recipe integrity and fallback guards | 494 checks, 0 failures |
++| Existing enclosed-face cleanup | 20 checks, 0 failures |
++| Existing transaction/error handling | 25 checks, 0 failures |
++| Python workshop receipt controls | 12 tests pass |
++| Production parser | 577 scripts, 0 failures |
++| Complete prepared car resources | 551 resources, 2,267 checks, 0 failures |
++| Six cars / three views / ten close prop views / two reflections | 202 checks per desktop renderer, 0 failures |
++| First receiving captures | 90 checks per desktop renderer, 0 failures |
++| Real reflection pixels and lifecycle | 26 checks per desktop renderer, 0 failures |
++| Opening tools | 16 checks per desktop renderer, 0 failures |
++| Actual App selection, rotation, saved appearance and reentry | 45 checks per desktop renderer, 0 failures |
++| Record-player playlist controls/layout | 63 checks per desktop renderer, 0 failures |
++| Published workshop receipt | Exact scene/plan and 29 current sources |
++| Refreshed native catalogue | Six images and 174 current sources |
++| Refreshed selection portraits | Six pictures; 25,418 inputs stable during native production |
++| Private native image import | 12 current PNGs verified and published |
++
++The paired captures compare identical native car instances and finishes. There are 84 image pairs per renderer. **35 pass and 49 fail the unchanged earlier tight appearance gate in each renderer.** This is a visible quality tradeoff, not pixel identity: plants, tyres, fittings, shelf objects and record-player details are coarser. The largest mean differences are in the close record-player views (4.709/255 Compatibility, 3.740/255 Mobile). No assertion was relaxed to hide this change. Lettering and coloured drawer-front batches are protected and their complete source mesh resources are retained by the integrity regression.
++
++![Applied live Garage](evidence/garage-simplified-apply-2026-11-15/app-gl/first-saved-live.png)
++
++![Applied close workshop view](evidence/garage-simplified-apply-2026-11-15/pairs-gl/after/workbench.png)
++
++Final actual App samples report first live page 2,451.807 ms Compatibility and 2,812.626 ms desktop Mobile. Earlier samples were 3,588.171/2,879.705 ms. These are unmatched diagnostic samples on current sources, not a before/after comparison. The earlier controlled review found no dependable loading gain attributable to mesh reduction. First-use rendering and asynchronous carousel previews remain. No FPS, phone latency or whole-project acceptance claim is made.
++
++## Commands and retained controls
++
++All engine commands use `scripts/run_garage_simplified.py`, which wraps the pinned 4.7.2 console engine with `run_no_crash_dialog.py`, isolated disposable storage, Dummy audio and offline backend configuration. Native runs use `gl_compatibility` and `mobile` sequentially.
++
++```powershell
++python scripts/run_garage_simplified.py publish-room --headless --script res://tests/bake_garage_architecture.gd --output=res://assets/garage
++python scripts/run_garage_simplified.py final-budget --headless --reference-room=res://../build/garage-simplified-apply-2026-11-15/before/workshop_v1.scn
++python scripts/run_garage_simplified.py recipe-final --headless --script res://tests/test_garage_mesh_reduction.gd
++python -m unittest discover -s scripts -p test_garage_workshop.py
++python scripts/check_garage_workshop.py
++```
++
++All 556 checked car-resource files and the complete modular car revision dictionary remain exact. No vehicle resource was rebaked for this task. The build identity was regenerated through the standard script; catalogue photographs and selection portraits were actually rendered again against their new dependency keys. Their manifests were not merely relabelled.
++
++The first final fence rejected a build-identity change during a passing Mobile App run. The concurrent Rally-front task refreshed the Rally catalogue PNG while its already-current geometry/cache keys remained unchanged; the portrait's shared lighting binding then correctly rejected. The current Rally photograph was preserved. The standard identity recomputation confirmed the current revision; six portraits were rendered again and current catalogue/portrait native imports were refreshed. An intervening MD5 check rejected the superseded image-import receipt before another live run. **The final 1,301-input fence is stable**, both final App runs pass 45/0, all 12 imported PNG hashes match and all three live asset validators pass. The rejected fence and receipts remain in the evidence. The existing selection-picture loader emits raw-PNG export warnings in these final App runs; no loader change or export qualification is claimed.
++
++The evidence directory retains launcher receipts and logs for exact arguments, source fences and outcomes, source-only checkpoint, two image-comparison tables and selected paired native screenshots. The initial helper used a String hash method on a PackedByteArray and failed parsing; it was corrected before baking. The first pedestal-only fixture omitted the material initialization performed by the full builder and failed; the corrected fixture builds the room first. Both initial failure logs are retained. Production publication succeeded under the source/output transaction; no error result was accepted.
++
++The 15-file task-only source checkpoint applies and reverses exactly after BOM/line-ending normalization in a private fixture; the shared index was not used. The concurrent Rally AGENTS entry is preserved and excluded from this task's delta. The first checkpoint byte check rejected the repository's automatic PowerShell CRLF conversion; normalized checks retain that finding without changing production files. Required retention ran with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean_build.ps1 -Apply`: 33.07 GiB remained, zero eligible entries removed; recent/protected/locked outputs prevent the 20 GiB target. No task pin was created.
++
++Reload the client to try the applied Garage. Owner appearance and physical-device performance acceptance remain. No physical-device query/test, export, backend request, deployment, owner-save/process action or main-index staging/commit was performed.

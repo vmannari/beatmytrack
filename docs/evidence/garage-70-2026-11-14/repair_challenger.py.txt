@@ -1,0 +1,63 @@
+"""Preserve the concurrent five-car refresh; repair its excluded Challenger."""
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import refresh as task
+
+ROOT,WORK,PROJECT=task.ROOT,task.WORK,task.PROJECT
+prior=task.prior
+
+def owned(path): return '/super_rally/' in path or path.endswith('/super_rally.scn') or '/modular_car_bases_v1/super_rally_' in path
+def rest_scene(path): return path.startswith('assets/garage/cars_v1/') or path=='assets/menu/header_car_templates_v1/compact.scn'
+
+def main():
+    if '--resume' not in sys.argv:
+        before=task.sources()
+        (WORK/'repair-inputs.json').write_text(json.dumps(before,indent=2))
+        accepted={p:h for p,h in task.outputs(ROOT/'game').items() if owned(p)}
+        (WORK/'repair-accepted.json').write_text(json.dumps(accepted,indent=2))
+        prior.prepare();prior.freeze_inputs(before)
+        assert before==task.sources(),'Source changed during the snapshot'
+        identity=prior.identity('repair-before')
+        task.run('repair-bases','res://tests/bake_modular_car_bases.gd','--headless','--vehicle=super_rally')
+        task.run('repair-kits','res://tests/bake_modular_car_kits.gd','--headless','--vehicle=super_rally')
+        task.run('repair-garage','res://tests/bake_garage_cars.gd','--headless','--vehicle=super_rally')
+    before=json.loads((WORK/'repair-inputs.json').read_text())
+    accepted=json.loads((WORK/'repair-accepted.json').read_text())
+    assert before==task.sources(),'Sources changed during Challenger repair'
+    # Validate the complete combined current set, retaining every other
+    # producer's output. Never copy any of our rejected five-car drafts live.
+    other={p:h for p,h in task.outputs(ROOT/'game').items() if not owned(p)}
+    for p in other: shutil.copy2(ROOT/'game'/p,PROJECT/p)
+    accepted.update({p:h for p,h in other.items() if rest_scene(p)})
+    task.run('repair-rest-scenes','res://tests/bake_garage_cars.gd','--headless')
+    task.run('repair-header','res://tests/bake_header_simple_compact.gd','--headless')
+    label='repair-combined-preflight-final' if '--resume' in sys.argv else 'repair-combined-preflight'
+    task.run(label,'res://tests/check_prepared_assets.gd','--headless')
+    current={p:h for p,h in task.outputs(ROOT/'game').items() if owned(p) or rest_scene(p)}
+    assert current==accepted,'Another producer changed Challenger output'
+    candidate={p:h for p,h in task.outputs(PROJECT).items() if owned(p) or rest_scene(p)}
+    assert before==task.sources()
+    changed=[p for p,h in candidate.items() if accepted.get(p)!=h]
+    written=[]
+    try:
+        for p in changed:
+            target=ROOT/'game'/p
+            assert prior.digest(target)==accepted[p]
+            saved=WORK/'repair-publication-before'/p
+            saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(target,saved)
+            temporary=target.with_name(target.name+'.garage70-publish')
+            shutil.copy2(PROJECT/p,temporary);os.replace(temporary,target);written.append(p)
+        assert before==task.sources()
+        assert all(prior.digest(ROOT/'game'/p)==candidate[p] for p in changed)
+    except BaseException:
+        for p in reversed(written):
+            if prior.digest(ROOT/'game'/p)==candidate[p]: shutil.copy2(WORK/'repair-publication-before'/p,ROOT/'game'/p)
+        raise
+    (WORK/'repair-publication.json').write_text(json.dumps(dict(input_count=len(before),source_fence=True,
+        changed=changed,published_hashes={p:candidate[p] for p in changed},preserved_other_outputs=other),indent=2))
+    print('Published',len(changed),'qualified Challenger cache resources; preserved the other current cars',flush=True)
+
+if __name__=='__main__': main()

@@ -1,0 +1,81 @@
+extends SceneTree
+const Counts=preload("res://../build/garage-triangle-audit-2026-11-14/groups.gd")
+var output: String
+var report: Dictionary={}
+func _initialize() -> void: run.call_deferred()
+
+func stats(holder: Node) -> Dictionary:
+	var result: Dictionary={"triangles":0,"shadow_only_triangles":0,"instances":0,"rows":[]}
+	for node: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
+		if node.mesh==null: continue
+		var triangles: int=Counts.triangles(node.mesh)
+		if node.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
+			result.shadow_only_triangles+=triangles
+			continue
+		result.triangles+=triangles
+		result.instances+=1
+		var finish: Material=node.material_override if node.material_override!=null else node.get_active_material(0)
+		var material: String=str(finish.albedo_color) if finish is BaseMaterial3D else finish.shader.resource_path if finish is ShaderMaterial and finish.shader!=null else ""
+		result.rows.append({"path":str(holder.get_path_to(node)),"triangles":triangles,"material":material})
+	result.rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.triangles>b.triangles)
+	return result
+
+func run() -> void:
+	for arg: String in OS.get_cmdline_user_args():
+		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
+	DirAccess.make_dir_recursive_absolute(output)
+	root.size=Vector2i(1280,720)
+	var room: Node=load(GarageEnvironment.PREPARED_ARCHITECTURE).instantiate()
+	report.workshop=stats(room)
+	room.free()
+	var view:=CarShowroom.new()
+	view.garage_mode=true
+	view.vehicle_id="compact"
+	view.livery=VehicleLivery.defaults("compact")
+	view.customisation=VehicleCustomisation.defaults()
+	root.add_child(view)
+	MenuStyle.fill(view)
+	while not view.showroom_ready: await process_frame
+	var pedestal: Node=GarageEnvironment.pedestal_scene.instantiate()
+	report.pedestal=stats(pedestal)
+	pedestal.free()
+	report.cars={}
+	for id: String in VehicleCatalog.IDS:
+		if id!="compact":
+			view.replace_car(id,VehicleLivery.defaults(id),{},VehicleCustomisation.defaults())
+			view.finish_car_transition()
+		while not view.car.model_ready: await process_frame
+		var car: Dictionary=stats(view.car)
+		car.erase("rows")
+		report.cars[id]=car
+	# Capture each source object after the exact existing cleanup and before
+	# material batching. This affects only this disposable engine process.
+	var builder: Script=load("res://ui/garage_environment.gd")
+	var original: String=builder.source_code.replace("\r\n","\n")
+	var signature: String="static func _batch(root: Node3D) -> void:\n"
+	assert(original.contains(signature))
+	builder.source_code=original.replace(signature,signature+"\tpreload(\"res://../build/garage-triangle-audit-2026-11-14/groups.gd\").capture(root,cabinet_meshes)\n")
+	assert(builder.reload(true)==OK)
+	builder.architecture_scene=null
+	var world:=Node3D.new()
+	root.add_child(world)
+	var car:=CarVisual.new()
+	car.simple_model=true
+	world.add_child(car)
+	while not car.model_ready: await process_frame
+	builder.call("build",world,car,false,false)
+	var source_room: Node=world.get_node("GarageArchitecture")
+	report.source_workshop=stats(source_room)
+	assert(report.source_workshop.triangles==report.workshop.triangles)
+	report.source_groups=load("res://../build/garage-triangle-audit-2026-11-14/groups.gd").groups
+	var station: Node=source_room.find_child("GarageRecordStation",true,false)
+	var vinyl: Node=station.find_child("GarageVinyl",true,false)
+	report.unbatched_vinyl=stats(vinyl)
+	preload("res://ui/garage_record_station.gd").update(station,{})
+	report.dynamic_record_sleeves=stats(station.find_child("GarageRecordSleeves",true,false))
+	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
+	print("GARAGE_TRIANGLE_INVENTORY workshop=",report.workshop.triangles," pedestal=",report.pedestal.triangles," cars=",JSON.stringify(report.cars)," groups=",JSON.stringify(report.source_groups))
+	view.queue_free()
+	world.queue_free()
+	for _i: int in range(8): await process_frame
+	quit()

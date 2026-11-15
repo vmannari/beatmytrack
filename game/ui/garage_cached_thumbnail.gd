@@ -29,7 +29,18 @@ func _ready() -> void:
 
 func refresh_thumbnail() -> void:
 	if _image == null or preview_service == null: return
+	if preview_service.has_method("shared_texture"):
+		preview_service.request(self)
+		return
 	var key: String = preview_service.identity(self)
+	var portrait: Texture2D = preload("res://ui/garage_selection_pictures.gd").texture(self)
+	if portrait != null:
+		preview_key = key
+		displayed_key = key
+		_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		_image.texture = portrait
+		_placeholder.hide()
+		return
 	if key == preview_key:
 		if displayed_key!=key and preview_service.has_method("_remembered"):
 			var ready: Texture2D=preview_service._remembered(vehicle_id,key)
@@ -49,6 +60,8 @@ func refresh_thumbnail() -> void:
 
 func publish_preview(key: String, value: Texture2D) -> void:
 	if key == preview_key and _image != null and value != null:
+		_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED if preview_service.has_method("shared_texture") else TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		if preview_service.has_method("shared_texture"): _image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		_image.texture = value
 		displayed_key = key
 		_placeholder.hide()

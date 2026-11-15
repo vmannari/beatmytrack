@@ -41,6 +41,11 @@ var _masthead_header: HBoxContainer
 var _tagline: Label
 var _layout_size := Vector2.ZERO
 var _layout_queued: bool = false
+var _content_layout := Vector2i(-1,-1)
+var _rendered_news: Dictionary = {}
+var _photo_epoch: int = 0
+var _photo_scheduled: bool = false
+var _pending_photo: Dictionary = {}
 var _spread: PanelContainer
 var _story_motion: Tween
 var _tab_turn: bool = false
@@ -227,7 +232,10 @@ func _apply_layout() -> void:
 	if not is_inside_tree() or size.is_equal_approx(_layout_size): return
 	_layout_size = size
 	_layout_header()
-	if _tab != "ranking": _render()
+	if _tab != "ranking" and _content_layout != _editorial_layout(): _render()
+
+func _editorial_layout() -> Vector2i:
+	return Vector2i(1 if size.x >= 1360 else 0,1 if size.y < 620 else 0)
 
 func _layout_header() -> void:
 	var narrow: bool = size.x < 900
@@ -268,7 +276,10 @@ func _visibility_changed() -> void:
 	if not _active():
 		if is_instance_valid(_poll): _poll.stop()
 		_finish_story_turn()
-	else: _open.call_deferred()
+	else:
+		_changed()
+		_start_pending_photo()
+		_open.call_deferred()
 
 func _select_tab(id: String) -> void:
 	var tabs: Array[String] = ["news","friends","ranking"]
@@ -298,7 +309,9 @@ func _open() -> void:
 func _changed() -> void:
 	if not _active(): return
 	if _tab == "ranking": return
-	_render()
+	if _tab == "news" and not _stories().is_empty(): _mark_story_read(_stories()[_index()],_using_examples())
+	if _tab == "news" and (_story_motion == null or _tab_turn) and _rendered_news == _news_state(): _update_feed_status()
+	else: _render()
 	if _waiting and service != null and not service.busy:
 		_waiting = false
 		_open.call_deferred()
@@ -312,6 +325,29 @@ func _poll_once() -> void:
 	if not _active() or _tab != "news" or service == null: return
 	_poll_count += 1
 	await service.refresh(true)
+
+func _news_state() -> Dictionary:
+	var stories: Array = _stories()
+	var examples: bool = _using_examples()
+	var read: Array[bool] = []
+	for item: Dictionary in stories: read.append(_story_read(item,examples))
+	var appearance: Dictionary = {}
+	if not stories.is_empty():
+		var item: Dictionary = stories[_index()]
+		var vehicle: String = str(item.get("vehicle_id",""))
+		var file_photo: bool = vehicle.is_empty() and item.get("kind","") == "milestone"
+		if file_photo: vehicle = VehicleCatalog.selected
+		if vehicle in VehicleCatalog.IDS: appearance = _story_appearance(item,vehicle,file_photo)
+	return {"scope":"examples" if examples else service.scope() if service != null else "","stories":stories,"read":read,"appearance":appearance,"signed":service != null and service.client.signed_in(),"available":service != null and service.available(),"error":service.error if service != null else "","cursor":service.next_cursor if service != null else ""}
+
+func _update_feed_status() -> void:
+	var examples: bool = _using_examples()
+	var stories: Array = _stories()
+	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
+	_refresh_button.disabled = service == null or not service.available() or service.busy
+	_previous.disabled = _index() == 0
+	_next.disabled = stories.is_empty() or (_index() >= stories.size()-1 and not can_more) or (not examples and service != null and service.busy)
+	_status.text = "UPDATING YOUR EDITION…" if (_tab == "news" and stories.is_empty()) or (service != null and (service.busy or service.refreshing)) else "PERSONAL EDITION"
 
 func _send_friend() -> void:
 	if not _active() or service == null or _entry.text.strip_edges().is_empty(): return
@@ -516,6 +552,11 @@ func _update_column_minimum(content: Control, slot: Control) -> void:
 
 func _render(direction: int = 0, tab_turn: bool = false) -> void:
 	if not is_instance_valid(_list): return
+	_photo_epoch += 1
+	_photo_scheduled = false
+	_pending_photo.clear()
+	_content_layout = _editorial_layout()
+	_rendered_news.clear()
 	if is_instance_valid(_brief_scroll) and not _brief_restore_pending: _brief_offset = _brief_scroll.scroll_vertical
 	_brief_scroll = null
 	_brief_restore_pending = false
@@ -567,21 +608,18 @@ func _render(direction: int = 0, tab_turn: bool = false) -> void:
 		_selected_id = ""
 		_brief_offset = 0
 	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
-	_refresh_button.disabled = service == null or not service.available() or service.busy
 	_previous.visible = _tab == "news"
 	_next.visible = _tab == "news"
 	_navigation_separator.visible = _tab == "news"
-	_previous.disabled = _index() == 0
-	_next.disabled = stories.is_empty() or (_index() >= stories.size()-1 and not can_more) or (not examples and service != null and service.busy)
+	_update_feed_status()
 	_account_button.visible = _tab != "friends" and (service == null or not service.client.signed_in())
 	_folio.text = "DRIVERS' DIRECTORY" if _tab == "friends" else "THE PERSONAL EDITION"
-	_status.text = "UPDATING YOUR EDITION…" if service != null and (service.busy or service.refreshing) else "PERSONAL EDITION"
 	if _tab == "ranking":
 		_folio.text = "WORLD RANKING"
 		_status.text = "COMPACT CIRCUIT"
 		_refresh_button.disabled = false
 		_refresh_button.tooltip_text = "Refresh World Ranking"
-		_ranking = preload("res://ui/garage_news_ranking.gd").new()
+		_ranking = load("res://ui/garage_news_ranking.gd").new()
 		_ranking.newspaper = self
 		_ranking.client = service.client if service != null else null
 		_list.add_child(_ranking)
@@ -605,11 +643,13 @@ func _render(direction: int = 0, tab_turn: bool = false) -> void:
 		# existing loading status without printing or marking a fallback story.
 		_status.text = "UPDATING YOUR EDITION…"
 		_folio.text = ""
+		_rendered_news = _news_state().duplicate(true)
 		return
 	var index: int = _index()
 	var item: Dictionary = stories[index]
 	_selected_id = str(item.get("id",""))
 	if _active(): _mark_story_read(item,examples)
+	_rendered_news = _news_state().duplicate(true)
 	_folio.text = GameText.message("STORY %02d / %02d  ·  %s") % [index+1,stories.size(),Time.get_date_string_from_unix_time(int(item.get("created_at",0)))]
 	var columns := HBoxContainer.new()
 	columns.name = "EditorialColumns"
@@ -728,6 +768,54 @@ func _reveal_news_car(view: Control, fallback: Control, loading: Control) -> voi
 		if is_instance_valid(loading): loading.hide()
 		view.show()
 
+func _start_pending_photo() -> void:
+	if _pending_photo.is_empty() or _photo_scheduled: return
+	_photo_scheduled = true
+	_prepare_news_photo(_photo_epoch)
+
+func _prepare_news_photo(epoch: int) -> void:
+	# The page can be read and the rail can respond before importing and
+	# assembling an optional 3D photograph. Its first layout is also final.
+	if DisplayServer.get_name() == "headless": await get_tree().process_frame
+	else: await RenderingServer.frame_post_draw
+	# Finish the paper's entrance before photograph work can contend with it.
+	if page is GaragePage:
+		while epoch == _photo_epoch and _active() and page._menu_motion != null:
+			await get_tree().process_frame
+	if epoch != _photo_epoch: return
+	_construct_news_photo.call_deferred(epoch)
+
+func _construct_news_photo(epoch: int) -> void:
+	# Scene/resource changes belong in idle processing, outside the draw callback.
+	if epoch != _photo_epoch: return
+	_photo_scheduled = false
+	if not _active() or _pending_photo.is_empty(): return
+	var data: Dictionary = _pending_photo.duplicate()
+	_pending_photo.clear()
+	var frame: Control = data.frame.get_ref()
+	var fallback: Control = data.fallback.get_ref()
+	var loading: Control = data.loading.get_ref()
+	if not is_instance_valid(frame) or not frame.is_inside_tree() or frame.is_queued_for_deletion(): return
+	if service != null and data.scope != service.scope():
+		_changed()
+		return
+	var view: Control = load("res://ui/rivalry_victory_car.gd").new()
+	view.name = "NewsLiveryCar"
+	view.vehicle_id = data.vehicle
+	view.livery = VehicleLivery.normalize(data.appearance.livery,data.vehicle)
+	view.customisation = data.appearance.customisation.duplicate(true)
+	view.simple_model = true
+	view.podium_presentation = true
+	view.fit_to_frame = true
+	view.cooperative_build = true
+	view.build_budget_us = 4000
+	view.custom_minimum_size.y = data.height
+	view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	view.hide()
+	frame.add_child(view)
+	_reveal_news_car(view,fallback,loading)
+
 func _story(parent: VBoxContainer, item: Dictionary) -> void:
 	var track: String = str(item.get("track_name",""))
 	var vehicle: String = str(item.get("vehicle_id",""))
@@ -769,12 +857,13 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		photograph.add_child(photo_frame)
 		var photo := TextureRect.new()
 		photo.name = "NewsCarPhoto"
-		photo.texture = load("res://assets/news/vehicles/%s.png" % vehicle)
 		photo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-		if _photo_ink == null:
-			_photo_ink = ShaderMaterial.new()
-			_photo_ink.shader = preload("res://ui/garage_news_photo.gdshader")
-		photo.material = _photo_ink
+		if appearance.is_empty():
+			photo.texture = load("res://assets/news/vehicles/%s.png" % vehicle)
+			if _photo_ink == null:
+				_photo_ink = ShaderMaterial.new()
+				_photo_ink.shader = load("res://ui/garage_news_photo.gdshader")
+			photo.material = _photo_ink
 		photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		photo.custom_minimum_size.y = 116 if short_page else 132
@@ -785,26 +874,12 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		if not appearance.is_empty():
 			# Do not show a stock car while the real livery is being prepared.
 			photo.modulate.a = 0.0
-			var view: Control = preload("res://ui/rivalry_victory_car.gd").new()
-			view.name = "NewsLiveryCar"
-			view.vehicle_id = vehicle
-			view.livery = VehicleLivery.normalize(appearance.livery,vehicle)
-			view.customisation = appearance.customisation.duplicate(true)
-			view.simple_model = true
-			view.podium_presentation = true
-			view.fit_to_frame = true
-			view.cooperative_build = true
-			view.build_budget_us = 24000
-			view.custom_minimum_size.y = 116 if short_page else 132
-			view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			view.size_flags_vertical = Control.SIZE_EXPAND_FILL
-			view.hide()
-			photo_frame.add_child(view)
 			var loading := _text(photo_frame,"Preparing car…",13,MUTED,true)
 			loading.name = "NewsCarLoading"
 			loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			loading.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-			_reveal_news_car(view,photo,loading)
+			_pending_photo = {"frame":weakref(photo_frame),"fallback":weakref(photo),"loading":weakref(loading),"vehicle":vehicle,"appearance":appearance,"height":116 if short_page else 132,"scope":service.scope() if service != null else ""}
+			_start_pending_photo()
 		if appearance.is_empty() or not _story_uses_local_appearance(item,file_photo):
 			var car_name: String = VehicleCatalog.title(vehicle).capitalize()
 			var actor_name: String = str(item.get("actor_name",""))
@@ -978,5 +1053,7 @@ static func _count(value: int) -> String:
 	return "10,000" if value == 10000 else "1,000" if value == 1000 else str(value)
 
 func _exit_tree() -> void:
+	_photo_epoch += 1
+	_pending_photo.clear()
 	_finish_story_turn()
 	if service != null and service.changed.is_connected(_changed): service.changed.disconnect(_changed)

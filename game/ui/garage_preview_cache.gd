@@ -7,6 +7,7 @@ const VERSION: String = "garage-thumbnail-studio-v5"
 const MAX_FILES: int = 14
 static var factory_pictures: Dictionary={}
 static var pending_pictures: Array[String]=[]
+static var _electric_source_revision: String=""
 var directory: String = ""
 var queued: Array[Dictionary] = []
 var active: Dictionary = {}
@@ -106,9 +107,14 @@ func identity(view: CarShowroom) -> String:
 	# A new prepared Volt mesh set must not reuse pictures from the prior model,
 	# including in an editor session before the next generated build identity.
 	if view.vehicle_id == "electric":
-		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
-		revision += ":" + preload("res://vehicle/electric_kits.gd").HOOD_REVISION
-		revision += ":" + preload("res://vehicle/electric_body_kits.gd").REVISION
+		if _electric_source_revision.is_empty():
+			var inputs: Array[String]=[]
+			for path: String in ["res://vehicle/electric_reference_mesh.gd","res://vehicle/electric_kits.gd","res://vehicle/electric_body_kits.gd"]:
+				# A source checkout sees edits before regenerated build identity.
+				# Packaged scripts use that build's complete geometry fingerprint.
+				inputs.append(FileAccess.get_sha256(path) if FileAccess.file_exists(path) else Build.GARAGE_PREVIEW_SHA256)
+			_electric_source_revision="volt-source-1:"+":".join(inputs)
+		revision += ":"+_electric_source_revision
 	var key: Array=[VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]
 	if view.simple_model: key.append("reduced-garage-1")
 	return JSON.stringify(key).sha256_text()

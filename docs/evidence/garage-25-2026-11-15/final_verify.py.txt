@@ -1,0 +1,41 @@
+from pathlib import Path
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import repair_cache as repair
+ROOT,WORK=repair.ROOT,repair.WORK
+def inputs():
+    result=repair.sources()
+    for folder in ('ui','core','rendering'):
+        for p in (ROOT/'game'/folder).rglob('*'):
+            if p.is_file() and p.suffix in ('.gd','.gdshader','.gdshaderinc'): result[p.relative_to(ROOT).as_posix()]=repair.prior.digest(p)
+    for folder in repair.prior.OUTPUTS:
+        for p in (ROOT/'game'/folder).rglob('*'):
+            if p.is_file() and p.suffix in ('.scn','.png','.json'): result[p.relative_to(ROOT).as_posix()]=repair.prior.digest(p)
+    for p in ('game/assets/garage/workshop_v1.scn','game/assets/garage/workshop_v1.provenance.json','game/project.godot'):
+        result[p]=repair.prior.digest(ROOT/p)
+    return result
+before=inputs()
+(WORK/'final-inputs.json').write_text(json.dumps(before,indent=2))
+rows=[]
+for renderer in ('gl_compatibility','mobile'):
+    for label,script in [('final-native','res://../build/garage-25-2026-11-15/paired.gd'),
+                         ('final-app','res://../build/garage-fast-entry-2026-11-14/live_entry_foreground.gd')]:
+        name=label+'-'+renderer
+        command=[sys.executable,'scripts/run_garage_25.py',name,'--script',script,'--renderer',renderer]
+        result=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+        errors=[s for s in (WORK/name/'run.log').read_text().splitlines() if s.startswith(('ERROR:','SCRIPT ERROR:'))]
+        print(name,result.returncode,'native errors',len(errors),flush=True)
+        rows.append(dict(name=name,exit_code=result.returncode,errors=errors))
+        assert result.returncode==0 and not errors,(name,errors)
+after=inputs()
+changed=[p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)]
+(WORK/'final-fence.json').write_text(json.dumps(dict(input_count=len(before),changed_inputs=changed,
+    input_map_sha256=hashlib.sha256(json.dumps(before,sort_keys=True).encode()).hexdigest(),checks=rows),indent=2))
+assert not changed,changed[:20]
+old=repair.keys(WORK/'identity-pre-final.gd');current=repair.keys(ROOT/'game/core/build_identity.gd')
+assert old==current,'Generated identity changed car keys'
+(WORK/'identity-controls.json').write_text(json.dumps(dict(car_keys_exact=True,geometry_keys=current),indent=2))
+print('FINAL_FENCE',len(before),'files unchanged',flush=True)

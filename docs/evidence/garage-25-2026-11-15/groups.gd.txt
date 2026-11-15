@@ -1,0 +1,31 @@
+extends RefCounted
+static var groups: Dictionary={}
+static var parts: Array[Dictionary]=[]
+
+static func triangles(mesh: Mesh) -> int:
+	var total: int=0
+	for surface: int in range(mesh.get_surface_count()):
+		var arrays: Array=mesh.surface_get_arrays(surface)
+		var indices: PackedInt32Array=arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX]!=null else PackedInt32Array()
+		total+=(indices.size() if not indices.is_empty() else arrays[Mesh.ARRAY_VERTEX].size())/3
+	return total
+
+static func capture(holder: Node3D,boxes: Dictionary) -> void:
+	var cleanup: RefCounted=preload("res://ui/garage_mesh_cleanup.gd").new()
+	cleanup.gather(holder,boxes)
+	walk(holder,holder,Transform3D.IDENTITY,cleanup,"")
+
+static func walk(holder: Node3D,node: Node3D,pose: Transform3D,cleanup: RefCounted,group: String) -> void:
+	for child: Node in node.get_children():
+		if not child is Node3D or child.name in ["GarageRoof","GarageVinyl","GarageRecordSleeves"]: continue
+		var local: Transform3D=pose*child.transform
+		var label: String=group
+		if node==holder:
+			label=str(holder.name)+"/"+(str(child.name) if not child is MeshInstance3D else "Architecture and fixtures")
+		if child is MeshInstance3D:
+			var mesh: Mesh=cleanup.clean(child,local)
+			if mesh!=null:
+				var count: int=triangles(mesh)
+				groups[label]=int(groups.get(label,0))+count
+				parts.append({"group":label,"path":str(holder.get_path_to(child)),"triangles":count,"kind":child.mesh.get_class()})
+		else: walk(holder,child,local,cleanup,label)

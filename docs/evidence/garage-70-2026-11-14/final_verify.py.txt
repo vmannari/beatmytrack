@@ -1,0 +1,45 @@
+from pathlib import Path
+import json
+import subprocess
+import sys
+import refresh
+ROOT,WORK=refresh.ROOT,refresh.WORK
+def inputs():
+    result=refresh.sources()
+    for directory in ('game/ui','game/core','game/rendering'):
+        for p in (ROOT/directory).rglob('*'):
+            if p.is_file() and p.suffix in ('.gd','.gdshader','.gdshaderinc'): result[p.relative_to(ROOT).as_posix()]=refresh.prior.digest(p)
+    for p,h in refresh.outputs(ROOT/'game').items(): result['game/'+p]=h
+    for p in ('game/assets/garage/workshop_v1.scn','game/assets/garage/workshop_v1.provenance.json','game/project.godot'):
+        result[p]=refresh.prior.digest(ROOT/p)
+    return result
+before=inputs()
+(WORK/'final-inputs.json').write_text(json.dumps(before,indent=2))
+cases=[('qualified-inventory','res://../build/garage-70-2026-11-14/inventory.gd','gl_compatibility',True)]
+for renderer in ('gl_compatibility','mobile'):
+    cases += [('qualified-paired-'+renderer,'res://../build/garage-70-2026-11-14/paired.gd',renderer,False),
+              ('qualified-capture-'+renderer,'res://tests/test_garage_first_capture.gd',renderer,False),
+              ('qualified-app-'+renderer,'res://../build/garage-fast-entry-2026-11-14/live_entry_foreground.gd',renderer,False)]
+cases += [('qualified-budget','res://tests/test_garage_environment_budget.gd','gl_compatibility',True),
+          ('qualified-parser','res://tests/check_production_scripts.gd','gl_compatibility',True)]
+rows=[]
+for name,script,renderer,headless in cases:
+    # Keep the established parser invocation from the earlier run.
+    if name=='qualified-parser':
+        prior=json.loads((WORK/'parser/run.json').read_text())['command']
+        script=prior[prior.index('--script')+1]
+    command=[sys.executable,'scripts/run_garage_70.py',name,'--script',script,'--renderer',renderer]
+    if headless: command.append('--headless')
+    if name=='qualified-budget': command.append('--reference-room=res://../build/garage-70-2026-11-14/before/workshop_v1.scn')
+    process=subprocess.run(command,cwd=ROOT,capture_output=True,text=True)
+    log=(WORK/name/'run.log').read_text()
+    errors=[line for line in log.splitlines() if line.startswith(('ERROR:','SCRIPT ERROR:'))]
+    print(name,process.returncode,log[-300:],flush=True)
+    rows.append(dict(name=name,exit_code=process.returncode,errors=errors))
+    (WORK/'final-verification.json').write_text(json.dumps(rows,indent=2))
+    assert process.returncode==0 and not errors,(name,errors)
+after=inputs()
+changed=[p for p in before.keys()|after.keys() if before.get(p)!=after.get(p)]
+(WORK/'final-fence.json').write_text(json.dumps(dict(input_count=len(before),changed_inputs=changed),indent=2))
+assert not changed,changed[:15]
+print('FINAL_FENCE',len(before),'inputs unchanged',flush=True)

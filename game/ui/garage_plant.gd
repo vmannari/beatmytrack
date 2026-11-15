@@ -1,8 +1,8 @@
 class_name GaragePlant
 extends RefCounted
 ## Original code-authored rubber fig. Immutable meshes join the prepared room batches.
-const LEAF_ROWS: int = 14
-const LEAF_COLUMNS: int = 6
+const LEAF_ROWS: int = 4
+const LEAF_COLUMNS: int = 2
 static var meshes: Array[ArrayMesh] = []
 static var finishes: Array[Material] = []
 
@@ -35,9 +35,9 @@ static func _prepare() -> void:
 	_lathe(soil,[Vector2(0,0.511),Vector2(0.250,0.511),Vector2(0.252,0.536),Vector2(0,0.542)])
 	var dressing := _tool()
 	# Seated, irregular bark/mineral chips; no floating decorative spheres.
-	for index: int in range(45):
+	for index: int in range(8):
 		var angle: float = index*2.399963
-		var radius: float = 0.226*sqrt((index+0.5)/45.0)
+		var radius: float = 0.226*sqrt((index+0.5)/8.0)
 		var centre := Vector3(sin(angle)*radius,0.540-radius*0.024,cos(angle)*radius)
 		_chip(dressing,centre,0.008+0.009*_variation(index,2),angle,1.12 if index%7 == 0 else 0.24+0.38*_variation(index,3))
 	var wood := _tool()
@@ -45,7 +45,7 @@ static func _prepare() -> void:
 	# Three unequal, gently bent leaders rooted inside the soil. Leaves emerge at nodes.
 	for branch: int in range(3):
 		var points: Array[Vector3] = []
-		for row: int in range(19): points.append(_branch(branch,row/18.0))
+		for row: int in range(7): points.append(_branch(branch,row/6.0))
 		var bark_shade: float = 0.75+branch*0.10
 		_tube(wood,points,0.018-branch*0.003,0.0035,Color(bark_shade,bark_shade,bark_shade))
 		var count: int = [10,8,7][branch]
@@ -56,7 +56,7 @@ static func _prepare() -> void:
 			var origin: Vector3 = _branch(branch,t)
 			var petiole_length: float = 0.075+0.035*_variation(index,branch)
 			var base: Vector3 = origin+direction*petiole_length+Vector3.UP*0.038
-			_tube(wood,[origin,origin.lerp(base,0.5)+Vector3.UP*0.008,base],0.0045,0.0028,Color(0.95,0.95,0.95))
+			_tube(wood,[origin,base],0.0045,0.0028,Color(0.95,0.95,0.95))
 			var length: float = (0.32+0.11*_variation(index+branch*11,4))*(1.0-0.25*t)
 			var width: float = length*(0.29+0.045*_variation(index,5))
 			_leaf(leaves,base,direction,length,width,-0.055+0.16*_variation(index,branch+6),index+branch*11)
@@ -135,7 +135,7 @@ static func _leaf_skin(points: Array[Vector3], normals: Array[Vector3], index: i
 	return points[index]+normals[index]*thickness*side
 
 static func _lathe(tool: SurfaceTool, profile: Array[Vector2]) -> void:
-	const SIDES: int = 64
+	const SIDES: int = 16
 	for row: int in range(profile.size()-1):
 		for segment: int in range(SIDES):
 			var points: Array[Vector3] = []
@@ -160,9 +160,9 @@ static func _tube(tool: SurfaceTool, points: Array[Vector3], start_radius: float
 		var direction: Vector3 = (points[row+1]-points[row]).normalized()
 		var across: Vector3 = direction.cross(Vector3.RIGHT).normalized()
 		var other: Vector3 = direction.cross(across).normalized()
-		for segment: int in range(8):
-			var normal_a: Vector3 = across*cos(segment*TAU/8)+other*sin(segment*TAU/8)
-			var normal_b: Vector3 = across*cos((segment+1)*TAU/8)+other*sin((segment+1)*TAU/8)
+		for segment: int in range(4):
+			var normal_a: Vector3 = across*cos(segment*TAU/4)+other*sin(segment*TAU/4)
+			var normal_b: Vector3 = across*cos((segment+1)*TAU/4)+other*sin((segment+1)*TAU/4)
 			var ra: float = lerpf(start_radius,end_radius,row/float(points.size()-1))
 			var rb: float = lerpf(start_radius,end_radius,(row+1)/float(points.size()-1))
 			_quad(tool,[points[row]+normal_a*ra,points[row]+normal_b*ra,points[row+1]+normal_b*rb,points[row+1]+normal_a*rb],(normal_a+normal_b).normalized(),color)

@@ -3,7 +3,7 @@ extends RefCounted
 ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
 ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
 ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
-const KEY: String = "super-rally-hellcat-6/"
+const KEY: String = "super-rally-hellcat-12/"
 const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
 const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
 const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
@@ -11,6 +11,7 @@ static var meshes: Dictionary = {}
 static var hood_profile: Dictionary = {}
 const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
 static var assets: Dictionary = {}
+static var _asset_revision: String = ""
 const AERO: Dictionary = {
 	"lip":Vector4(0.70,0.845,2.17,0.065),"ducktail":Vector4(0.82,0.965,2.13,0.11),
 	"wing":Vector4(0.90,1.28,1.92,0.19),"touring":Vector4(0.73,0.92,1.85,0.11),
@@ -80,7 +81,28 @@ static func hood_point(across: float, v: float, _kind: String = "stock") -> Vect
 	var x: float = across*0.70
 	var z: float = lerpf(-1.94,-1.04,v)
 	var mapped_z: float = _nose_z(z,x)
-	return Vector3(_nose_plan_x(x,mapped_z),_hood_height(x,z),mapped_z)
+	var t: float = clampf((mapped_z+2.22)/0.67,0.0,1.0)
+	var width_scale: float = 1.0+0.095*(1.0-t*t*t*(10.0+t*(-15.0+6.0*t)))
+	return _nose_point(Vector3(_nose_plan_x(x,mapped_z)*width_scale,_hood_height(x,z),_front_z(mapped_z)))
+
+static func _quintic(a: float,b: float,value: float) -> float:
+	var t: float=clampf((value-a)/(b-a),0,1)
+	return t*t*t*(10+t*(-15+6*t))
+
+static func _nose_point(point: Vector3) -> Vector3:
+	var upper: float=_quintic(.32,.60,point.y)
+	var run: float=maxf((-point.z-1.62)/.50,0)
+	var a: float=absf(point.x)
+	var t: float=clampf((a-.40)/.10,0,1)
+	var integral: float=.10*(2.5*pow(t,4)-3*pow(t,5)+pow(t,6))+maxf(a-.50,0)
+	var inset: float=.10*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*upper
+	inset+=.04*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*_quintic(.50,.64,point.y)
+	var crown: float=_quintic(-2.115,-2.015,point.z)*(1-_quintic(-1.90,-1.68,point.z))
+	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper-.024*crown*_quintic(.60,.85,point.y),point.z)
+
+static func _front_z(z: float) -> float:
+	var t: float=clampf((z+2.23)/.55,0,1)
+	return z+.14*(1-t*t*t*(10+t*(-15+6*t)))
 
 static func _nose_plan_x(x: float,z: float) -> float:
 	var scale: float = 1.0
@@ -108,7 +130,7 @@ static func _cubic_weights(t: float) -> Vector4:
 	return Vector4(-0.5*t+t*t-0.5*t*t*t,1-2.5*t*t+1.5*t*t*t,0.5*t+2*t*t-1.5*t*t*t,-0.5*t*t+0.5*t*t*t)
 
 static func _hood_height(x: float,z: float) -> float:
-	if hood_profile.is_empty(): hood_profile = (load(ROOT+"hood_profile.json") as JSON).data
+	if hood_profile.is_empty(): hood_profile = (ResourceLoader.load(ROOT+"hood_profile.json","JSON",ResourceLoader.CACHE_MODE_REPLACE) as JSON).data
 	var xs: Array = hood_profile.x; var zs: Array = hood_profile.z
 	var u: float = clampf((x-float(xs[0]))/(float(xs[1])-float(xs[0])),0,xs.size()-1)
 	var v: float = clampf((z-float(zs[0]))/(float(zs[1])-float(zs[0])),0,zs.size()-1)
@@ -148,11 +170,15 @@ static func _materials(car: CarVisual) -> Dictionary:
 	return result
 
 static func _asset(car: CarVisual, parent: Node3D, group: String, roles: Array[String] = [], override: Material = null) -> void:
+	if _asset_revision != KEY:
+		assets.clear()
+		hood_profile.clear()
+		_asset_revision = KEY
 	var manifest: Dictionary = (load(ROOT+"manifest.json") as JSON).data
 	for item: Dictionary in manifest.tiers["simple" if car.simple_model else "full"]:
 		if item.group != group or (not roles.is_empty() and item.role not in roles): continue
 		var path: String = ROOT+str(item.mesh)
-		if not assets.has(path): assets[path] = load(path)
+		if not assets.has(path): assets[path] = ResourceLoader.load(path,"ArrayMesh",ResourceLoader.CACHE_MODE_REPLACE)
 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
 		if item.role == "contour":
@@ -258,7 +284,7 @@ static func body(root: Node3D, paint: Material, accent: Material, kind: String =
 	var depth: float = 0.035+0.01*ordinal
 	for side: float in [-1.0,1.0]:
 		_box(root,"HellcatFittedSill"+kind+str(side),Vector3(side*(0.825+depth*0.3),0.29,0.03),Vector3(depth+0.055,0.065+0.004*ordinal,1.60),paint,0.015)
-	_box(root,"HellcatFittedSplitter"+kind,Vector3(0,0.277,-2.28),Vector3(1.65+depth,0.030,0.24+depth),accent,0.012)
+	_box(root,"HellcatFittedSplitter"+kind,Vector3(0,0.277,_front_z(-2.28)),Vector3(1.65+depth,0.030,0.24+depth),accent,0.012)
 	if kind in ["wide","rally","gravel"]:
 		for side: float in [-1.0,1.0]:
 			for axle: float in [-1.28,1.28]:
@@ -314,7 +340,11 @@ static func _beam(root: Node3D, name: String, from: Vector3, to: Vector3, half_w
 
 static func wheel(root: Node3D, side: float, kind: String = "stock") -> void:
 	if kind == "stock":
-		_factory_wheel(root,side)
+		var alloy_root := Node3D.new()
+		alloy_root.name = "FactoryAlloy"
+		alloy_root.scale = Vector3(1.0,1.14,1.14)
+		root.add_child(alloy_root)
+		_factory_wheel(alloy_root,side)
 		return
 	var white: Material = CompactFinish.alloy(Color("e5e5db" if kind == "rallydisc" else "929a9c"))
 	var dark: Material = CompactFinish.rubber(Color("192125"))
@@ -338,8 +368,8 @@ static func wheel(root: Node3D, side: float, kind: String = "stock") -> void:
 	cap.rotation.z = PI*0.5
 
 static func _factory_wheel(root: Node3D, side: float) -> void:
-	var alloy := CompactFinish.alloy(Color("9aa4a7"))
-	alloy.roughness = 0.25
+	var alloy := CompactFinish.alloy(Color("485258"))
+	alloy.roughness = 0.32
 	var barrel := CompactFinish.alloy(Color("3b4549"))
 	barrel.roughness = 0.40
 	var rotor := CompactFinish.alloy(Color("4c5659"))
@@ -371,7 +401,7 @@ static func _factory_wheel(root: Node3D, side: float) -> void:
 	hub.rotation.z = PI*0.5
 	for bolt: int in range(5):
 		var a: float = bolt*TAU/5.0
-		var lug := CompactKits._cylinder(root,0.008,0.008,Vector3(side*0.145,sin(a)*0.050,cos(a)*0.050),barrel,8)
+		var lug := CompactKits._cylinder(root,0.008,0.008,Vector3(side*0.145,sin(a)*0.050,cos(a)*0.050),barrel,6 if CompactKits.simple_parts else 8)
 		lug.rotation.z = PI*0.5
 	var cap := CompactKits._cylinder(root,0.027,0.005,Vector3(side*0.143,0,0),dark,24)
 	cap.rotation.z = PI*0.5

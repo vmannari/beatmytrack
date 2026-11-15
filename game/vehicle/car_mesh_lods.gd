@@ -82,6 +82,8 @@ func prepare(source: Mesh) -> Mesh:
 	return meshes[source]
 
 func eligible(part: MeshInstance3D, vehicle: String) -> bool:
+	# Authored joining skins already have their final compact sample rows.
+	if part.mesh.has_meta("car_surface_guide_locked"): return false
 	if part.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: return false
 	for surface: int in range(part.mesh.get_surface_count()):
 		var material: Material = part.get_active_material(surface)

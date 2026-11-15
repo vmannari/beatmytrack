@@ -1,7 +1,7 @@
 extends SceneTree
 ## Refresh only electric pictures using the established native studio/camera recipes.
 const Profile = preload("res://ui/profile_car.gd")
-const SIZE := Vector2i(176,112)
+const SIZE := preload("res://ui/header_car_icons.gd").SIZE
 
 func _initialize() -> void: run.call_deferred()
 

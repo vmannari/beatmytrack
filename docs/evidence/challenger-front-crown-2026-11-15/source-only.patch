@@ -1,0 +1,215 @@
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+index 17876af..fdac4e6 100644
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,7 @@ extends RefCounted
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-9/"
++const KEY: String = "super-rally-hellcat-11/"
+ const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
+ const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
+ const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
+@@ -11,6 +11,7 @@ static var meshes: Dictionary = {}
+ static var hood_profile: Dictionary = {}
+ const ROOT: String = "res://assets/vehicles/challenger_hellcat_v1/"
+ static var assets: Dictionary = {}
++static var _asset_revision: String = ""
+ const AERO: Dictionary = {
+ 	"lip":Vector4(0.70,0.845,2.17,0.065),"ducktail":Vector4(0.82,0.965,2.13,0.11),
+ 	"wing":Vector4(0.90,1.28,1.92,0.19),"touring":Vector4(0.73,0.92,1.85,0.11),
+@@ -95,7 +96,9 @@ static func _nose_point(point: Vector3) -> Vector3:
+ 	var t: float=clampf((a-.40)/.10,0,1)
+ 	var integral: float=.10*(2.5*pow(t,4)-3*pow(t,5)+pow(t,6))+maxf(a-.50,0)
+ 	var inset: float=.10*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*upper
+-	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper,point.z)
++	inset+=.04*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*_quintic(.50,.64,point.y)
++	var crown: float=_quintic(-2.115,-2.015,point.z)*(1-_quintic(-1.90,-1.68,point.z))
++	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper-.024*crown*_quintic(.60,.85,point.y),point.z)
+ 
+ static func _front_z(z: float) -> float:
+ 	var t: float=clampf((z+2.23)/.55,0,1)
+@@ -167,11 +170,14 @@ static func _materials(car: CarVisual) -> Dictionary:
+ 	return result
+ 
+ static func _asset(car: CarVisual, parent: Node3D, group: String, roles: Array[String] = [], override: Material = null) -> void:
++	if _asset_revision != KEY:
++		assets.clear()
++		_asset_revision = KEY
+ 	var manifest: Dictionary = (load(ROOT+"manifest.json") as JSON).data
+ 	for item: Dictionary in manifest.tiers["simple" if car.simple_model else "full"]:
+ 		if item.group != group or (not roles.is_empty() and item.role not in roles): continue
+ 		var path: String = ROOT+str(item.mesh)
+-		if not assets.has(path): assets[path] = load(path)
++		if not assets.has(path): assets[path] = ResourceLoader.load(path,"ArrayMesh",ResourceLoader.CACHE_MODE_REPLACE)
+ 		var part := MeshInstance3D.new(); part.name = "Hellcat_"+group+"_"+str(item.role)
+ 		part.mesh = assets[path]; part.material_override = override if override != null else _materials(car)[item.role]
+ 		if item.role == "contour":
+diff --git a/scripts/challenger_detail_geometry.py b/scripts/challenger_detail_geometry.py
+index 0b78f33..a88d402 100644
+--- a/scripts/challenger_detail_geometry.py
++++ b/scripts/challenger_detail_geometry.py
+@@ -139,11 +139,11 @@ def details(add, simple, rear_surface):
+     for side in [-1,1]:
+         cx=side*.525;cy=.351
+         loops=[]
+-        for rx,ry,z in [(.111,.039,2.145),(.113,.041,2.207),(.110,.039,2.219),(.103,.032,2.219),(.101,.030,2.145)]:
+-            loops.append(np.c_[cx+rx*np.cos(theta),cy+ry*np.sin(theta),np.full(count,z)])
++        for rx,ry,z,lift in [(.083,.028,1.980,.035),(.113,.041,2.207,0),(.110,.039,2.219,0),(.103,.032,2.219,0),(.075,.021,1.980,.035)]:
++            loops.append(np.c_[cx+rx*np.cos(theta),cy+lift+ry*np.sin(theta),np.full(count,z)])
+         v,f=ring(loops);emit('RolledExhaustTip'+str(side),v,f,'chrome')
+         path=np.c_[cx+.102*np.cos(theta),cy+.031*np.sin(theta)]
+-        v,f=disk(path,lambda x,y:2.148,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
++        v,f=disk(path,lambda x,y:2.205,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
+ 
+ 
+ def seat_exhaust(exports):
+@@ -178,17 +178,17 @@ def seat_exhaust(exports):
+                 edges.append(high);break
+             low=y
+     assert len(edges)==2, 'Both exhausts require actual rear-valance support'
+-    centre_y=max(edges)+.001
++    centre_y=max(edges)+.011
+     roots=[hit(x,centre_y+.033) for x in [-.525,.525]]
+     assert all(p is not None for p in roots), 'Upper exhaust necks must meet the valance'
+-    outlet_z=max(p.z for p in roots)+.045
++    outlet_z=max(p.z for p in roots)+.025
+     delta_y=centre_y-.351;delta_z=outlet_z-2.219
+     changed={}
+     for obj in exports:
+         if obj.name not in ['body__chrome','body__rubber']:continue
+         mesh=obj.data
+         p=np.asarray([v.co[:] for v in mesh.vertices])[:,[0,2,1]]*[1,1,-1]
+-        chosen=(p[:,2]>2.12)&(p[:,1]<.405)&(p[:,1]>.29)&(abs(p[:,0])>.30)&(abs(p[:,0])<.75)
++        chosen=(p[:,2]>1.93)&(p[:,1]<.45)&(p[:,1]>.29)&(abs(p[:,0])>.30)&(abs(p[:,0])<.75)
+         assert chosen.any(), 'Existing exhaust geometry must be present'
+         normals=[corner.vector[:] for corner in mesh.corner_normals]
+         p[chosen,1]+=delta_y;p[chosen,2]+=delta_z
+@@ -198,7 +198,7 @@ def seat_exhaust(exports):
+     return {'method':'final-valance ray survey; symmetric level tips and buried upper necks',
+             'valance_edge_y':edges,'centre_y':centre_y,'outlet_z':outlet_z,
+             'vertical_translation_metres':delta_y,'longitudinal_translation_metres':delta_z,
+-            'outlet_projection_metres':.045,'translated_vertices':changed}
++            'outlet_projection_metres':.025,'inboard_neck_length_metres':.239,'translated_vertices':changed}
+ 
+ 
+ def vent_paths():
+diff --git a/scripts/challenger_nose_finish.py b/scripts/challenger_nose_finish.py
+index 4bb5d8b..33f85c8 100644
+--- a/scripts/challenger_nose_finish.py
++++ b/scripts/challenger_nose_finish.py
+@@ -17,6 +17,11 @@ def point_map(points):
+     # increasing slope towards the leading edge prevents another lifted tip.
+     run = np.maximum((-z - 1.62) / .50, 0)
+     q[:, 1] -= .054 * run**3 * upper
++    # The old broad crown remained inflated behind the leading roll. Thin the
++    # upper sheet locally while keeping the face, lower fascia and rearward
++    # shoulder attached. Both end blends have zero first/second derivatives.
++    crown = ramp(-2.115, -2.015, z) * (1-ramp(-1.90, -1.68, z))
++    q[:, 1] -= .024 * crown * ramp(.60, .85, y)
+     # Integral of the quintic ramp: linear grille compression transitions
+     # smoothly to a rigid 45 mm inward shift throughout each lamp assembly.
+     a = np.abs(x)
+@@ -25,6 +30,7 @@ def point_map(points):
+     inset = .10 * (a - integral)
+     taper = (1 - ramp(-2.10, -1.72, z)) * upper
+     q[:, 0] -= np.sign(x) * inset * taper
++    q[:, 0] -= np.sign(x) * .04*(a-integral) * (1-ramp(-2.10,-1.72,z)) * ramp(.50,.64,y)
+     return q
+ 
+ 
+diff --git a/scripts/challenger_side_finish.py b/scripts/challenger_side_finish.py
+index 37532c3..9f840a5 100644
+--- a/scripts/challenger_side_finish.py
++++ b/scripts/challenger_side_finish.py
+@@ -14,15 +14,21 @@ class SideSheet:
+     ROWS=np.array([-.15,-.10,-.065,-.040,-.025,-.014,-.007,-.003,0,.003,.007,.014,.025,.045,.080,.115,.15])
+     SIMPLE_ROWS=np.array([-.15,-.075,-.030,-.012,-.006,0,.006,.012,.030,.075,.15])
+ 
+-    def __init__(self,values,crease):
++    def __init__(self,values,crease,hood=None):
+         from mathutils.bvhtree import BVHTree
+         self.crease=crease
++        self.hood_edges=None
++        if hood is not None:
++            hp=hood[:,:,:3];uv,ids=np.unique(np.round(hp.reshape(-1,3),7),axis=0,return_inverse=True)
++            hf=ids.reshape(-1,3);edges=np.sort(np.concatenate([hf[:,[0,1]],hf[:,[1,2]],hf[:,[2,0]]]),axis=1)
++            edges,counts=np.unique(edges,axis=0,return_counts=True);edges=edges[counts==1]
++            self.hood_edges=(uv[edges[:,0]],uv[edges[:,1]])
+         p=values[:,:,:3];cross=np.cross(p[:,1]-p[:,0],p[:,2]-p[:,0]);centre=p.mean(1)
+         chosen=(cross[:,0]>1e-11)&(centre[:,0]>.65)
+         points=p.reshape(-1,3);faces=np.arange(len(points)).reshape(-1,3)
+         tree=BVHTree.FromPolygons(points.tolist(),faces[chosen].tolist(),all_triangles=True)
+         samples=[]
+-        for z in np.arange(-2.18,2.131,.035):
++        for z in np.arange(-2.24,2.131,.035):
+             c=float(crease(z))
+             for d in np.arange(-.18,.181,.009):
+                 hit,normal,*_=tree.ray_cast((2,c+float(d),float(z)),(-1,0,0),2)
+@@ -70,9 +76,19 @@ class SideSheet:
+ 
+     def weight(self,p):
+         x,y,z=abs(p[:,0]),p[:,1],p[:,2];d=y-self.crease(z)
+-        return (ramp(.68,.74,x)*ramp(-.195,-.15,d)*(1-ramp(.15,.19,d))
+-                *ramp(-2.14,-1.93,z)*(1-ramp(2.05,2.20,z))
++        result=(ramp(.68,.74,x)*ramp(-.195,-.15,d)*(1-ramp(.15,.19,d))
++                *ramp(-2.26,-2.20,z)*(1-ramp(2.05,2.20,z))
+                 *(1-ramp(1.04,1.10,y)))
++        if self.hood_edges is not None:
++            active=np.flatnonzero((result>0)&(z<-1.90)&(y>.74))
++            a,b=self.hood_edges;edge=b-a;den=np.maximum(np.sum(edge*edge,axis=1),1e-20)
++            for start in range(0,len(active),256):
++                rows=active[start:start+256];q=p[rows]
++                t=np.clip(np.sum((q[:,None,:]-a)*edge,axis=2)/den,0,1)
++                distance=np.sqrt(np.min(np.sum((q[:,None,:]-a-t[:,:,None]*edge)**2,axis=2),axis=1))
++                protect=1-ramp(-2.00,-1.90,z[rows])
++                result[rows]*=1-protect*(1-ramp(.010,.040,distance))
++        return result
+ 
+     def apply(self,values):
+         from mathutils.bvhtree import BVHTree
+@@ -82,13 +98,18 @@ class SideSheet:
+         v[:,0]+=w*delta
+         cross=np.cross(out[:,1,:3]-out[:,0,:3],out[:,2,:3]-out[:,0,:3]);length=np.linalg.norm(cross,axis=1)
+         centre=out[:,:,:3].mean(1);exterior=cross[:,0]*np.sign(centre[:,0])>0
+-        guide=self.normal(v[:,:3]);nw=self.weight(p)*np.repeat(exterior,3)
++        # A corner that cannot be projected onto this chart must retain its
++        # own surface normal. Unconditional chart normals created false folds
++        # along the bonnet return and the formerly excluded nose transition.
++        guide=self.normal(v[:,:3]);nw=w*np.repeat(exterior,3)
+         previous=v[:,3:].copy();previous[(np.sum(previous*guide,axis=1)<0)&(nw>0)]*=-1
+         v[:,3:]=unit(previous*(1-nw[:,None])+guide*nw[:,None])
+         faces=np.arange(len(v)).reshape(-1,3)
+         tree=BVHTree.FromPolygons(v[:,:3].tolist(),faces[exterior&(length>1e-11)].tolist(),all_triangles=True)
+         remove=np.zeros(len(out),dtype=bool)
+-        for i in np.flatnonzero((~exterior)&(w.reshape(-1,3).mean(1)>.01)):
++        # Keep the nose aperture's intentional inward return. Extending the
++        # fair chart must not extend generic hidden-side removal into optics.
++        for i in np.flatnonzero((~exterior)&(w.reshape(-1,3).mean(1)>.01)&(centre[:,2]>-2.14)):
+             sign=float(np.sign(centre[i,0]));hit,*_=tree.ray_cast((sign*2,float(centre[i,1]),float(centre[i,2])),(-sign,0,0),2)
+             remove[i]=hit is not None and abs(hit.x-centre[i,0])<.006
+         self.stats.update({'maximum_vertex_correction_mm':float(np.max(abs(w*delta)))*1000,'covered_returns_removed':int(remove.sum())})
+@@ -156,7 +177,8 @@ def finish(exports,reference,simple):
+     from challenger_exterior_geometry import records
+     body=next(o for o in exports if o.name=='body__paint')
+     original=records(body)
+-    field=SideSheet(original,reference.side_crease)
++    hood=next(o for o in exports if o.name=='hood__paint')
++    field=SideSheet(original,reference.side_crease,records(hood))
+     values=field.apply(original);values,stats=field.retessellate(values,simple,budget=len(original))
+     panel._write(body,values)
+     return {**field.stats,'tessellation':stats}
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+index 3c2fa6f..8717f94 100644
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -752,7 +752,7 @@ if cached_source:record['conversion_input']={'kind':'retained measured body geom
+ record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source wheel centres retained as alignment reference.'
+ record['opaque_glazing']='Single smooth opaque exterior panes, 2% pane overlap and an opaque low-poly backing inset clear of the panes. No cabin contents or rig.'
+ record['refinement']={'reference_form_refined':True,'legacy_intermediate_nose_extension_metres':.14,'final_front_shortening_metres':.14,'nose_stretch_starts_z':-1.72,
+-    'nose_finish':{'downturn_cubic_coefficient_metres':.054,'downturn_starts_z':-1.62,'lamp_inset_each_metres':.045,'central_grille_width_reduction_metres':.090},
++    'nose_finish':{'downturn_cubic_coefficient_metres':.054,'downturn_starts_z':-1.62,'lamp_inset_each_metres':.063,'central_grille_width_reduction_metres':.126,'front_crown_thinning_metres':.024},
+     'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,
+     'side_surface':'one C2 shoulder curve and regular crowned side section; retained factory Y/Z silhouette and upper body',
+     'fitted_hood_height_reference':'reference crown evaluated in the original attachment domain','hood':'continuous reference crown and controlled central power bulge; native supported marking',

@@ -1,0 +1,95 @@
+diff --git a/scripts/challenger_detail_geometry.py b/scripts/challenger_detail_geometry.py
+index 0075e80..0b78f33 100644
+--- a/scripts/challenger_detail_geometry.py
++++ b/scripts/challenger_detail_geometry.py
+@@ -137,7 +137,7 @@ def details(add, simple, rear_surface):
+ 
+     # Rolled oval exhaust tips, black inside; no thin intersecting source tubes.
+     for side in [-1,1]:
+-        cx=side*.520+.005;cy=.351
++        cx=side*.525;cy=.351
+         loops=[]
+         for rx,ry,z in [(.111,.039,2.145),(.113,.041,2.207),(.110,.039,2.219),(.103,.032,2.219),(.101,.030,2.145)]:
+             loops.append(np.c_[cx+rx*np.cos(theta),cy+ry*np.sin(theta),np.full(count,z)])
+@@ -146,6 +146,61 @@ def details(add, simple, rear_surface):
+         v,f=disk(path,lambda x,y:2.148,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
+ 
+ 
++def seat_exhaust(exports):
++    """Seat both existing tips on the final valance, with buried upper necks.
++
++    Earlier rear-body revisions left the original fixed-height outlets below
++    the skin. Survey the actual finished bumper, after every body deformation;
++    use one level, symmetric pose for the chrome tubes and their dark cavities.
++    """
++    from mathutils.bvhtree import BVHTree
++    from challenger_clean_panels import _read
++    points=[];faces=[]
++    for obj in exports:
++        if obj.name not in ['body__paint','body__accent','body__dark']:continue
++        p,f,_=_read(obj)
++        faces.extend((f+len(points)).tolist());points.extend(p.tolist())
++    tree=BVHTree.FromPolygons(points,faces,all_triangles=True)
++    def hit(x,y):
++        point,*_=tree.ray_cast((float(x),float(y),3),(0,0,-1),1.2)
++        return point if point is not None and point.z>1.9 else None
++    edges=[]
++    for x in [-.525,.525]:
++        low=None
++        for y in np.linspace(.28,.55,271):
++            if hit(x,y) is not None:
++                assert low is not None, 'Valance survey must begin below its lower edge'
++                high=y
++                for _ in range(16):
++                    mid=(low+high)*.5
++                    if hit(x,mid) is None:low=mid
++                    else:high=mid
++                edges.append(high);break
++            low=y
++    assert len(edges)==2, 'Both exhausts require actual rear-valance support'
++    centre_y=max(edges)+.001
++    roots=[hit(x,centre_y+.033) for x in [-.525,.525]]
++    assert all(p is not None for p in roots), 'Upper exhaust necks must meet the valance'
++    outlet_z=max(p.z for p in roots)+.045
++    delta_y=centre_y-.351;delta_z=outlet_z-2.219
++    changed={}
++    for obj in exports:
++        if obj.name not in ['body__chrome','body__rubber']:continue
++        mesh=obj.data
++        p=np.asarray([v.co[:] for v in mesh.vertices])[:,[0,2,1]]*[1,1,-1]
++        chosen=(p[:,2]>2.12)&(p[:,1]<.405)&(p[:,1]>.29)&(abs(p[:,0])>.30)&(abs(p[:,0])<.75)
++        assert chosen.any(), 'Existing exhaust geometry must be present'
++        normals=[corner.vector[:] for corner in mesh.corner_normals]
++        p[chosen,1]+=delta_y;p[chosen,2]+=delta_z
++        mesh.vertices.foreach_set('co',(p[:,[0,2,1]]*[1,-1,1]).ravel())
++        mesh.update();mesh.normals_split_custom_set(normals)
++        changed[obj.name]=int(chosen.sum())
++    return {'method':'final-valance ray survey; symmetric level tips and buried upper necks',
++            'valance_edge_y':edges,'centre_y':centre_y,'outlet_z':outlet_z,
++            'vertical_translation_metres':delta_y,'longitudinal_translation_metres':delta_z,
++            'outlet_projection_metres':.045,'translated_vertices':changed}
++
++
+ def vent_paths():
+     # Stock Hellcat proportions, with softly rounded ends. These are holes in
+     # the new skin, not raised scoops or black faces on top of the paint.
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+index 31f15a2..3c2fa6f 100644
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -720,6 +720,7 @@ for simple in [False,True]:
+     shorten(exports)
+     from challenger_nose_finish import finish as finish_nose,point_map as nose_point_map
+     finish_nose(exports)
++    exhaust_attachment=exterior_detail.seat_exhaust(exports)
+     if not simple:
+         shortened_outline=factory_hood_outline.copy()
+         shortened_outline[:,2]=front_z(shortened_outline[:,2])
+@@ -739,6 +740,7 @@ for simple in [False,True]:
+     statistics.append({'detail':'continuous corner seam replacement','after':total-sum(row.get('after',0) for row in statistics)})
+     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
+     record['tiers'][tier]['clean_panels']=clean_stats
++    record['tiers'][tier]['exhaust_attachment']=exhaust_attachment
+     record['tiers'][tier]['joined_shell']=shell_stats
+     record['tiers'][tier]['shoulder_strips']=strip_stats
+     record['tiers'][tier]['fitted_contour_vertices']=fitted_contours

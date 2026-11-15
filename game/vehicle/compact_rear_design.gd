@@ -1,6 +1,6 @@
 class_name CompactRearDesign
 extends RefCounted
-## Original retro rear fittings. Matte native geometry; no added textures/shaders.
+## Original retro rear fittings; licensed flat plate glyphs have a reduced bake.
 const PLATE_CENTER: float=0.4856
 static var meshes: Dictionary={}
 static var lettering: Dictionary={}
@@ -134,22 +134,34 @@ static func _ink(color: Color) -> Material:
 static func _plate(car: CarVisual,trim: Material,metal: Material) -> void:
 	var ivory: Material=VisualGeometry.material(Color("e6dfc9"))
 	ivory.roughness=0.85
+	var printed: bool=car.simple_model and car.batch_parts
+	if printed:
+		# One shared mask keeps lit paper and the former unshaded ink colour in
+		# a single opaque surface, without another overlay or draw pass.
+		var printed_surface:=ShaderMaterial.new()
+		printed_surface.shader=preload("res://vehicle/compact_plate.gdshader")
+		printed_surface.set_shader_parameter("plate_ink",preload("res://assets/vehicles/compact_plate_v1/ink.res"))
+		printed_surface.set_shader_parameter("paper_color",Color("e6dfc9"))
+		printed_surface.set_shader_parameter("ink_color",Color("263e52"))
+		ivory=printed_surface
 	var blue: Material=_ink(Color("263e52"))
 	var red: Material=_ink(Color("8d463b"))
 	# 2:1 American format with a restrained fictional jurisdiction header.
 	_rounded_plate(car,"RearPlateFrame",Vector2(0.436,0.220),0.010,2.115,trim)
 	_rounded_plate(car,"RearPlateBorder",Vector2(0.420,0.212),0.008,2.124,blue)
-	_rounded_plate(car,"RearPlateFace",Vector2(0.412,0.206),0.007,2.127,ivory)
-	_text(car,"RearPlateLetters","BMT 01",0.0020,Vector3(0,PLATE_CENTER-0.010,2.129),blue)
-	_text(car,"RearPlateHeader","BEAT MY TRACK",0.00048,Vector3(0,PLATE_CENTER+0.070,2.129),blue)
+	_rounded_plate(car,"RearPlateFace",Vector2(0.412,0.206),0.007,2.127,ivory,printed)
+	if not printed:
+		_text(car,"RearPlateLetters","BMT 01",0.0020,Vector3(0,PLATE_CENTER-0.010,2.129),blue)
+		_text(car,"RearPlateHeader","BEAT MY TRACK",0.00048,Vector3(0,PLATE_CENTER+0.070,2.129),blue)
 	var rule: MeshInstance3D=VisualGeometry.box(car.body,Vector3(0.350,0.0025,0.001),Vector3(0,PLATE_CENTER+0.047,2.129),red)
 	rule.name="RearPlateHeaderRule"
 	for side: float in [-1.0,1.0]:
 		var screw: MeshInstance3D=VisualGeometry.cylinder(car.body,0.004,0.002,Vector3(side*0.184,PLATE_CENTER+0.053,2.130),metal,true)
 		screw.rotation.x=PI*0.5
 
-static func _rounded_plate(car: CarVisual,label: String,size: Vector2,radius: float,z: float,material: Material) -> void:
-	if not meshes.has(label):
+static func _rounded_plate(car: CarVisual,label: String,size: Vector2,radius: float,z: float,material: Material,printed: bool=false) -> void:
+	var key: String=label+("-printed" if printed else "")
+	if not meshes.has(key):
 		var outline: Array[Vector3]=[]
 		for corner: int in range(4):
 			var direction:=Vector2(1 if corner in [0,3] else -1,1 if corner in [0,1] else -1)
@@ -163,11 +175,12 @@ static func _rounded_plate(car: CarVisual,label: String,size: Vector2,radius: fl
 		for index: int in range(outline.size()):
 			for point: Vector3 in [Vector3(0,PLATE_CENTER,z),outline[(index+1)%outline.size()],outline[index]]:
 				tool.set_normal(Vector3.BACK)
+				if printed: tool.set_uv(Vector2(point.x/size.x+0.5,0.5-(point.y-PLATE_CENTER)/size.y))
 				tool.add_vertex(point)
-		meshes[label]=tool.commit()
+		meshes[key]=tool.commit()
 	var mesh:=MeshInstance3D.new()
 	mesh.name=label
-	mesh.mesh=meshes[label]
+	mesh.mesh=meshes[key]
 	mesh.material_override=material
 	car.body.add_child(mesh)
 

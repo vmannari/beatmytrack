@@ -1,0 +1,19 @@
+from pathlib import Path
+import json,subprocess,sys,time
+ROOT=Path(__file__).resolve().parents[3];OUT=Path(__file__).resolve().parent
+run=OUT/'run_check.py';base='res://../docs/evidence/challenger-continuous-side-2026-11-15/'
+tests=[
+ ('opacity-mobile',base+'opaque.gd','mobile',['--prepared','--evidence-root=res://../build/challenger-continuous-side-2026-11-15/opacity']),
+ ('prepared-views-mobile',base+'capture.gd','mobile',['--prepared','--stage=final']),
+ ('prepared-close-gl',base+'capture.gd','gl_compatibility',['--prepared','--full','--marked-only','--stage=final-close']),
+ ('prepared-close-mobile',base+'capture.gd','mobile',['--prepared','--full','--marked-only','--stage=final-close']),
+ ('app-gl','res://tests/test_super_rally_ui.gd','gl_compatibility',['--evidence-root=res://../build/challenger-continuous-side-2026-11-15/app']),
+ ('app-mobile','res://tests/test_super_rally_ui.gd','mobile',['--evidence-root=res://../build/challenger-continuous-side-2026-11-15/app'])]
+results=[]
+for label,script,renderer,arguments in tests:
+    command=[sys.executable,str(run),label,script,'--rendering-method',renderer,'--audio-driver','Dummy','--',*arguments]
+    started=time.monotonic();result=subprocess.run(command,cwd=ROOT)
+    results.append({'label':label,'exit_code':result.returncode,'elapsed_seconds':time.monotonic()-started})
+    (OUT/'gpu-checks.json').write_text(json.dumps(results,indent=2))
+    if result.returncode:sys.exit(result.returncode)
+print('SIDE_GPU_CHECKS all final desktop checks complete',flush=True)

@@ -17,6 +17,14 @@ func remember(path: String) -> void:
 	# masters under the same engine and LOD policy may reuse their index levels.
 	previous.clear()
 	if not ResourceLoader.exists(path): return
+	# An obsolete reduced mesh may have been retired before consumers refresh.
+	# This old scene is only an optional LOD cache; rebuild from current sources.
+	for dependency: String in ResourceLoader.get_dependencies(path):
+		var fields: PackedStringArray=dependency.split("::")
+		var target: String=fields[-1]
+		if target.begins_with("res://") and not FileAccess.file_exists(target):
+			print("CAR_LOD_REUSE_MISS ",path," missing=",target)
+			return
 	var scene: PackedScene=ResourceLoader.load(path,"PackedScene",ResourceLoader.CACHE_MODE_IGNORE_DEEP)
 	if scene==null: return
 	var holder: Node=scene.instantiate()

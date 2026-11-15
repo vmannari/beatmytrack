@@ -1,0 +1,61 @@
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+index fdac4e6..fe35f65 100644
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,7 @@ extends RefCounted
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-11/"
++const KEY: String = "super-rally-hellcat-12/"
+ const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
+ const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
+ const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
+@@ -130,7 +130,7 @@ static func _cubic_weights(t: float) -> Vector4:
+ 	return Vector4(-0.5*t+t*t-0.5*t*t*t,1-2.5*t*t+1.5*t*t*t,0.5*t+2*t*t-1.5*t*t*t,-0.5*t*t+0.5*t*t*t)
+ 
+ static func _hood_height(x: float,z: float) -> float:
+-	if hood_profile.is_empty(): hood_profile = (load(ROOT+"hood_profile.json") as JSON).data
++	if hood_profile.is_empty(): hood_profile = (ResourceLoader.load(ROOT+"hood_profile.json","JSON",ResourceLoader.CACHE_MODE_REPLACE) as JSON).data
+ 	var xs: Array = hood_profile.x; var zs: Array = hood_profile.z
+ 	var u: float = clampf((x-float(xs[0]))/(float(xs[1])-float(xs[0])),0,xs.size()-1)
+ 	var v: float = clampf((z-float(zs[0]))/(float(zs[1])-float(zs[0])),0,zs.size()-1)
+@@ -172,6 +172,7 @@ static func _materials(car: CarVisual) -> Dictionary:
+ static func _asset(car: CarVisual, parent: Node3D, group: String, roles: Array[String] = [], override: Material = null) -> void:
+ 	if _asset_revision != KEY:
+ 		assets.clear()
++		hood_profile.clear()
+ 		_asset_revision = KEY
+ 	var manifest: Dictionary = (load(ROOT+"manifest.json") as JSON).data
+ 	for item: Dictionary in manifest.tiers["simple" if car.simple_model else "full"]:
+diff --git a/scripts/challenger_reference_form.py b/scripts/challenger_reference_form.py
+index 8f21468..9c505b2 100644
+--- a/scripts/challenger_reference_form.py
++++ b/scripts/challenger_reference_form.py
+@@ -50,7 +50,8 @@ class ReferenceForm:
+         self.wing_width=side.width_curve
+         self.stats={'method':'shared reference bonnet crown, upper wing and rounded front plane',
+                     'front_width_factor':1.095,'survey_x':xx.tolist(),'survey_front_z':zz,
+-                    'maximum_power_bulge_metres':.042,'optical_carrier_radius_metres':.063}
++                    'maximum_power_bulge_metres':.042,'main_deck_lowering_metres':.050,
++                    'optical_carrier_radius_metres':.063}
+ 
+     def old_height(self,x,z):
+         x,z=np.broadcast_arrays(x,z)
+@@ -62,8 +63,14 @@ class ReferenceForm:
+ 
+     def height(self,x,z):
+         x,z=np.broadcast_arrays(x,z)
+-        dome=.042*np.exp(-(abs(x)/.37)**6)*ramp(-2.08,-1.72,z)*(1-ramp(-1.05,-.78,z))
+-        return self.base(z)+.012*(1-(x/.84)**2)+dome
++        centre=np.exp(-(abs(x)/.37)**6)
++        dome=.042*centre*ramp(-2.08,-1.72,z)*(1-ramp(-1.05,-.78,z))
++        # Lower the main bonnet deck and its shared wing banks. The central
++        # intake keeps its accepted height; only that narrow piece stays proud.
++        # C2 end blends retain the leading roll and windscreen/cowl attachment.
++        rear_seat=-.990+.225*(abs(x)/.755)**2-.020
++        deck_drop=.050*ramp(-2.20,-1.88,z)*(1-ramp(-1.22,rear_seat,z))
++        return self.base(z)+.012*(1-(x/.84)**2)+dome-deck_drop*(1-centre)
+ 
+     def hood_normal(self,x,z):
+         e=.00002

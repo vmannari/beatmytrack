@@ -15,7 +15,7 @@ def snapshot():
     files=[]
     for name in ["game/vehicle", "game/ui", "game/core", "game/resources/cars", "game/assets/vehicles/challenger_hellcat_v1"]:
         files += [p for p in (ROOT/name).rglob("*") if p.suffix in [".gd", ".gdshader", ".gdshaderinc", ".json", ".res", ".tres"]]
-    files += [ROOT/"game/project.godot"]
+    files += [ROOT/"game/project.godot",ROOT/"game/tests/bake_challenger_hellcat.gd",ROOT/"scripts/prepare_challenger.py",ROOT/"scripts/challenger_clean_panels.py"]
     return {p.relative_to(ROOT).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
 
 label, script, *extra = sys.argv[1:]
@@ -26,7 +26,7 @@ pins=OUT/"input-pins";pins.mkdir(exist_ok=True)
 pin=pins/(source_digest+".json")
 if not pin.exists():pin.write_bytes(encoded)
 index_before=hashlib.sha256((ROOT/".git/index").read_bytes()).hexdigest()
-profile = ROOT / "build/challenger-panel-corrections-2026-11-14/profile"
+profile = ROOT / "build/challenger-panel-corrections-2026-11-14/checks" / label
 (profile / "Circuit01Lab").mkdir(parents=True, exist_ok=True)
 (profile / "Circuit01Lab/backend.cfg").write_text('[backend]\nurl=""\n', encoding="utf-8")
 env = {**os.environ, "APPDATA": str(profile), "LOCALAPPDATA": str(profile / "local"), "BMT_API_URL": "", "BMT_DEV_AUTH_KEY": ""}

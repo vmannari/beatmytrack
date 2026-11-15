@@ -37,7 +37,7 @@ static func batch_static_parts(parent: Node3D, cooperate: Callable = Callable(),
 		var format_key: String = ""
 		for attribute: Variant in arrays:
 			format_key += "0" if attribute == null else "1"
-		var key: String = "%d:%d:%s" % [surface.get_instance_id(),part.cast_shadow,format_key]
+		var key: String = "%d:%d:%s:%s" % [surface.get_instance_id(),part.cast_shadow,format_key,str(part.mesh.get_meta("car_keep_master",false))]
 		if not groups.has(key): groups[key] = []
 		groups[key].append(part)
 	for key: String in groups:
@@ -52,6 +52,7 @@ static func batch_static_parts(parent: Node3D, cooperate: Callable = Callable(),
 		var combined := MeshInstance3D.new()
 		combined.name = "BatchedParts"
 		combined.mesh = tool.commit()
+		_keep_master_policy(first.mesh,combined.mesh)
 		combined.material_override = first.get_active_material(0)
 		combined.cast_shadow = first.cast_shadow
 		parent.add_child(combined)
@@ -107,7 +108,7 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 			var format_key: String = ""
 			for index: int in range(Mesh.ARRAY_INDEX):
 				format_key += "1" if normalize_uv and index in [Mesh.ARRAY_TANGENT,Mesh.ARRAY_TEX_UV,Mesh.ARRAY_TEX_UV2] else "0" if arrays[index] == null else "1"
-			var key: String = "%d:%d:%d:%s" % [surface.get_instance_id(),part.cast_shadow,part.layers,format_key]
+			var key: String = "%d:%d:%d:%s:%s" % [surface.get_instance_id(),part.cast_shadow,part.layers,format_key,str(part.mesh.get_meta("car_keep_master",false))]
 			if not groups.has(key): groups[key] = {"material":surface,"parts":[],"normalize_uv":normalize_uv}
 			groups[key].parts.append(part)
 		for group: Dictionary in groups.values():
@@ -131,6 +132,7 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 			var combined := MeshInstance3D.new()
 			combined.name = "BatchedParts"
 			combined.mesh = tool.commit()
+			_keep_master_policy(first.mesh,combined.mesh)
 			(combined.mesh as ArrayMesh).custom_aabb = bounds
 			combined.material_override = group.material
 			combined.cast_shadow = first.cast_shadow
@@ -139,6 +141,15 @@ static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) ->
 			for part: MeshInstance3D in group.parts:
 				part.get_parent().remove_child(part)
 				part.queue_free()
+
+
+static func _keep_master_policy(source: Mesh, target: Mesh) -> void:
+	# Thin fitted contours and their backing skin must share the same distance
+	# geometry. Preserve only the explicit opt-in role through both batch passes.
+	if source.get_meta("car_keep_master",false):
+		target.set_meta("car_keep_master",true)
+		target.set_meta("car_authored_far",true)
+		target.set_meta("car_surface_guide_locked",true)
 
 
 static func _collect_fixed_parts(parent: Node3D, frames: Array[Node3D], result: Array[MeshInstance3D]) -> void:

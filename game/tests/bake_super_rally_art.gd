@@ -27,7 +27,7 @@ func run() -> void:
 				pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
 	assert(pixels.save_png("res://assets/menu/super_rally_illustration_v1.png") == OK)
 	assert(pixels.save_png("res://assets/news/vehicles/super_rally.png") == OK)
-	pixels.resize(176,112,Image.INTERPOLATE_LANCZOS)
+	pixels.resize(preload("res://ui/header_car_icons.gd").SIZE.x,preload("res://ui/header_car_icons.gd").SIZE.y,Image.INTERPOLATE_LANCZOS)
 	assert(pixels.save_png("res://assets/menu/header_cars_v1/super_rally.png") == OK)
 	preview.free()
 	canvas.free()

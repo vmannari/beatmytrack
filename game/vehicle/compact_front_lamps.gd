@@ -1,6 +1,6 @@
 class_name CompactFrontLamps
 extends RefCounted
-## Original sealed-beam optics and rolled bezels, fitted to the compact nose.
+## Classic clear sealed beams, recessed reflectors and a small central bulb cap.
 const OFFSET: float = 0.652
 const CENTER: float = 0.798
 const RADIUS: float = 0.132
@@ -23,6 +23,7 @@ static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 	var lens := ShaderMaterial.new()
 	lens.shader = preload("res://vehicle/compact_headlamp.gdshader")
 	var suffix: String = "_simple" if car.simple_model else ""
+	var segments: int = 32 if car.simple_model else 40
 	for kind: String in ["Gaskets","Bezels","Reflectors","OpticalShades","Lenses"]:
 		var key: String = "FrontLamp"+kind+suffix
 		if not meshes.has(key):
@@ -32,21 +33,24 @@ static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 				var complete: bool = true
 				match kind:
 					"Gaskets":
-						complete = await _revolve(tool,side,[Vector2(0.120,-0.026),Vector2(RADIUS,-0.016),Vector2(RADIUS,0.003),Vector2(0.120,0.003)],32 if not car.simple_model else 24,true,false,cooperate)
+						complete = await _revolve(tool,side,[Vector2(0.119,-0.027),Vector2(RADIUS,-0.010),Vector2(RADIUS,0.003)],segments,true,false,cooperate)
 					"Bezels":
-						complete = await _revolve(tool,side,[Vector2(0.119,-0.039),Vector2(0.126,-0.034),Vector2(0.128,-0.027),Vector2(0.125,-0.023),Vector2(0.119,-0.024)],48 if not car.simple_model else 32,true,true,cooperate)
+						complete = await _revolve(tool,side,[Vector2(0.119,-0.039),Vector2(0.128,-0.029),Vector2(0.121,-0.024)],segments,true,true,cooperate)
 					"Reflectors":
-						complete = await _revolve(tool,side,[Vector2(0,0.004),Vector2(0.050,-0.006),Vector2(0.100,-0.024),Vector2(0.119,-0.036)],32 if not car.simple_model else 24,false,true,cooperate)
-						if complete: complete = await _revolve(tool,side,[Vector2(0,-0.045),Vector2(0.012,-0.042),Vector2(0.018,-0.036),Vector2(0.018,-0.032),Vector2(0,-0.032)],15 if not car.simple_model else 12,true,true,cooperate)
+						complete = await _revolve(tool,side,[Vector2(0,0.004),Vector2(0.084,-0.018),Vector2(0.119,-0.036)],segments,false,true,cooperate)
+						# Only the visible bulb cap; the opaque dish closes the back.
+						if complete: complete = await _revolve(tool,side,[Vector2(0,-0.045),Vector2(0.012,-0.042),Vector2(0.018,-0.036)],segments/2,false,true,cooperate)
 					"OpticalShades":
-						complete = await _revolve(tool,side,[Vector2(0.109,-0.034),Vector2(0.117,-0.037),Vector2(0.118,-0.033),Vector2(0.110,-0.030)],32 if not car.simple_model else 24,true,true,cooperate)
-						if complete: complete = await _revolve(tool,side,[Vector2(0.019,-0.038),Vector2(0.027,-0.034),Vector2(0.026,-0.028),Vector2(0.019,-0.028)],24 if not car.simple_model else 16,true,true,cooperate)
+						# A round stamped shade retains the original central dark ring.
+						# Its hidden return is unnecessary in front of the closed dish.
+						complete = await _revolve(tool,side,[Vector2(0.019,-0.038),Vector2(0.028,-0.034)],segments/2,false,true,cooperate)
 					"Lenses":
-						complete = await _revolve(tool,side,[Vector2(0,-0.054),Vector2(0.064,-0.050),Vector2(0.104,-0.043),Vector2(0.117,-0.037)],32 if not car.simple_model else 24,false,true,cooperate)
+						complete = await _revolve(tool,side,[Vector2(0,-0.054),Vector2(0.084,-0.047),Vector2(0.117,-0.037)],segments,false,true,cooperate)
 				if not complete: return
 			tool.index()
 			tool.generate_tangents()
 			meshes[key] = tool.commit()
+			meshes[key].set_meta("car_authored_far",true)
 		var part := MeshInstance3D.new()
 		part.name = "FrontLamp"+kind
 		part.mesh = meshes[key]

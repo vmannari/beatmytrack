@@ -1,0 +1,624 @@
+diff --git a/game/tests/bake_challenger_hellcat.gd b/game/tests/bake_challenger_hellcat.gd
+index 36a55c2..6bbda31 100644
+--- a/game/tests/bake_challenger_hellcat.gd
++++ b/game/tests/bake_challenger_hellcat.gd
+@@ -99,6 +99,10 @@ func run() -> void:
+ 			var native := ArrayMesh.new(); var triangles: int = 0
+ 			if clean and ((group in ["body","hood"] and role in ["paint","contour"]) or group.begins_with("tail_") or (group == "body" and role in ["red","lens_red","reverse"])):
+ 				native.set_meta("car_surface_guide_locked",true)
++			if conversion.tiers[tier].get("clean_panels",{}).has("manufactured_exterior") and ((group == "body" and role in ["dark","accent"]) or (group == "aero" and role == "accent")):
++				# These fitted optical seats share the repaired paint boundary;
++				# further generic reduction can put paint through the applique.
++				native.set_meta("car_surface_guide_locked",true)
+ 			if role == "contour" and FileAccess.file_exists(source+"bonnet_contour.json"):
+ 				var marking: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(source+"bonnet_contour.json"))
+ 				native.set_meta("bonnet_contour_baked",bool(marking.get("baked",false)))
+diff --git a/scripts/challenger_exterior_geometry.py b/scripts/challenger_exterior_geometry.py
+new file mode 100644
+index 0000000..6d91c09
+--- /dev/null
++++ b/scripts/challenger_exterior_geometry.py
+@@ -0,0 +1,583 @@
++"""Continuous upper exterior sheets, authored after the offline reduction.
++
++All coordinates are in the final vehicle frame. The grille's circular returns,
++the nose's rolled leading edge and the wing's narrow shoulder are independent
++curvature features; projecting them onto the bonnet destroys those features.
++"""
++import math
++import numpy as np
++import challenger_clean_panels as panel
++from challenger_reference_geometry import curve
++
++
++def normalise(n):
++    return n/np.maximum(np.linalg.norm(n,axis=-1,keepdims=True),1e-12)
++
++
++def records(obj):
++    p,f,n=panel._read(obj)
++    return np.c_[p[f].reshape(-1,3),n].reshape(-1,3,6)
++
++
++def grid(rows):
++    """Triangulate one chart, deriving tangents from its own parameterisation."""
++    p=np.asarray(rows)
++    du=np.gradient(p,axis=1);dv=np.gradient(p,axis=0)
++    n=normalise(np.cross(du,dv))
++    output=[]
++    for j in range(len(p)-1):
++        for i in range(p.shape[1]-1):
++            for ids in [[(j,i),(j,i+1),(j+1,i+1)],[(j,i),(j+1,i+1),(j+1,i)]]:
++                face=np.array([np.r_[p[a,b],n[a,b]] for a,b in ids])
++                output.append(face)
++    return output
++
++
++def orient(faces,hint):
++    for face in faces:
++        n=face[:,3:].mean(0)
++        if n@hint<0:face[:,3:]*=-1;n=-n
++        if np.cross(face[1,:3]-face[0,:3],face[2,:3]-face[0,:3])@n<0:
++            face[[1,2]]=face[[2,1]]
++    return faces
++
++
++def subtract_box(face,bounds):
++    # Blender stores coordinates as Float32. A previous cut at -2.095 is
++    # therefore read back as -2.0950000286; without snapping, the next cut
++    # retains an entire old cap only 29 nm outside its boundary. Those caps
++    # protrude through the new flank. Use a 2 micron numerical seam tolerance.
++    face=np.array(face,copy=True)
++    for axis,lower,upper in bounds:
++        for bound in [lower,upper]:
++            selected=abs(face[:,axis]-bound)<.000002
++            face[selected,axis]=bound
++    return panel._subtract_box(face,bounds)
++
++
++def nose_width(y):
++    return curve(np.asarray(y),[.285,.34,.50,.55,.815],[.755,.790,.838,.840,.840])
++
++
++def front_z(x,y):
++    x,y=np.broadcast_arrays(x,y)
++    width=nose_width(y);onset=width-.100
++    t=np.clip(abs(x)/onset,0,1)
++    lead=-2.250+.045*(1-panel.ramp(.30,.55,y))
++    centre=lead+.005*(1-(1-t*t)**2)
++    d=np.clip(abs(x)-onset,0,.100)
++    arc=lead+.105-np.sqrt(np.maximum(0,.100**2-d*d))
++    arc=np.where(abs(x)>width-.0000001,lead+.105,arc)
++    return np.where(abs(x)<=onset,centre,arc)
++
++
++def aperture():
++    """The full four-lamp opening, with true 52 mm circular corner arcs."""
++    from challenger_detail_geometry import rounded
++    return resample(rounded(0,.708,1.604,.210,.052,14),.025)
++
++
++def resample(loop,spacing=.012):
++    points=[]
++    for a,b in zip(loop,np.roll(loop,-1,axis=0)):
++        for t in np.linspace(0,1,max(1,math.ceil(np.linalg.norm(b-a)/spacing)),endpoint=False):
++            points.append(a+(b-a)*t)
++    return np.asarray(points)
++
++
++def nose(obj,hood,lattice,simple):
++    old=records(obj);kept=[]
++    for face in old:
++        kept.extend(subtract_box(face,[(1,.285,1.08),(2,-2.30,-2.095)]))
++    # Compact the retained broad sheets before adding the manufactured
++    # boundaries. The new cowl, grille roll and rear corner are never dissolved.
++    panel._write(obj,panel._symmetric(np.asarray(kept)))
++    compaction=compact_paint(obj,simple)
++    kept=list(records(obj))
++    yy=np.linspace(.285,.815,45)
++    boundary=resample(np.vstack([np.c_[nose_width(yy),yy],np.c_[-nose_width(yy[::-1]),yy[::-1]]]),.018)
++    hole=aperture()
++    from challenger_detail_geometry import rounded
++    lower=resample(rounded(0,.408,1.220,.170,.050,14),.022)
++    arc=.740+.100*np.sin(np.linspace(0,math.pi/2,18))
++    columns=np.r_[-arc[::-1],[-.50,0,.50],arc]
++    columns=np.unique(columns)
++    lines=[np.c_[np.full(6,x),np.linspace(.535,.815,6)] for x in columns]
++    xy,faces=lattice(boundary,.060 if simple else .045,holes=[hole,lower],feature_lines=lines)
++    p=np.c_[xy,front_z(xy[:,0],xy[:,1])]
++    e=1e-5
++    dzdx=(front_z(xy[:,0]+e,xy[:,1])-front_z(xy[:,0]-e,xy[:,1]))/(2*e)
++    dzdy=(front_z(xy[:,0],xy[:,1]+e)-front_z(xy[:,0],xy[:,1]-e))/(2*e)
++    n=normalise(np.c_[dzdx,dzdy,-np.ones(len(xy))])
++    added=[np.c_[p[list(f)],n[list(f)]] for f in faces]
++    orient(added,np.array([0,0,-1]))
++    kept.extend(added)
++    # Small rolled aperture return: successive true offsets keep the corner
++    # circular, rather than pinching the top and bottom into the lamp rims.
++    centre=np.array([0,.708]);count=len(hole)
++    tangent=np.roll(hole,-1,axis=0)-np.roll(hole,1,axis=0)
++    outward=normalise(np.c_[tangent[:,1],-tangent[:,0]])
++    if np.mean(np.sum(outward*(hole-centre),axis=1))<0:outward*=-1
++    rings=[]
++    for theta in np.linspace(0,math.pi/2,3):
++        xy=hole-outward*(.004*(1-math.cos(theta)))
++        rings.append(np.c_[xy,front_z(xy[:,0],xy[:,1])+.004*math.sin(theta)])
++    rings.append(rings[-1]+[0,0,.014])
++    # Duplicate the first station for a periodic chart.
++    ring_faces=grid([np.vstack([r,r[0]]) for r in rings])
++    orient(ring_faces,np.array([0,0,-1]));kept.extend(ring_faces)
++    # Elliptical leading roll. It begins below the bonnet's edge return and
++    # finishes with a vertical tangent at the grille face, dropping 35-45 mm.
++    dense=np.linspace(-.840,.840,8193)
++    profile=np.c_[dense,front_z(dense,.815)]
++    distance=np.r_[0,np.cumsum(np.linalg.norm(np.diff(profile,axis=0),axis=1))]
++    arc=.740+.100*np.sin(np.linspace(0,math.pi/2,18))
++    xs=np.unique(np.r_[-arc[::-1],np.linspace(-.72,.72,17),arc])
++    unit=xs/.840
++    start=np.full(len(xs),-2.095)
++    top=hood.height(unit*.790,start)-.003
++    end=front_z(xs,.815);drop=top-.815
++    rows=[]
++    for theta in np.linspace(0,math.pi/2,9):
++        z=start+(end-start)*math.sin(theta)
++        y=top-drop*(1-math.cos(theta))
++        rows.append(np.c_[unit*(.790+.050*math.sin(theta)),y,z])
++    roll=grid(rows);orient(roll,np.array([0,1,-1]));kept.extend(roll)
++    # The circular plan corner ends tangent to a short upright side return.
++    # Close both the wall and the upper roll to the exact retained cut plane.
++    ys=np.linspace(.285,.815,45)
++    wall=[]
++    for t in np.linspace(0,1,2):
++        width=nose_width(ys);end=front_z(width,ys)
++        wall.append(np.c_[width,ys,end+(-2.095-end)*t])
++    kept.extend(orient(grid(wall),np.array([1,0,0])))
++    edge=np.array([row[-1] for row in rows])
++    cap=[]
++    for t in np.linspace(0,1,2):
++        q=edge.copy();q[:,2]+=( -2.095-q[:,2])*t;cap.append(q)
++    kept.extend(orient(grid(cap),np.array([1,1,0])))
++    panel._write(obj,panel._symmetric(np.asarray(kept)))
++    return {'aperture_radius_metres':.052,'aperture_return_radius_metres':.004,
++            'centre_leading_drop_metres':float(drop[len(xs)//2]),'added_triangles':len(added)+len(roll)+len(ring_faces),'retained_sheet_compaction':compaction}
++
++
++def wing_crease(z):
++    return curve(np.asarray(z),[-2.19,-2.10,-1.9,-1.6,-1.2,-.85,-.58],[.815,.815,.823,.834,.842,.849,.856])
++
++
++def wing_width(z):
++    return curve(np.asarray(z),[-2.19,-2.10,-1.9,-1.6,-1.2,-.85,-.58],[.840,.840,.895,.920,.931,.931,.927])
++
++
++
++def rear_joint_ys():
++    return np.unique(np.round(np.r_[np.linspace(.285,.980,57),np.linspace(.285,.980,40),[.914,.9156,.916,.9164,.918]],6))
++
++
++def rear_width(y):
++    y=np.asarray(y);d=y-.916
++    lower=curve(y,[.285,.35,.45,.65,.82,.916],[.755,.790,.860,.900,.918,.920])
++    return lower-1.10*.5*(d+np.sqrt(d*d+.0004**2))
++
++
++def rear_reach(y):
++    return .455-.070*(1-panel.ramp(.32,.52,np.asarray(y)))
++
++
++def rear_edge(y,z=1.950):
++    return rear_width(y)*np.maximum(0,1-(np.maximum(0,np.asarray(z)-1.750)/rear_reach(y))**8)**.125
++
++
++def rear_surface(x,y):
++    return 1.750+rear_reach(y)*np.maximum(0,1-(np.asarray(x)/rear_width(y))**8)**.125
++
++
++def rear_fascia(obj,lattice,simple):
++    """One continuous rear face and corner return, sharing the side seam."""
++    old=records(obj);kept=[];cut=[];joint=[]
++    for face in old:
++        for poly in subtract_box(face,[(1,.285,.980),(2,1.950,2.40)]):
++            for v in poly:
++                if not .285-1e-8<=v[1]<=.980+1e-8 or v[2]<1.950-1e-8:continue
++                if min(abs(v[1]-.285),abs(v[1]-.980))<1e-8 and abs(v[0])<=float(rear_width(v[1])):
++                    v[2]=rear_surface(v[0],v[1]);cut.append(v[:2].copy())
++                elif abs(v[2]-1.950)<1e-8 and abs(v[0])>.60:
++                    v[0]=math.copysign(float(rear_edge(v[1])),v[0]);joint.append(v[1])
++            kept.append(poly)
++    from challenger_detail_geometry import rounded
++    yy=np.unique(np.round(np.r_[rear_joint_ys(),joint],6))
++    boundary=resample(np.vstack([np.c_[rear_edge(yy),yy],np.c_[-rear_edge(yy[::-1]),yy[::-1]]]),.018)
++    # Include the retained deck/sill's exact stations in the surface boundary.
++    if cut:
++        lower=[q for q in boundary if abs(q[1]-.285)<1e-7];upper=[q for q in boundary if abs(q[1]-.980)<1e-7]
++        for q in cut:(lower if abs(q[1]-.285)<1e-7 else upper).append(q)
++        right=[q for q in boundary if abs(q[0]-float(rear_edge(q[1])))<1e-7 and .285<q[1]<.980]
++        left=[q for q in boundary if abs(q[0]+float(rear_edge(q[1])))<1e-7 and .285<q[1]<.980]
++        boundary=np.array(sorted(lower,key=lambda q:q[0])+sorted(right,key=lambda q:q[1])+sorted(upper,key=lambda q:-q[0])+sorted(left,key=lambda q:-q[1]))
++    # Merge the Float32 copies of shared stations before making CDT edges.
++    # Otherwise nearly coincident vertices create tiny backtracking edges and
++    # the triangulator can discard the constraint at the shoulder fillet.
++    seen=set();ordered=[]
++    for q in boundary:
++        key=tuple(np.round(q,6))
++        if key not in seen:seen.add(key);ordered.append(q)
++    boundary=np.asarray(ordered)
++    hole=resample(rounded(0,.853,1.604,.180,.052,14),.020)
++    lines=[np.c_[np.linspace(-.90,.90,35),np.full(35,y)] for y in [.914,.9156,.916,.9164,.918]]
++    # Parameterise by normalised width. The side seam is straight in this
++    # chart, so CDT cannot make flat ear triangles across the curved shoulder.
++    boundary[:,0]/=rear_width(boundary[:,1]);hole[:,0]/=rear_width(hole[:,1])
++    for line in lines:line[:,0]/=rear_width(line[:,1])
++    uv,faces=lattice(boundary,.050 if simple else .035,holes=[hole],feature_lines=lines)
++    xy=np.c_[uv[:,0]*rear_width(uv[:,1]),uv[:,1]]
++    p=np.c_[xy,rear_surface(xy[:,0],xy[:,1])];e=.00002
++    dx=(rear_surface(xy[:,0]+e,xy[:,1])-rear_surface(xy[:,0]-e,xy[:,1]))/(2*e)
++    dy=(rear_surface(xy[:,0],xy[:,1]+e)-rear_surface(xy[:,0],xy[:,1]-e))/(2*e)
++    n=normalise(np.c_[-dx,-dy,np.ones(len(xy))])
++    added=orient([np.c_[p[list(t)],n[list(t)]] for t in faces],np.array([0,0,1]))
++    panel._write(obj,panel._symmetric(np.asarray(kept+added)))
++    return {'continuous_rear_triangles':len(added),'aperture_corner_radius_metres':.052}
++
++
++def rear_layers(exports):
++    """Seat applique, returns and light guides on the same corrected quarter."""
++    surface=rear_surface
++    for obj in exports:
++        group,role=obj.name.split('__')
++        offsets={'dark':.002,'accent':.004,'lens_red':.006,'reverse':.011,'red':.010}
++        if group=='body' and role in offsets:offset=offsets[role]
++        elif group.startswith('tail_'):offset=.012
++        else:continue
++        old=records(obj);v=old.reshape(-1,6);p=v[:,:3].copy();n=v[:,3:].copy()
++        selected=(p[:,2]>1.99)&(p[:,1]>.750)&(p[:,1]<.960)&(abs(p[:,0])<.84)
++        x,y=p[selected,0],p[selected,1];e=.00005
++        p[selected,2]=surface(x,y)+offset
++        dx=(surface(x+e,y)-surface(x-e,y))/(2*e)
++        dy=(surface(x,y+e)-surface(x,y-e))/(2*e)
++        n[selected]=normalise(np.c_[-dx,-dy,np.ones(len(x))])
++        panel._write(obj,np.c_[p,n].reshape(-1,3,6))
++
++
++def fair_upper_wings(obj,hood,lattice,simple):
++    """One regular exterior side loft, with shared roof/deck/bonnet seams."""
++    from mathutils.bvhtree import BVHTree
++    p,f,_=panel._read(obj);skin=BVHTree.FromPolygons(p.tolist(),f.tolist(),all_triangles=True)
++    edge=hood.points(np.ones(1025),np.linspace(0,1,1025))
++    start,end,base,roof=-2.095,1.950,.285,.980
++    def source(y,z,default):
++        hit,*_=skin.ray_cast((2,float(y),float(z)),(-1,0,0),4)
++        return float(hit.x) if hit is not None and hit.x>.60 else default
++    cap_top=float(hood.height(np.array(.790),np.array(start)))-.003
++    top_z=np.linspace(-.80,1.950,257)
++    # A small symmetric convolution removes isolated donor fragments at the
++    # cabin foot while retaining its broad quarter and pillar proportions.
++    samples=np.array([source(roof,float(z),.84) for z in top_z])
++    samples=np.convolve(np.pad(samples,(3,3),mode='edge'),[1,2,3,4,3,2,1],mode='valid')/16
++    def top(z):
++        z=np.asarray(z);front=panel.ramp(start,-2.02,z)
++        ey=cap_top*(1-front)+(np.interp(z,edge[:,2],edge[:,1])-.001)*front
++        ex=.790*(1-front)+(np.interp(z,edge[:,2],edge[:,0])-.002)*front
++        rear=panel.ramp(-.84,-.765,z)
++        cabin=np.interp(z,top_z,samples)
++        turn=panel.ramp(1.2,1.65,z);cabin=cabin*(1-turn)+rear_edge(roof,z)*turn
++        return ex*(1-rear)+cabin*rear,ey*(1-rear)+roof*rear
++    def shoulder(z):
++        tx,ty=top(z)
++        rear=panel.ramp(1.20,1.65,z)
++        height=(ty-.020)*(1-rear)+.916*rear
++        height=height*panel.ramp(start,-2.02,z)+.815*(1-panel.ramp(start,-2.02,z))
++        return height
++    def lower(z):
++        z=np.asarray(z);result=np.full_like(z,base)
++        for centre in [-1.28,1.28]:
++            u=(z-centre)/.440
++            arch=.370+.415*np.sqrt(np.maximum(0,1-u*u))
++            result=np.where(abs(u)<1,np.maximum(result,arch),result)
++        return result
++    def field(y,z):
++        tx,ty=map(float,top(z));h=float(shoulder(z))
++        wz=start+(z-start)*float(panel.ramp(start,start+.10,z))
++        w=float(curve(np.array(wz),[start,-1.80,-1.2,0,1.35,1.70,1.95],[.840,.917,.934,.932,.935,.920,.920]))
++        body=float(curve(np.array(y),[.285,.34,.42,.54,.65,.74,.82,.94],[.730,.760,.840,.890,.915,.928,.930,.932]))
++        wall=w*body/.932
++        slope=(tx-w)/max(ty-h,.012);d=y-h
++        # An approximately 3 mm physical fillet joins the upright flank to
++        # the shallow upper ledge. Its topology is sampled explicitly below.
++        value=wall+(slope-.025)*.5*(d+math.sqrt(d*d+.0004**2))
++        front=1-float(panel.ramp(start,-1.80,z))
++        radial=tx+(w-tx)*math.sqrt(max(0,1-(max(y-h,0)/max(ty-h,.008))**2)) if y>h else float(nose_width(y))+(w-.840)*float(panel.ramp(.50,h,y))
++        value=value*(1-front)+radial*front
++        # The final rear station meets the already manufactured quarter arc.
++        rear=float(panel.ramp(1.20,1.65,z))
++        value=value*(1-rear)+float(rear_edge(y,z))*rear
++        # Seat the sill on its retained original bottom boundary.
++        sill=(1-float(panel.ramp(base,base+.025,y)))*float(panel.ramp(-1.95,-1.80,z))*(1-float(panel.ramp(1.20,1.65,z)))
++        return value*(1-sill)+source(y,z,value)*sill
++    def normal(y,z):
++        e=.00003
++        return normalise(np.array([1,-(field(y+e,z)-field(y-e,z))/(2*e),-(field(y,z+e)-field(y,z-e))/(2*e)]))
++    kept=[];cut=[]
++    for face in records(obj):
++        for poly in subtract_box(face,[(1,base,roof),(2,start,end)]):
++            for v in poly:
++                if v[0]<.60-1e-8 or not start-1e-8<=v[2]<=end+1e-8:continue
++                low=float(lower(np.array(v[2])));high=float(top(v[2])[1])
++                on=(abs(v[1]-base)<1e-8 and low<=base+1e-7) or (abs(v[1]-roof)<1e-8 and high>=roof-1e-7) or (min(abs(v[2]-start),abs(v[2]-end))<1e-8 and low<=v[1]<=high)
++                if on:
++                    v[0]=field(v[1],v[2]);v[3:]=normal(v[1],v[2])
++                    # The rear return is rebuilt next; its obsolete crossings
++                    # must not become stations in the replacement side seam.
++                    if abs(v[2]-end)>1e-8:cut.append(v[[1,2]].copy())
++            kept.append(poly)
++    stations=np.linspace(start,end,95)
++    arches=np.r_[-1.28+.440*np.cos(np.linspace(0,math.pi,65)),1.28+.440*np.cos(np.linspace(0,math.pi,65))]
++    bridge_z=np.linspace(start,-2.02,13)
++    zs=np.unique(np.r_[stations,arches,bridge_z,[-2.02,-.84,-.765,1.45,1.65,1.90]])
++    zs=zs[(zs>=start)&(zs<=end)];lo=lower(zs);hi=top(zs)[1]
++    bottom=[np.array([y,z]) for y,z in zip(lo,zs)];upper=[np.array([y,z]) for y,z in zip(hi,zs)]
++    joint_y=np.unique(np.r_[np.linspace(base,.815,45),.815+(cap_top-.815)*np.cos(np.linspace(0,math.pi/2,9))])
++    front=[np.array([y,start]) for y in joint_y];back=[np.array([y,end]) for y in rear_joint_ys()]
++    for q in cut:
++        if abs(q[0]-base)<1e-7:bottom.append(q)
++        elif abs(q[0]-roof)<1e-7:upper.append(q)
++        elif abs(q[1]-start)<1e-7:front.append(q)
++        elif abs(q[1]-end)<1e-7:back.append(q)
++    boundary=np.array(sorted(bottom,key=lambda q:q[1])+sorted(back,key=lambda q:q[0])+sorted(upper,key=lambda q:-q[1])+sorted(front,key=lambda q:-q[0]))
++    # Use one simple boundary loop. Float32 copies of a shared corner must
++    # not create backtracking constraint edges in the side triangulation.
++    ordered=[];seen=set()
++    for q in boundary:
++        key=tuple(np.round(q,6))
++        if key not in seen:seen.add(key);ordered.append(q)
++    boundary=np.asarray(ordered)
++    zz=np.linspace(start,end,49 if simple else 73)
++    lines=[np.c_[shoulder(zz)+d,zz] for d in [-.002,-.0004,0,.0004,.002]]
++    nose_z=np.linspace(start,-1.80,13)
++    nose_h=shoulder(nose_z);nose_top=top(nose_z)[1]
++    for theta in np.linspace(0,math.pi/2,9)[1:-1]:
++        lines.append(np.c_[nose_h+(nose_top-nose_h)*math.cos(theta),nose_z])
++    yz,faces=lattice(boundary,.100 if simple else .048,feature_lines=lines)
++    points=np.array([[field(y,z),y,z] for y,z in yz]);normals=np.array([normal(y,z) for y,z in yz])
++    added=orient([np.c_[points[list(t)],normals[list(t)]] for t in faces],np.array([1,0,0]))
++    # Close the short triangular underlap between the rolled leading edge
++    # and the true bonnet boundary. Both sides use the same seam stations.
++    bridge=[]
++    for fraction in np.linspace(0,1,4):
++        row=[]
++        for z in zs[zs<=-2.02+1e-8]:
++            height=float(top(z)[1]);outer=field(height,float(z))
++            inner=min(float(np.interp(z,edge[:,2],edge[:,0]))-.004,outer-.001)
++            x=inner+(outer-inner)*fraction
++            delta=height-(float(hood.height(np.array(outer),np.array(z)))-.003)
++            y=float(hood.height(np.array(x),np.array(z)))-.003+fraction*delta
++            row.append([x,y,z])
++        bridge.append(row)
++    joining=orient(grid(bridge),np.array([0,1,0]));added.extend(joining)
++    panel._write(obj,panel._symmetric(np.asarray(kept+added)))
++    return {'side_loft_triangles':len(added),'conforming_boundary_vertices':len(cut),'wheel_arch_centres':[-1.28,1.28],'physical_crease_fillet_metres':.003}
++
++
++def close_upper_deck(obj):
++    """Close small retained donor cracks above the new rear quarter loft."""
++    from collections import Counter,defaultdict
++    from mathutils import Vector
++    from mathutils.geometry import tessellate_polygon
++    values=records(obj);flat=values.reshape(-1,6)
++    keys,inverse=np.unique(np.round(flat[:,:3],4),axis=0,return_inverse=True)
++    positions=np.zeros_like(keys);normals=np.zeros_like(keys);counts=np.zeros(len(keys))
++    np.add.at(positions,inverse,flat[:,:3]);np.add.at(normals,inverse,flat[:,3:]);np.add.at(counts,inverse,1)
++    positions/=counts[:,None];normals=normalise(normals)
++    edges=Counter()
++    for face in inverse.reshape(-1,3):
++        for aa,bb in zip(face,np.roll(face,-1)):
++            if aa!=bb:edges[tuple(sorted((int(aa),int(bb))))]+=1
++    adjacent=defaultdict(set)
++    for (aa,bb),count in edges.items():
++        if count==1:adjacent[aa].add(bb);adjacent[bb].add(aa)
++    # Cycle basis also separates cracks which touch at a shared seam vertex.
++    remaining=set(adjacent);cycles=[]
++    while remaining:
++        root=min(remaining);stack=[root];previous={root:root};used={root:set()}
++        while stack:
++            vertex=stack.pop()
++            for other in sorted(adjacent[vertex]):
++                if other not in used:
++                    previous[other]=vertex;stack.append(other);used[other]={vertex}
++                elif other not in used[vertex]:
++                    common=used[other];cycle=[other,vertex];cursor=previous[vertex]
++                    while cursor not in common:cycle.append(cursor);cursor=previous[cursor]
++                    cycle.append(cursor);cycles.append(cycle);used[other].add(vertex)
++        remaining-=set(previous)
++    added=[];closed=[]
++    for cycle in cycles:
++        q=positions[cycle];centre=q.mean(0);span=np.ptp(q,axis=0)
++        if not (centre[0]>.65 and centre[1]>.975 and centre[2]>1.55 and q[:,1].min()>.970 and q[:,1].max()>.985):continue
++        if len(cycle)<3 or len(cycle)>128 or span[0]>.16 or span[1]>.12 or span[2]>.65:continue
++        area=np.linalg.norm(np.sum(np.cross(q-q[0],np.roll(q,-1,axis=0)-q[0]),axis=0))*.5
++        if not .000001<area<.015:continue
++        vectors=[Vector(point) for point in q]
++        lookup={tuple(np.round(point,6)):i for i,point in enumerate(q)}
++        faces=[]
++        for triangle in tessellate_polygon([vectors]):
++            face=[]
++            for point in triangle:
++                index=int(point) if np.isscalar(point) else lookup[tuple(np.round(point,6))]
++                point=q[index];normal=normals[cycle[index]].copy()
++                if normal[1]<0:normal=-normal
++                face.append(np.r_[point,normal])
++            faces.append(np.asarray(face))
++        added.extend(orient(faces,np.array([.25,1,0])));closed.append({'vertices':len(cycle),'area_square_metres':float(area)})
++    if added:panel._write(obj,panel._symmetric(np.concatenate([values,np.asarray(added)])))
++    return {'closed_loops':closed,'added_right_hand_triangles':len(added),'topology_weld_tolerance_metres':.0001}
++
++
++def fair_upper_deck(obj):
++    """Fair the retained deck around its closed corner cracks in height."""
++    from mathutils.bvhtree import BVHTree
++    p,f,_=panel._read(obj);skin=BVHTree.FromPolygons(p.tolist(),f.tolist(),all_triangles=True)
++    left,front,back=.700,1.450,2.150
++    def width(z):return rear_edge(.980,np.maximum(z,1.750))
++    def height(x,z):
++        hit,*_=skin.ray_cast((float(x),3,float(z)),(0,-1,0),4)
++        return max(.980,float(hit.y)) if hit is not None else 1.015
++    zz=np.linspace(front,back,65);uu=np.linspace(0,1,33)
++    side=np.polynomial.polynomial.polyfit((zz-front)/(back-front),[height(left,z) for z in zz],3)
++    first=np.polynomial.polynomial.polyfit(uu,[height(left+(float(width(front))-left)*u,front) for u in uu],3)
++    last=np.polynomial.polynomial.polyfit(uu,[height(left+(float(width(back))-left)*u,back) for u in uu],3)
++    val=np.polynomial.polynomial.polyval
++    c0,c1=height(left,front),height(left,back)
++    def boundary(poly,t,a,b):return val(t,poly)+(1-t)*(a-val(0,poly))+t*(b-val(1,poly))
++    def transform(points):
++        x,y,z=points.T;u=(x-left)/np.maximum(width(z)-left,.05);v=(z-front)/(back-front)
++        h=(1-u)*boundary(side,v,c0,c1)+u*.980+(1-v)*boundary(first,u,c0,.980)+v*boundary(last,u,c1,.980)
++        h-=((1-u)*(1-v)*c0+(1-u)*v*c1+u*.980)
++        h=np.clip(h,.980,1.085)
++        w=panel.ramp(0,.10,u)*(1-panel.ramp(.90,1,u))*panel.ramp(0,.10,v)*(1-panel.ramp(.90,1,v))
++        w*=panel.ramp(.975,.990,y)*(1-panel.ramp(1.10,1.15,y))
++        return y+(h-y)*w,w
++    values=records(obj).reshape(-1,6);original=values[:,:3].copy();new_y,weights=transform(original)
++    selected=np.flatnonzero(weights>1e-10);points=original[selected];e=.00003
++    gradients=[]
++    for axis in range(3):
++        plus=points.copy();minus=points.copy();plus[:,axis]+=e;minus[:,axis]-=e
++        gradients.append((transform(plus)[0]-transform(minus)[0])/(2*e))
++    n=values[selected,3:];den=np.maximum(abs(n[:,1]),.15)
++    dx=gradients[0]+gradients[1]*(-n[:,0]/den);dz=gradients[2]+gradients[1]*(-n[:,2]/den)
++    values[selected,3:]=normalise(np.c_[-dx,np.ones(len(selected)),-dz]);values[:,1]=new_y
++    triangles=values.reshape(-1,3,6)
++    cross=np.cross(triangles[:,1,:3]-triangles[:,0,:3],triangles[:,2,:3]-triangles[:,0,:3])
++    involved=weights.reshape(-1,3).max(1)>0
++    reverse=involved&(np.sum(cross*triangles[:,:,3:].mean(1),axis=1)<0)
++    triangles[reverse]=triangles[reverse,::-1,:]
++    panel._write(obj,panel._symmetric(triangles))
++    displacement=abs(new_y-original[:,1])
++    assert float(displacement.max())<.035,'Upper-deck fairing must remain local'
++    return {'vertices':len(selected),'maximum_displacement_mm':float(displacement.max())*1000,'common_height_tangent':True}
++
++
++def seat_stock_spoiler(paint,aero):
++    """Seat the retained stock spoiler's lower envelope on the repaired deck."""
++    from mathutils.bvhtree import BVHTree
++    p,f,_=panel._read(paint);deck=BVHTree.FromPolygons(p.tolist(),f.tolist(),all_triangles=True)
++    ap,af,_=panel._read(aero);wing=BVHTree.FromPolygons(ap.tolist(),af.tolist(),all_triangles=True)
++    width=float(abs(ap[:,0]).max());xs=np.linspace(0,width*.995,49);gaps=[];valid=[]
++    for x in xs:
++        local=[]
++        for z in np.linspace(float(ap[:,2].min())+.0001,float(ap[:,2].max())-.0001,33):
++            low,*_=wing.ray_cast((float(x),0,float(z)),(0,1,0),2)
++            hit,*_=deck.ray_cast((float(x),2,float(z)),(0,-1,0),2)
++            if low is not None and hit is not None and hit.y>.97:local.append(low.y-hit.y)
++        if local:valid.append(x);gaps.append(min(local))
++    assert len(valid)>len(xs)*.8,'The stock spoiler must have a supported lower envelope'
++    sections=np.asarray(valid);offset=.001-np.asarray(gaps)
++    def shift(x):return curve(np.clip(abs(x),sections[0],sections[-1]),sections,offset)+.0003
++    values=records(aero).reshape(-1,6);x=values[:,0].copy();delta=shift(x);e=.00003
++    derivative=(shift(x+e)-shift(x-e))/(2*e)
++    values[:,1]+=delta;values[:,3]-=derivative*values[:,4];values[:,3:]=normalise(values[:,3:])
++    assert float(abs(delta).max())<.035,'Spoiler seating must remain local'
++    panel._write(aero,panel._symmetric(values.reshape(-1,3,6)))
++    final_gaps=np.asarray(gaps)+shift(np.asarray(valid))
++    assert float(final_gaps.min())>-.001 and float(final_gaps.max())<.008,'Spoiler contact must remain supported'
++    return {'maximum_seating_mm':float(abs(delta).max())*1000,'supported_sections':len(valid),'minimum_original_gap_mm':float(min(gaps))*1000,'final_minimum_gap_mm':float(final_gaps.min())*1000,'final_maximum_gap_mm':float(final_gaps.max())*1000}
++
++
++def compact_paint(obj,simple):
++    """Dissolve redundant coplanar rows, keeping the authored curved features."""
++    import bpy,bmesh
++    # Dissolution keeps source positions. Restore their own normal splits by
++    # position and tangent domain; nearest-face transfer can select a buried
++    # return at a coincident panel boundary and create a false dent in paint.
++    source_normals={}
++    for loop in obj.data.loops:
++        key=tuple(round(float(v),7) for v in obj.data.vertices[loop.vertex_index].co)
++        normal=np.asarray(obj.data.corner_normals[loop.index].vector[:])
++        source_normals.setdefault(key,[]).append(normal)
++    before=len(obj.data.polygons)
++    bm=bmesh.new();bm.from_mesh(obj.data)
++    bmesh.ops.remove_doubles(bm,verts=list(bm.verts),dist=.0000001)
++    bmesh.ops.dissolve_degenerate(bm,edges=list(bm.edges),dist=.0000001)
++    for edge in bm.edges:
++        for vertex in edge.verts:
++            x,height,z=vertex.co.x,vertex.co.z,-vertex.co.y
++            if (height>1.10 or (abs(x)>.65 and -.99<z<-.48 and height>.87)
++                    or (z>1.70 and height>.950) or (z>1.90 and height>.870)):
++                edge.seam=True
++    angle=9.0 if simple else 2.5
++    bmesh.ops.dissolve_limit(bm,angle_limit=math.radians(angle),verts=list(bm.verts),edges=list(bm.edges),
++                             use_dissolve_boundaries=False,delimit={'SEAM'})
++    bmesh.ops.triangulate(bm,faces=list(bm.faces),quad_method='BEAUTY',ngon_method='BEAUTY')
++    bm.to_mesh(obj.data);bm.free()
++    obj.data.update();normals=[None]*len(obj.data.loops)
++    for polygon in obj.data.polygons:
++        polygon.use_smooth=True;direction=np.asarray(polygon.normal[:])
++        for index in polygon.loop_indices:
++            vertex=obj.data.vertices[obj.data.loops[index].vertex_index]
++            key=tuple(round(float(v),7) for v in vertex.co)
++            assert key in source_normals,'Dissolution must retain measured source positions'
++            candidates=source_normals[key]
++            normals[index]=max(candidates,key=lambda n:float(n@direction))
++    obj.data.normals_split_custom_set(normals)
++    panel.mirror_object(obj)
++    return {'before_triangles':before,'after_triangles':len(obj.data.polygons),'maximum_dissolve_angle_degrees':angle,'vertex_collapse':False}
++
++
++def finish(exports,hood,lattice,simple):
++    paint=next(o for o in exports if o.name=='body__paint')
++    stats={}
++    stats['nose']=nose(paint,hood,lattice,simple)
++    stats['upper_wing_fairing']=fair_upper_wings(paint,hood,lattice,simple)
++    # The return's curved XY boundary has valid triangles on the join plane.
++    # Construct it last so the side-volume cut cannot discard those triangles.
++    stats['rear']=rear_fascia(paint,lattice,simple)
++    rear_layers(exports)
++    stats['upper_deck_closure']=close_upper_deck(paint)
++    stats['upper_deck_fairing']=fair_upper_deck(paint)
++    stats['stock_spoiler_seating']=seat_stock_spoiler(paint,next(o for o in exports if o.name=='aero__accent'))
++    values=records(paint)
++    cross=np.cross(values[:,1,:3]-values[:,0,:3],values[:,2,:3]-values[:,0,:3])
++    centre=values[:,:,:3].mean(1)
++    affected=(centre[:,2]<-2.095)|((centre[:,2]>1.70)&(centre[:,0]>.60)&(centre[:,1]>.85))
++    flip=(np.sum(cross*values[:,:,3:].mean(1),axis=1)<0)&affected
++    values[flip]=values[flip,::-1,:]
++    panel._write(paint,values)
++    stats['outward_faces_corrected']=int(flip.sum())
++    from mathutils.bvhtree import BVHTree
++    pp,ff,_=panel._read(paint);skin=BVHTree.FromPolygons(pp.tolist(),ff.tolist(),all_triangles=True)
++    marker=next(o for o in exports if o.name=='body__amber')
++    values=records(marker).reshape(-1,6)
++    for v in values:
++        if abs(v[0])<.70:continue
++        sign=math.copysign(1,v[0])
++        hit,normal,*_=skin.ray_cast((sign*2,float(v[1]),float(v[2])),(-sign,0,0),4)
++        if hit is not None:v[0]=hit.x+sign*.003;v[3:]=np.asarray(normal)
++    panel._write(marker,values.reshape(-1,3,6))
++    # A complete recessed backing prevents the newly round corners from
++    # exposing the garage behind the narrower old optical carrier.
++    from challenger_detail_geometry import disk
++    dark=next(o for o in exports if o.name=='body__dark')
++    from challenger_detail_geometry import rounded
++    for opening in [aperture(),resample(rounded(0,.408,1.220,.170,.050,14),.022)]:
++        p,f=disk(opening,lambda x,y:float(front_z(x,y)+.140),spacing=.045)
++        p=np.asarray(p);f=np.asarray(f);n=np.tile([0,0,-1],(len(p),1))
++        panel._write(dark,panel._symmetric(np.concatenate([records(dark),np.c_[p[f].reshape(-1,3),n[f].reshape(-1,3)].reshape(-1,3,6)])))
++    return stats
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+index 36b7dee..42be09e 100644
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -18,6 +18,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
+ import challenger_detail_geometry as exterior_detail
+ import challenger_shell_geometry as shell_geometry
+ import challenger_clean_panels as clean_panels
++import challenger_exterior_geometry as manufactured_exterior
+ from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
+ from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals, nose_plan_points, nose_plan_normals, nose_corner_field, nose_corner_normals
+ 
+@@ -697,6 +698,7 @@ for simple in [False,True]:
+             print('JOINED_SHELL',tier,shell_stats,flush=True)
+     clean_panels.rebuild_hood(exports,clean_hood,lattice,simple)
+     clean_stats=clean_panels.finish(exports,simple,clean_hood)
++    clean_stats['manufactured_exterior']=manufactured_exterior.finish(exports,clean_hood,lattice,simple)
+     clean_panels.rebuild_contours(exports,door_outline,clean_hood)
+     fitted_contours=len(next(obj for obj in exports if obj.name=='body__contour').data.vertices)
+     bpy.ops.object.select_all(action='DESELECT')

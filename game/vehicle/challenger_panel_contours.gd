@@ -1,5 +1,5 @@
 extends RefCounted
-## Flush marking over the native bonnet gap; original exterior stays immutable.
+## Pixel-integrated native markings, with fallback for older bonnet assets.
 const CONTOUR = preload("res://vehicle/panel_contour.gd")
 const OUTLINE = preload("res://assets/vehicles/challenger_hellcat_v1/bonnet_contour.json")
 static var meshes: Dictionary = {}
@@ -8,6 +8,9 @@ static func mesh(source: ArrayMesh,simple: bool) -> ArrayMesh:
 	if meshes.has(source): return meshes[source]
 	if meshes.size() >= 4: meshes.clear()
 	var base: ArrayMesh = CONTOUR.mesh(source)
+	if bool(source.get_meta("bonnet_contour_baked",false)):
+		meshes[source] = base
+		return base
 	var arrays: Array = base.surface_get_arrays(0)
 	var p: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var n: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]

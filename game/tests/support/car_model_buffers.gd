@@ -1,7 +1,7 @@
 extends RefCounted
 ## Offline final packing, after batching and LOD creation. No runtime work.
 static func bake(path: String, vehicle: String) -> Error:
-	if vehicle not in ["compact","kart","forklift","electric","hovercraft"]: return OK
+	if vehicle not in ["compact","kart","forklift","electric","hovercraft","super_rally"]: return OK
 	var scene: PackedScene = load(path)
 	if scene==null: return ERR_CANT_OPEN
 	var holder: Node = scene.instantiate()

@@ -25,11 +25,13 @@ static func resolve(source: ArrayMesh, id: String) -> ArrayMesh:
 
 static func apply(car: CarVisual, holders: Variant = null) -> void:
 	if not enabled or not car.simple_model or not car.batch_parts or car.vehicle_id not in IDS: return
+	var policy = preload("res://vehicle/car_mesh_lods.gd").new()
 	var parts: Array = car.find_children("*","MeshInstance3D",true,false) if holders==null else []
 	if holders!=null:
 		for holder: Node in holders: parts.append_array(holder.find_children("*","MeshInstance3D",true,false))
 	for part: MeshInstance3D in parts:
-		if not part.mesh is ArrayMesh or part.mesh.get_blend_shape_count()>0 or part.mesh.has_meta("car_coarse_source"): continue
+		if not part.mesh is ArrayMesh or part.mesh.get_blend_shape_count()>0 or part.mesh.has_meta("car_coarse_source") or part.mesh.has_meta("car_authored_far"): continue
+		if not policy.eligible(part,car.vehicle_id): continue
 		if offline.is_valid():
 			part.mesh = offline.call(part,car)
 			continue

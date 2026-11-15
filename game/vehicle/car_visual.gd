@@ -29,6 +29,8 @@ var cache_rest_pose: bool = true
 var build_budget_us: int = 4000
 var garage_template: bool = false
 var model_ready: bool = false
+var _pending_source_parts: Dictionary = {}
+var _source_requested_editable: bool = false
 var _model_slice_started: int = 0
 var model_yields: int = 0
 var model_max_slice_us: int = 0
@@ -282,6 +284,14 @@ func _ready() -> void:
 		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
 		model_ready = true
 		return
+	# Source fallback must use the same independent kit frames as a prepared
+	# fitted assembly. Reduce the stock base first, then replace selected kits;
+	# unrelated fitted pieces cannot invalidate a base frame's hidden-face proof.
+	if simple_model and batch_parts and VehicleCustomisation.supported(model_id) and customisation!=VehicleCustomisation.defaults():
+		_pending_source_parts=customisation.duplicate(true)
+		_source_requested_editable=editable_kits
+		editable_kits=true
+		customisation=VehicleCustomisation.defaults()
 	if vehicle_id == "super_rally":
 		_builder("super_rally_model").build(self)
 		apply_livery(livery)
@@ -390,6 +400,7 @@ func _finish_render_model() -> void:
 	# must not receive different geometry merely because they batch differently.
 	if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self)
 	_builder("car_coarse_reduction").apply(self)
+	_builder("car_detail_reduction").apply(self)
 	if batch_parts:
 		_model_stage = "sibling batches"
 		await VisualGeometry.batch_static_parts(self,_model_checkpoint if cooperative_build else Callable())
@@ -398,10 +409,17 @@ func _finish_render_model() -> void:
 		await VisualGeometry.batch_car_parts(self,_model_checkpoint if cooperative_build else Callable())
 		if not await _model_checkpoint(): return
 	if vehicle_id=="hovercraft": _builder("car_static_reduction").apply(self)
+	var fitted_source: bool=not _pending_source_parts.is_empty()
+	if fitted_source:
+		var selected_parts: Dictionary=_pending_source_parts
+		_pending_source_parts={}
+		change_kit_parts(selected_parts)
+		editable_kits=_source_requested_editable
+		_update_rear_lights()
 	_model_stage = "snapshot"
 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
-	graphics.configure(self)
+	if not fitted_source: graphics.configure(self)
 	if not await _model_checkpoint(): return
 
 func new_kit_frame(category: String, parent: Node3D) -> Node3D:
@@ -501,9 +519,10 @@ func _reduce_changed_kit(category: String) -> void:
 	# Match construction-time reduction before batching newly fitted primitives.
 	# Offline modules and a direct fitted build must describe the same model.
 	if simple_model:
-		for frame: Node3D in kit_frames[category]: _builder("racing_car_models")._reduce_primitives(frame,vehicle_id in ["compact","kart","forklift","electric","hovercraft"])
+		for frame: Node3D in kit_frames[category]: _builder("racing_car_models")._reduce_primitives(frame,true)
 		if vehicle_id!="hovercraft": _builder("car_static_reduction").apply(self,kit_frames.get(category,[]))
 		_builder("car_coarse_reduction").apply(self,kit_frames.get(category,[]))
+		_builder("car_detail_reduction").apply(self,kit_frames.get(category,[]))
 
 
 func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:

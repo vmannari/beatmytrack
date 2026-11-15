@@ -1,0 +1,8 @@
+extends RefCounted
+## CST02: reviewed opaque shaders without vertex displacement.
+const HASHES: Dictionary={
+  "res://vehicle/electric_glass.gdshader": "487f09306914f79a85b4e88379634557e4ac045c8e48b29712219c9857678512",
+  "res://vehicle/window_reflection.gdshader": "d813b66e102fd534bf94469328a694b092fbfaa33e220981e40a8f16fafae737",
+  "res://vehicle/kart_slick.gdshader": "39563d8a23902748745dac8c50d9666ba53bc8a04cfacfc1fb1c699975ba24b8",
+  "res://vehicle/kart_driver_cloth.gdshader": "e9eefc0392094a6115fd99c8a15e3491acfda2b6f1a9aee33a5061cd69a4d321"
+}

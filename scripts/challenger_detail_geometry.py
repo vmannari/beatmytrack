@@ -137,13 +137,68 @@ def details(add, simple, rear_surface):
 
     # Rolled oval exhaust tips, black inside; no thin intersecting source tubes.
     for side in [-1,1]:
-        cx=side*.520+.005;cy=.351
+        cx=side*.525;cy=.351
         loops=[]
-        for rx,ry,z in [(.111,.039,2.145),(.113,.041,2.207),(.110,.039,2.219),(.103,.032,2.219),(.101,.030,2.145)]:
-            loops.append(np.c_[cx+rx*np.cos(theta),cy+ry*np.sin(theta),np.full(count,z)])
+        for rx,ry,z,lift in [(.083,.028,1.980,.035),(.113,.041,2.207,0),(.110,.039,2.219,0),(.103,.032,2.219,0),(.075,.021,1.980,.035)]:
+            loops.append(np.c_[cx+rx*np.cos(theta),cy+lift+ry*np.sin(theta),np.full(count,z)])
         v,f=ring(loops);emit('RolledExhaustTip'+str(side),v,f,'chrome')
         path=np.c_[cx+.102*np.cos(theta),cy+.031*np.sin(theta)]
-        v,f=disk(path,lambda x,y:2.148,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
+        v,f=disk(path,lambda x,y:2.205,True);emit('ExhaustCavity'+str(side),v,f,'rubber')
+
+
+def seat_exhaust(exports):
+    """Seat both existing tips on the final valance, with buried upper necks.
+
+    Earlier rear-body revisions left the original fixed-height outlets below
+    the skin. Survey the actual finished bumper, after every body deformation;
+    use one level, symmetric pose for the chrome tubes and their dark cavities.
+    """
+    from mathutils.bvhtree import BVHTree
+    from challenger_clean_panels import _read
+    points=[];faces=[]
+    for obj in exports:
+        if obj.name not in ['body__paint','body__accent','body__dark']:continue
+        p,f,_=_read(obj)
+        faces.extend((f+len(points)).tolist());points.extend(p.tolist())
+    tree=BVHTree.FromPolygons(points,faces,all_triangles=True)
+    def hit(x,y):
+        point,*_=tree.ray_cast((float(x),float(y),3),(0,0,-1),1.2)
+        return point if point is not None and point.z>1.9 else None
+    edges=[]
+    for x in [-.525,.525]:
+        low=None
+        for y in np.linspace(.28,.55,271):
+            if hit(x,y) is not None:
+                assert low is not None, 'Valance survey must begin below its lower edge'
+                high=y
+                for _ in range(16):
+                    mid=(low+high)*.5
+                    if hit(x,mid) is None:low=mid
+                    else:high=mid
+                edges.append(high);break
+            low=y
+    assert len(edges)==2, 'Both exhausts require actual rear-valance support'
+    centre_y=max(edges)+.011
+    roots=[hit(x,centre_y+.033) for x in [-.525,.525]]
+    assert all(p is not None for p in roots), 'Upper exhaust necks must meet the valance'
+    outlet_z=max(p.z for p in roots)+.025
+    delta_y=centre_y-.351;delta_z=outlet_z-2.219
+    changed={}
+    for obj in exports:
+        if obj.name not in ['body__chrome','body__rubber']:continue
+        mesh=obj.data
+        p=np.asarray([v.co[:] for v in mesh.vertices])[:,[0,2,1]]*[1,1,-1]
+        chosen=(p[:,2]>1.93)&(p[:,1]<.45)&(p[:,1]>.29)&(abs(p[:,0])>.30)&(abs(p[:,0])<.75)
+        assert chosen.any(), 'Existing exhaust geometry must be present'
+        normals=[corner.vector[:] for corner in mesh.corner_normals]
+        p[chosen,1]+=delta_y;p[chosen,2]+=delta_z
+        mesh.vertices.foreach_set('co',(p[:,[0,2,1]]*[1,-1,1]).ravel())
+        mesh.update();mesh.normals_split_custom_set(normals)
+        changed[obj.name]=int(chosen.sum())
+    return {'method':'final-valance ray survey; symmetric level tips and buried upper necks',
+            'valance_edge_y':edges,'centre_y':centre_y,'outlet_z':outlet_z,
+            'vertical_translation_metres':delta_y,'longitudinal_translation_metres':delta_z,
+            'outlet_projection_metres':.025,'inboard_neck_length_metres':.239,'translated_vertices':changed}
 
 
 def vent_paths():

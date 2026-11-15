@@ -40,7 +40,10 @@ func run() -> void:
 					var original_p: PackedVector3Array=original[Mesh.ARRAY_VERTEX]
 					var original_indices: PackedInt32Array=original[Mesh.ARRAY_INDEX]
 					check(p.slice(0,original_p.size())==original_p and arrays[Mesh.ARRAY_INDEX].slice(0,original_indices.size())==original_indices,label+" original marking geometry remains exact")
-					check(p.size()-original_p.size()==200 and arrays[Mesh.ARRAY_INDEX].size()-original_indices.size()==600,label+" bonnet adds exactly100segments/200triangles")
+					if bool(source.get_meta("bonnet_contour_baked",false)):
+						check(p.size()==original_p.size() and arrays[Mesh.ARRAY_INDEX].size()==original_indices.size(),label+" baked bonnet adds no runtime geometry")
+					else:
+						check(p.size()-original_p.size()==200 and arrays[Mesh.ARRAY_INDEX].size()-original_indices.size()==600,label+" bonnet adds exactly100segments/200triangles")
 					check_bonnet(part,source,reduced,label)
 					continue
 				var skin: MeshInstance3D=car.find_child("ReferenceHood" if "Bonnet" in str(part.name) else "ReferenceSide-1_0" if "-1_0" in str(part.name) else "ReferenceSide1_0",true,false)
@@ -63,10 +66,55 @@ func run() -> void:
 	print("PANEL_CONTOURS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
 
+func precise_bonnet_hit(mesh: Mesh,point: Vector3) -> Dictionary:
+	# TriangleMesh ray tests reject some narrow, valid CDT triangles. Evaluate
+	# their rendered clockwise faces directly without changing fit tolerances.
+	var faces: PackedVector3Array=mesh.get_faces()
+	var height: float=-INF
+	for i: int in range(0,faces.size(),3):
+		var a: Vector3=faces[i];var b: Vector3=faces[i+1];var c: Vector3=faces[i+2]
+		var u:=Vector2(b.x-a.x,b.z-a.z);var v:=Vector2(c.x-a.x,c.z-a.z)
+		var denominator: float=u.cross(v)
+		if denominator<=0.000000000001:continue
+		var offset:=Vector2(point.x-a.x,point.z-a.z)
+		var s: float=offset.cross(v)/denominator;var t: float=u.cross(offset)/denominator
+		if s<0 or t<0 or s+t>1:continue
+		height=maxf(height,a.y+s*(b.y-a.y)+t*(c.y-a.y))
+	return {"position":Vector3(point.x,height,point.z)} if is_finite(height) else {}
+
 func check_bonnet(part: MeshInstance3D,source: ArrayMesh,reduced: bool,label: String) -> void:
 	var outline: Dictionary=preload("res://assets/vehicles/challenger_hellcat_v1/bonnet_contour.json").data
 	var source_path: String="res://assets/vehicles/challenger_hellcat_v1/"+str(outline.source_mesh)
 	check(FileAccess.get_sha256(source_path)==outline.source_sha256,label+" outline provenance matches immutable native bonnet")
+	if bool(source.get_meta("bonnet_contour_baked",false)):
+		check(bool(outline.get("baked",false)) and float(outline.physical_width_metres)==0.0025,label+" native bonnet marking uses its physical-width contract")
+		var tier: String="simple" if reduced else "full"
+		var hood_mesh: ArrayMesh=load("res://assets/vehicles/challenger_hellcat_v1/"+tier+"_hood_paint.res")
+		var hood: TriangleMesh=hood_mesh.generate_triangle_mesh()
+		var native: PackedVector3Array=source.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		var samples: int=0;var supported: bool=true;var fitted: bool=true
+		var misses: int=0;var low_gap: float=INF;var high_gap: float=-INF
+		for point: Vector3 in native:
+			if point.z>=-0.74 or point.y<=0.80:continue
+			samples+=1
+			var hit: Dictionary=hood.intersect_ray(point+Vector3.UP*0.03,Vector3.DOWN)
+			if hit.is_empty():hit=precise_bonnet_hit(hood_mesh,point)
+			if hit.is_empty():
+				supported=false;misses+=1
+			else:
+				low_gap=minf(low_gap,point.y-hit.position.y);high_gap=maxf(high_gap,point.y-hit.position.y)
+				supported=supported and point.y-hit.position.y>=0.0005 and point.y-hit.position.y<=0.004
+			var distance: float=INF
+			var q:=Vector2(point.x,point.z)
+			for i: int in range(outline.points.size()):
+				var a: Array=outline.points[i];var b: Array=outline.points[(i+1)%outline.points.size()]
+				var start:=Vector2(a[0],a[2]);var edge:=Vector2(b[0]-a[0],b[2]-a[2])
+				var t: float=clampf((q-start).dot(edge)/maxf(edge.length_squared(),0.000000001),0,1)
+				distance=minf(distance,q.distance_to(start+edge*t))
+			fitted=fitted and distance>=0.001 and distance<=0.0045
+		check(samples>200 and supported,label+" every native bonnet marking vertex is supported above the hood; misses="+str(misses)+" gap_mm="+str(Vector2(low_gap,high_gap)*1000))
+		check(fitted,label+" native marking follows the new smooth edge with a narrow inset")
+		return
 	check(outline.points.size()==100 and float(outline.maximum_boundary_error_metres)<0.000875,label+" measured boundary fit stays below0.875mm")
 	var arrays: Array=part.mesh.surface_get_arrays(0)
 	var p: PackedVector3Array=arrays[Mesh.ARRAY_VERTEX]

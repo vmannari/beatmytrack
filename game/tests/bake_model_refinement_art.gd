@@ -34,7 +34,7 @@ func run() -> void:
 				var color: Color = image.get_pixel(x,y)
 				if color.a>0 and color.a<1: image.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
 		assert(image.save_png("res://assets/menu/"+id+"_illustration_v1.png")==OK)
-		image.resize(176,112,Image.INTERPOLATE_LANCZOS)
+		image.resize(preload("res://ui/header_car_icons.gd").SIZE.x,preload("res://ui/header_car_icons.gd").SIZE.y,Image.INTERPOLATE_LANCZOS)
 		assert(image.save_png("res://assets/menu/header_cars_v1/"+id+".png")==OK)
 		viewport.free()
 		await process_frame

@@ -17,6 +17,8 @@ from mathutils.geometry import delaunay_2d_cdt
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import challenger_detail_geometry as exterior_detail
 import challenger_shell_geometry as shell_geometry
+import challenger_clean_panels as clean_panels
+import challenger_exterior_geometry as manufactured_exterior
 from challenger_panel_geometry import SideSurface, SampledHood, PaneSurface, FenderSurface, PanelJoinFairing
 from challenger_reference_geometry import ReferenceBody, nose_distance, nose_inverse, nose_normals, nose_plan_points, nose_plan_normals, nose_corner_field, nose_corner_normals
 
@@ -194,7 +196,9 @@ reference_body=ReferenceBody(side_panel,reference_hood_boundary)
 (output/'reference_profile.json').write_text(json.dumps({'centre_x':body_centre_x,'y':side_panel.a.tolist(),'z':side_panel.b.tolist(),'widths':side_panel.grid.values.tolist()}),encoding='utf-8')
 print('PANEL_JOIN_FAIRING',join_fairing.stats,flush=True)
 (output/'join_fairing.json').write_text(json.dumps({'centre_x':body_centre_x,'patches':[[*p[:-1],p[-1].tolist()] for p in join_fairing.patches]}),encoding='utf-8')
+clean_hood=clean_panels.CleanHood()
 (output/'hood_profile.json').write_text(json.dumps(hood_panel.profile(),separators=(',',':')),encoding='utf-8')
+(output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'symmetric analytic bonnet boundary','physical_width_metres':.0025,'points':clean_hood.boundary().tolist()},indent=2),encoding='utf-8')
 print('SOURCE_PANEL_FIELDS',side_panel.stats,hood_panel.stats,flush=True)
 pane_surfaces={}
 for key in np.unique(component):
@@ -478,6 +482,10 @@ for simple in [False,True]:
         groups[obj.name]=group;statistics.append({'component':int(key),'group':group,'before':count,'after':after})
     def add_surface(name,points,faces,role,group,orient=True,normal_values=None):
         points=np.asarray(points)
+        if name in ['GrilleRecess','GrillePerimeter','OpenHoneycombGrille']:
+            # The factory centre aperture is y=0.667..0.780. Fit all three
+            # authored grille layers together; projector pockets stay separate.
+            points=points.copy();points[:,1]=.724+.70*(points[:,1]-.711)
         clean=[]
         for face in faces:
             p=points[list(face)];normal=np.cross(p[1]-p[0],p[2]-p[0])
@@ -692,9 +700,33 @@ for simple in [False,True]:
         if group=='body' and role=='paint':
             shell_stats=shell_geometry.refine(obj,simple)
             print('JOINED_SHELL',tier,shell_stats,flush=True)
-    paint_shell=next(obj for obj in exports if obj.name=='body__paint')
-    contour_shell=next(obj for obj in exports if obj.name=='body__contour')
-    fitted_contours=shell_geometry.fit_contours(paint_shell,contour_shell)
+    clean_panels.rebuild_hood(exports,clean_hood,lattice,simple)
+    clean_stats=clean_panels.finish(exports,simple,clean_hood)
+    restored,contour_hood=manufactured_exterior.restore(exports,fitted_body,tri,mi,component,paint_index,simple,rear_surface,hood_panel,lattice)
+    clean_stats={'reference_form_refined':True,'manufactured_exterior':restored}
+    if not simple:
+        profile=hood_panel.profile()
+        px,pz=np.meshgrid(profile['x'],profile['z'],indexing='ij')
+        mapped=clean_panels.world(np.c_[px.ravel(),hood_panel.height(px,pz).ravel(),pz.ravel()])
+        profile['heights']=np.round(contour_hood.reference_field.height(mapped[:,0],mapped[:,2]).reshape(px.shape),7).tolist()
+        (output/'hood_profile.json').write_text(json.dumps(profile,separators=(',',':')),encoding='utf-8')
+        factory_hood_outline=contour_hood.boundary().copy()
+        (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'rounded reference bonnet boundary','physical_width_metres':.0025,'points':factory_hood_outline.tolist()},indent=2),encoding='utf-8')
+    else:contour_hood.outline=factory_hood_outline
+    manufactured_exterior.supported_contours(exports,door_outline,contour_hood)
+    # All optical layers, paint, markings and stock aero share one final,
+    # monotone front-overhang map. Wheel geometry is generated separately.
+    from challenger_side_finish import shorten,front_z
+    shorten(exports)
+    from challenger_nose_finish import finish as finish_nose,point_map as nose_point_map
+    finish_nose(exports)
+    exhaust_attachment=exterior_detail.seat_exhaust(exports)
+    if not simple:
+        shortened_outline=factory_hood_outline.copy()
+        shortened_outline[:,2]=front_z(shortened_outline[:,2])
+        shortened_outline=nose_point_map(shortened_outline)
+        (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'reference bonnet boundary with corrected overhang and downturned tapered nose','physical_width_metres':.0025,'points':shortened_outline.tolist()},indent=2),encoding='utf-8')
+    fitted_contours=len(next(obj for obj in exports if obj.name=='body__contour').data.vertices)
     bpy.ops.object.select_all(action='DESELECT')
     for obj in pieces:obj.hide_set(True);obj.hide_render=True
     for obj in exports:obj.select_set(True)
@@ -707,6 +739,8 @@ for simple in [False,True]:
         obj.data.calc_loop_triangles();total+=len(obj.data.loop_triangles)
     statistics.append({'detail':'continuous corner seam replacement','after':total-sum(row.get('after',0) for row in statistics)})
     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
+    record['tiers'][tier]['clean_panels']=clean_stats
+    record['tiers'][tier]['exhaust_attachment']=exhaust_attachment
     record['tiers'][tier]['joined_shell']=shell_stats
     record['tiers'][tier]['shoulder_strips']=strip_stats
     record['tiers'][tier]['fitted_contour_vertices']=fitted_contours
@@ -717,11 +751,15 @@ record['source_triangles']=source_facts['source_triangles'] if cached_source els
 if cached_source:record['conversion_input']={'kind':'retained measured body geometry','cache_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'facts_sha256':hashlib.sha256(source.with_name('source-facts.json').read_bytes()).hexdigest(),'original_download_unavailable':True}
 record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source wheel centres retained as alignment reference.'
 record['opaque_glazing']='Single smooth opaque exterior panes, 2% pane overlap and an opaque low-poly backing inset clear of the panes. No cabin contents or rig.'
-record['refinement']={'nose_extension_metres':.14,'nose_stretch_starts_z':-1.72,'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,'side_surface':side_panel.stats,'fitted_hood_height_reference':hood_panel.stats,'hood':'source-sampled retopology constrained to original boundary, apertures and raised shoulders; measured smooth tangent field','fuel_and_handles':'no protruding source detail meshes','glazing':'single exterior pane skins; one measured tangent field per pane','glazing_backing_inset_scale':.93,'exterior_details':'four projectors, light guides, open honeycomb grille, smoked rear applique without overlapping original trim, rolled oval exhaust tips'}
-record['refinement']['panel_joins']={'method':'four measured radial fairings with common geometry and tangents; clipped and constrained continuous corner skins','fits':join_fairing.stats}
-record['refinement']['reference_body']={'source':'owner photograph supplied 2026-11-13','character_line':'crease-aligned topology with 1.5 mm analytic fillet','nose':'fuller, near-vertical outer flank below the shoulder','crease_z':ReferenceBody.Z,'crease_y':ReferenceBody.Y}
-record['refinement']['reference_body']['nose_transform']='shared monotone front compression and outer-corner advance; original 14 cm leading extension retained'
-record['refinement']['reference_body']['nose_plan']='shared C2 transverse taper continues the wing curvature through the front corners; no separate side flare'
-record['refinement']['reference_body']['nose_corners']='graduated 1.5 to 13.5 mm shoulder fillet; shared outer lip downturn up to 18 mm and rounded corner return up to 16 mm'
+record['refinement']={'reference_form_refined':True,'legacy_intermediate_nose_extension_metres':.14,'final_front_shortening_metres':.14,'nose_stretch_starts_z':-1.72,
+    'nose_finish':{'downturn_cubic_coefficient_metres':.054,'downturn_starts_z':-1.62,'lamp_inset_each_metres':.063,'central_grille_width_reduction_metres':.126,'front_crown_thinning_metres':.024},
+    'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,
+    'side_surface':'one C2 shoulder curve and regular crowned side section; retained factory Y/Z silhouette and upper body',
+    'fitted_hood_height_reference':'reference crown evaluated in the original attachment domain','hood':'continuous reference crown and controlled central power bulge; native supported marking',
+    'panel_joins':'common side coordinates and tangents across factory panel seams; bonnet attachment and upper body retained',
+    'contours':'explicit producer-authored ribbon pairs, baked offline into native pixel-coverage attributes',
+    'glazing':'single exterior pane skins; one measured tangent field per pane','glazing_backing_inset_scale':.93,
+    'exterior_details':'four projectors, recessed honeycomb grille, factory-seated rear applique and light guides, rolled exhaust tips',
+    'nose_transform':'shared extension with a broader reference front, downturned bonnet crown and coplanar rounded optical carrier'}
 (output/'manifest.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
 print('CHALLENGER_PREPARED',output,flush=True)

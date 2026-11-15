@@ -92,9 +92,10 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 		var handle_z: float=CompactCoachwork.DOOR_REAR-0.15
 		VisualGeometry.box(car.body,Vector3(0.018,0.046,0.17),Vector3(side*(CompactCoachwork.body_width(0.835,handle_z)+0.008),0.835,handle_z),trim)
 		VisualGeometry.box(car.body,Vector3(0.023,0.021,0.13),Vector3(side*(CompactCoachwork.body_width(0.846,handle_z)+0.019),0.846,handle_z),bright)
-		# Clear the leading door gap and sit on the rolled front-fender surface.
-		var marker_z: float=-0.99
-		VisualGeometry.box(car.body,Vector3(0.020,0.032,0.066),Vector3(side*(CompactCoachwork.body_width(0.82,marker_z)+0.015),0.82,marker_z),amber)
+		# Sit above the stock arch and the widest fitted fender shoulder.
+		var marker_z: float=-0.940
+		var marker_y: float=0.870
+		VisualGeometry.box(car.body,Vector3(0.020,0.032,0.066),Vector3(side*(CompactCoachwork.body_width(marker_y,marker_z)+0.015),marker_y,marker_z),amber)
 		CompactCoachwork.build_mirror(car,side,trim,bright)
 		# Slim drip rails, black windscreen gasket, separate wiper blades.
 		car._seam(car.body,Vector3(side*0.63,1.483,-0.34),Vector3(side*0.63,1.483,1.12),0.010,cream)

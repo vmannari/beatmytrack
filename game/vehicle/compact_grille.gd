@@ -8,7 +8,7 @@ const RADIUS: float = 0.024
 static var meshes: Dictionary = {}
 static var opening: Array[Vector2] = []
 
-static func outline(half: float, bottom: float, top: float, radius: float, spans: bool = false) -> Array[Vector2]:
+static func outline(half: float, bottom: float, top: float, radius: float, spans: bool = false, span_segments: int = 10) -> Array[Vector2]:
 	var result: Array[Vector2] = []
 	# Counter-clockwise in X/Y. Straight rails also follow the nose's bow.
 	var centers: Array[Vector2] = [Vector2(half-radius,bottom+radius),Vector2(half-radius,top-radius),Vector2(-half+radius,top-radius),Vector2(-half+radius,bottom+radius)]
@@ -19,7 +19,7 @@ static func outline(half: float, bottom: float, top: float, radius: float, spans
 		if spans and corner in [1,3]:
 			var start: Vector2 = result[-1]
 			var finish: Vector2 = centers[(corner+1)%4]+Vector2(cos(corner*PI*0.5),sin(corner*PI*0.5))*radius
-			for station: int in range(1,10): result.append(start.lerp(finish,station/10.0))
+			for station: int in range(1,span_segments): result.append(start.lerp(finish,float(station)/span_segments))
 	return result
 
 static func hole() -> Array[Vector2]:
@@ -99,6 +99,7 @@ static func _mesh(key: String) -> ArrayMesh:
 		tool.index()
 		tool.generate_tangents()
 		meshes[key] = tool.commit()
+		meshes[key].set_meta("car_authored_far",true)
 	return meshes[key]
 
 static func build(car: CarVisual) -> void:
@@ -107,12 +108,12 @@ static func build(car: CarVisual) -> void:
 	var satin := CompactFinish.alloy(Color("c6cbc5"))
 	satin.metallic = 0.88
 	satin.roughness = 0.24
-	var slats := CompactFinish.alloy(Color("7d8989"))
-	slats.metallic = 0.82
-	slats.roughness = 0.29
-	var lattice := CompactFinish.alloy(Color("354349"))
-	lattice.metallic = 0.58
-	lattice.roughness = 0.39
+	var slats := CompactFinish.alloy(Color("8e9a98"))
+	slats.metallic = 0.76
+	slats.roughness = 0.34
+	var lattice := CompactFinish.alloy(Color("263237"))
+	lattice.metallic = 0.35
+	lattice.roughness = 0.53
 	for material: StandardMaterial3D in [graphite,satin,slats,lattice]: material.set_meta("compact_grille_finish",true)
 	for key: String in ["FrontGrilleSurround","FrontGrilleLouvers","FrontGrilleCooling","FrontGrilleLattice"]:
 		var part := MeshInstance3D.new()
@@ -123,7 +124,7 @@ static func build(car: CarVisual) -> void:
 
 static func _surround(tool: SurfaceTool) -> void:
 	# A thin rolled metal bead frames the recessed mouth, without face screws.
-	var rings: Array = [outline(0.507,0.681,0.915,0.039,true),outline(0.509,0.679,0.917,0.041,true),outline(0.503,0.685,0.911,0.035,true),outline(HALF,BOTTOM,TOP,RADIUS,true),outline(HALF,BOTTOM,TOP,RADIUS,true)]
+	var rings: Array = [outline(0.507,0.681,0.915,0.039,true,5),outline(0.509,0.679,0.917,0.041,true,5),outline(0.503,0.685,0.911,0.035,true,5),outline(HALF,BOTTOM,TOP,RADIUS,true,5),outline(HALF,BOTTOM,TOP,RADIUS,true,5)]
 	var depths: Array[float] = [0.008,-0.028,-0.042,-0.033,0.008]
 	for profile: int in range(rings.size()):
 		var next: int = (profile+1)%rings.size()
@@ -134,17 +135,24 @@ static func _surround(tool: SurfaceTool) -> void:
 			var c: Vector3 = point(rings[next][station],depths[next])
 			var d: Vector3 = point(rings[next][index],depths[next])
 			# Profile traverses rear/outer/front/inner/rear; winding owns returns.
-			_quad(tool,[a,d,c,b],(d-a).cross(b-a).normalized())
+			var normals: Array[Vector3]=[]
+			for pair: Array in [[profile,index],[next,index],[next,station],[profile,station]]:
+				var ring: Array[Vector2]=rings[pair[0]]
+				var at: int=pair[1]
+				var tangent: Vector3=point(ring[(at+1)%ring.size()],depths[pair[0]])-point(ring[posmod(at-1,ring.size())],depths[pair[0]])
+				var across: Vector3=point(rings[next][at],depths[next])-point(rings[profile][at],depths[profile])
+				normals.append(across.cross(tangent).normalized())
+			_quad_normals(tool,[a,d,c,b],normals)
 
 static func _louvers(tool: SurfaceTool) -> void:
 	# Slim rounded leading edge and a dark folded return. The top facet catches
 	# the actual showroom/sun lighting instead of painting a highlight stripe.
-	var section: Array[Vector2] = [Vector2(-0.002,-0.033),Vector2(0.0015,-0.033),Vector2(0.0035,-0.030),Vector2(0.001,0.007),Vector2(-0.004,0.007),Vector2(-0.0045,-0.029)]
+	var section: Array[Vector2] = [Vector2(-0.0025,-0.033),Vector2(0.0025,-0.033),Vector2(0.0025,0.007),Vector2(-0.0035,0.007)]
 	for row: int in range(6):
 		var y: float = 0.713+row*0.034
-		for station: int in range(7):
-			var x0: float = lerpf(-HALF,HALF,station/7.0)
-			var x1: float = lerpf(-HALF,HALF,(station+1)/7.0)
+		for station: int in range(5):
+			var x0: float = lerpf(-HALF,HALF,station/5.0)
+			var x1: float = lerpf(-HALF,HALF,(station+1)/5.0)
 			for face: int in range(section.size()):
 				var p: Vector2 = section[face]
 				var q: Vector2 = section[(face+1)%section.size()]
@@ -152,16 +160,22 @@ static func _louvers(tool: SurfaceTool) -> void:
 				var b: Vector3 = point(Vector2(x1,y+p.x),p.y)
 				var c: Vector3 = point(Vector2(x1,y+q.x),q.y)
 				var d: Vector3 = point(Vector2(x0,y+q.x),q.y)
-				_quad(tool,[a,b,c,d],(d-a).cross(b-a).normalized())
+				var normals: Array[Vector3]=[]
+				for at: Vector3 in [a,b,c,d]:
+					var dx: float=(CompactCoachwork.front_skin(at.x+0.0001,at.y)-CompactCoachwork.front_skin(at.x-0.0001,at.y))/0.0002
+					var dy: float=(CompactCoachwork.front_skin(at.x,at.y+0.0001)-CompactCoachwork.front_skin(at.x,at.y-0.0001))/0.0002
+					var n:=Vector3(0,q.y-p.y,p.x-q.x)
+					normals.append(Vector3(-n.z*dx,n.y-n.z*dy,n.z).normalized())
+				_quad_normals(tool,[a,b,c,d],normals)
 		for side: float in [-1.0,1.0]:
 			var cap: Array[Vector3] = []
 			for p: Vector2 in section: cap.append(point(Vector2(side*HALF,y+p.x),p.y))
 			for index: int in range(1,cap.size()-1): _triangle(tool,cap[0],cap[index],cap[index+1],Vector3(side,0,0))
 
 static func _lattice(tool: SurfaceTool) -> void:
-	# A fine cast lattice sits behind the six main ribs, leaving genuine holes.
-	for column: int in range(48):
-		var x: float = lerpf(-0.476,0.476,column/47.0)
+	# A quieter, darker backing lattice leaves the six satin rails readable.
+	for column: int in range(24):
+		var x: float = lerpf(-0.476,0.476,column/23.0)
 		# A cast rib tapers at the back. Its closed triangular return gives the
 		# fine front face real thickness using eight triangles per upright.
 		var section: Array[Vector2] = [Vector2(-0.0014,-0.010),Vector2(0.0014,-0.010),Vector2(0,0.005)]
@@ -181,7 +195,7 @@ static func _lattice(tool: SurfaceTool) -> void:
 		_triangle(tool,upper[0],upper[1],upper[2],Vector3.UP)
 
 static func _cooling(tool: SurfaceTool) -> void:
-	var rim: Array[Vector2] = outline(HALF,BOTTOM,TOP,RADIUS,true)
+	var rim: Array[Vector2] = outline(HALF,BOTTOM,TOP,RADIUS,true,4)
 	var center := Vector2(0,(BOTTOM+TOP)*0.5)
 	for index: int in range(rim.size()):
 		var p: Vector2 = rim[index]
@@ -193,8 +207,8 @@ static func _cooling(tool: SurfaceTool) -> void:
 		_quad(tool,[a,b,c,d],(d-a).cross(b-a).normalized())
 	_quad(tool,[point(Vector2(-0.480,BOTTOM),0.112),point(Vector2(0.480,BOTTOM),0.112),point(Vector2(0.480,TOP),0.112),point(Vector2(-0.480,TOP),0.112)],Vector3.FORWARD)
 	# Low frequency, folded radiator fins remain behind the open slat gaps.
-	for fin: int in range(24):
-		var x: float = lerpf(-0.474,0.474,fin/23.0)
+	for fin: int in range(12):
+		var x: float = lerpf(-0.474,0.474,fin/11.0)
 		for side: float in [-1.0,1.0]:
 			_quad(tool,[point(Vector2(x+side*0.005,0.700),0.108),point(Vector2(x,0.700),0.093),point(Vector2(x,0.891),0.093),point(Vector2(x+side*0.005,0.891),0.108)],Vector3(side*0.70,0,-0.70).normalized())
 	for x: float in [-0.312,0.312]:
@@ -219,6 +233,13 @@ static func _box(tool: SurfaceTool, center: Vector3, size: Vector3) -> void:
 static func _quad(tool: SurfaceTool, points: Array[Vector3], normal: Vector3) -> void:
 	_triangle(tool,points[0],points[1],points[2],normal)
 	_triangle(tool,points[0],points[2],points[3],normal)
+
+static func _quad_normals(tool: SurfaceTool, points: Array[Vector3], normals: Array[Vector3]) -> void:
+	for triangle: Array in [[0,1,2],[0,2,3]]:
+		var order: Array=triangle.duplicate()
+		if (points[order[1]]-points[order[0]]).cross(points[order[2]]-points[order[0]]).dot(normals[order[0]]+normals[order[1]]+normals[order[2]])>0:order.reverse()
+		for index: int in order:
+			tool.set_normal(normals[index]);tool.set_uv(Vector2(points[index].x,points[index].y));tool.add_vertex(points[index])
 
 static func _triangle(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, normal: Vector3) -> void:
 	if (b-a).cross(c-a).length_squared()<1e-18: return

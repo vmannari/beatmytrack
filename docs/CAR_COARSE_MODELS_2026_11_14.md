@@ -9,7 +9,7 @@ acceptance remain separate.
 
 [Compatibility before/after](evidence/car-coarse-models-2026-11-14/gl_compatibility-before-after.png)
 and [desktop Vulkan Mobile before/after](evidence/car-coarse-models-2026-11-14/mobile-before-after.png)
-show actual native renders. [Current 30-case inventory](evidence/car-coarse-models-2026-11-14/inventory.json)
+show actual native renders. [Current 30-case inventory](evidence/car-coarse-models-2026-11-14/inventory-final.json)
 records the loaded production assets and actual prepared-base/module hits.
 
 ## Changes and measurements
@@ -81,6 +81,7 @@ savings. Device frame-time measurement remains necessary.
 | Source pieces: exact retained encoded attributes, culling bounds, slots, fixed/editable stock and fitted construction | 3,253 / 0 |
 | Complete module matrices, Rally / Kart / Forklift / Hover / Challenger | 1,443 / 1,160 / 1,726 / 1,292 / 1,438; zero failures |
 | Complete Volt module matrix | 1,936 / 0; six-car total 8,995 / 0 |
+| Final current-source stock/fitted/replacement/ghost matrix after the late source refresh and exclusion guard | 2,095 / 0 |
 | Prepared provenance and articulation preflight | 551 resources; 2,267 / 0 |
 | Native before/after and exact restoration, Compatibility | 320 / 0 |
 | Native before/after and exact restoration, desktop Vulkan Mobile | 338 / 0 |
@@ -92,8 +93,10 @@ savings. Device frame-time measurement remains necessary.
 | Kart native source/steering controls, headless | 157 / 0 |
 | Existing five-car washing/state integration, headless | 1,383 / 0 |
 | Challenger geometry/opacity declarations/physical positions, headless | 17 / 0 |
-| Production compilation | 563 scripts / 0 failures |
+| Final production compilation | 567 scripts / 0 failures |
 | Six native Garage photographs | 6 images / 169 current source hashes |
+| Final current native texture imports | 6 / 0; no editor diagnostics |
+| Retained Hover authored distant seam level, each renderer | 2 / 0; exactly 1,152 fewer primitives |
 
 The complete module matrices compare full/reduced stock/fitted assemblies and
 every individual catalogue option against ordinary construction. They also check
@@ -134,8 +137,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean_build.ps1 -App
 
 Engine helpers use private APPDATA/LOCALAPPDATA, empty backend URL/auth values,
 Dummy audio, the pinned engine and owned bounded processes. The prepared refresh
-fences 23,899 consumed sources/native inputs with zero changes and identical
-before/after modular geometry identities. It preserves default full-catalogue
+initially fenced 23,899 sources/native inputs with zero changes and identical
+before/after modular geometry identities. Following the late refresh, the final
+production-contract fence qualifies 23,604 consumed inputs with zero changes;
+16 known nonconsumed world/UI changes are recorded separately. It preserves default full-catalogue
 preflights. Existing illustration, paint-sample and news artwork remain; the six
 prepared Garage catalogue photographs are refreshed from current models.
 
@@ -168,6 +173,35 @@ outdated `_start_race` signature (`test_menu_quality.gd` and
 `test_metadata_race_preparation.gd`). They omit the current optional daily-request
 parameter. No App source or those fixtures were authored here. A retry with an
 unsupported `--production-only` argument is also retained and not counted as a
-pass. The existing dedicated production parser passes all 563 shipping scripts;
+pass. The existing dedicated production parser passes all 567 current shipping scripts;
 all new task helpers compile and run in their completed commands. There is no
 whole-repository test-pass claim.
+
+The initial qualified refresh was superseded by a concurrent `sand_dust.gd`
+change, which correctly invalidated shared car keys (the live standard-entry
+preflight rejected 1,102 stale key/source/header findings). A subsequent attempt
+encountered a temporary write conflict on the Electric full editable scene and
+was retried. The final runtime lookup also explicitly enforces the existing
+reflection/Hover eligibility rules and authored-far exclusion; current source
+verification remains 3,253/0.
+
+Ongoing world/UI work then changed scripts outside the car dependency contract.
+The final fence uses the unchanged production `PreparedAssetSources` routing
+manifest and its conservative category defaults, and records those known
+nonconsumed changes separately. Model, particle, shader and resource changes
+that the production contract consumes remain guarded. Complete current-source
+and current-key preflights are retained unchanged; no stale car key is waived.
+
+Final handoff records 1,397 exact original model/driver/configuration controls,
+12 production prepared-base hits and 24 fitted-module hits. The final focused
+matrix passes 2,095/0, both actual App renderer runs pass 56/0 again, and the
+retained Hover distance level saves exactly 1,152 primitives in each renderer.
+All six texture imports match their current source images with zero editor
+diagnostics. The source checkpoint checks forward and reverse application after
+UTF-8/LF normalisation, separately from generated assets and shared journal notes.
+
+The prescribed retention cleaner ran successfully at handoff: zero failures,
+23.141 GiB remains. Recent/protected/locked output is exempt from its 20 GiB
+target. This task has no permanent project copy or shader-cache evidence;
+private profiles and the minimal source-check checkout remain disposable build
+output under the normal retention policy.

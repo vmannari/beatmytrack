@@ -1,6 +1,7 @@
 """CCG03: refresh all six cars with complete source and output receipts."""
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
+import fnmatch
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,23 @@ import sys
 from run_car_coarse_models import ROOT, OUT, WORK, run
 
 IDS = ("compact", "kart", "forklift", "electric", "hovercraft", "super_rally")
+SPEC = json.loads((ROOT / "game/vehicle/prepared_asset_dependencies.json").read_text())
+
+
+def consumed(relative: str) -> bool:
+    # Match PreparedAssetSources.vehicles_for, including its conservative
+    # shared defaults. World/UI scripts outside that contract are not inputs.
+    if any(fnmatch.fnmatchcase(relative, pattern) for pattern in SPEC["excluded"]):
+        return False
+    for rule in SPEC["rules"]:
+        if fnmatch.fnmatchcase(relative, rule["pattern"]):
+            return bool(set(rule["vehicles"]) & set(IDS))
+    if relative.startswith("game/resources/cars/") and relative.endswith(".tres"):
+        return Path(relative).stem in IDS
+    return relative.startswith(("game/vehicle/", "game/assets/vehicles/", "game/assets/liveries/",
+                                "game/assets/fonts/", "game/resources/")) or relative in (
+        "game/ui/garage_car_cache.gd", "game/ui/header_simple_cache.gd", "godot-version.txt") or (
+            relative.startswith("game/track/") and relative.endswith((".gdshader", ".gdshaderinc")))
 
 
 def sources() -> dict[str, str]:
@@ -20,7 +38,8 @@ def sources() -> dict[str, str]:
     selected += [p for p in (ROOT / "game/assets/vehicles").rglob("*") if p.is_file()
                  and p.suffix in (".res", ".png") and not any(x in p.parts for x in
                     ("modular_car_bases_v1", "modular_kits_v1"))]
-    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in selected}
+    return {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in selected if consumed(p.relative_to(ROOT).as_posix())}
 
 
 def checked(label: str, script: str, *options: str) -> None:
@@ -41,6 +60,26 @@ def identity(label: str) -> dict:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--reconcile" in sys.argv:
+        original = json.loads((OUT / "refresh-inputs.json").read_text())
+        before = {p:h for p,h in original.items() if consumed(p)}
+        after = sources()
+        changed = sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+        excluded_changes = sorted(p for p,h in original.items() if not consumed(p)
+                                  and (not (ROOT/p).exists() or hashlib.sha256((ROOT/p).read_bytes()).hexdigest()!=h))
+        receipt = {"original_input_count":len(original),"consumed_input_count":len(before),
+                   "changed_consumed_inputs":changed,"known_nonconsumed_changes":excluded_changes,
+                   "routing":"Matches unchanged PreparedAssetSources manifest and default categories"}
+        (OUT / "reconciled-fence.json").write_text(json.dumps(receipt,indent=2)+"\n")
+        if changed:
+            raise RuntimeError("Consumed car inputs changed; rebake affected assets")
+        current = identity("identity-reconciled")
+        first = json.loads((OUT / "identity-before.json").read_text())
+        if first["modular_car_sha256"]!=current["modular_car_sha256"]:
+            raise RuntimeError("Car geometry keys changed; rebake affected assets")
+        checked("prepared-final", "res://tests/check_prepared_assets.gd", "--headless")
+        print("COARSE_RECONCILIATION: unchanged consumed inputs/keys and strict preflight pass",flush=True)
+        return
     if "--pictures" in sys.argv:
         checked("garage-pictures", "res://../scripts/bake_garage_previews.gd", "--rendering-method", "gl_compatibility")
         subprocess.run([sys.executable, "scripts/check_garage_previews.py"], cwd=ROOT, check=True)

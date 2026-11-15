@@ -1,0 +1,125 @@
+diff --git a/game/vehicle/super_rally_model.gd b/game/vehicle/super_rally_model.gd
+index 460df02..17876af 100644
+--- a/game/vehicle/super_rally_model.gd
++++ b/game/vehicle/super_rally_model.gd
+@@ -3,7 +3,7 @@ extends RefCounted
+ ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
+ ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
+ ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
+-const KEY: String = "super-rally-hellcat-8/"
++const KEY: String = "super-rally-hellcat-9/"
+ const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
+ const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
+ const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
+@@ -82,7 +82,20 @@ static func hood_point(across: float, v: float, _kind: String = "stock") -> Vect
+ 	var mapped_z: float = _nose_z(z,x)
+ 	var t: float = clampf((mapped_z+2.22)/0.67,0.0,1.0)
+ 	var width_scale: float = 1.0+0.095*(1.0-t*t*t*(10.0+t*(-15.0+6.0*t)))
+-	return Vector3(_nose_plan_x(x,mapped_z)*width_scale,_hood_height(x,z),_front_z(mapped_z))
++	return _nose_point(Vector3(_nose_plan_x(x,mapped_z)*width_scale,_hood_height(x,z),_front_z(mapped_z)))
++
++static func _quintic(a: float,b: float,value: float) -> float:
++	var t: float=clampf((value-a)/(b-a),0,1)
++	return t*t*t*(10+t*(-15+6*t))
++
++static func _nose_point(point: Vector3) -> Vector3:
++	var upper: float=_quintic(.32,.60,point.y)
++	var run: float=maxf((-point.z-1.62)/.50,0)
++	var a: float=absf(point.x)
++	var t: float=clampf((a-.40)/.10,0,1)
++	var integral: float=.10*(2.5*pow(t,4)-3*pow(t,5)+pow(t,6))+maxf(a-.50,0)
++	var inset: float=.10*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*upper
++	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper,point.z)
+ 
+ static func _front_z(z: float) -> float:
+ 	var t: float=clampf((z+2.23)/.55,0,1)
+diff --git a/scripts/challenger_nose_finish.py b/scripts/challenger_nose_finish.py
+new file mode 100644
+index 0000000..4bb5d8b
+--- /dev/null
++++ b/scripts/challenger_nose_finish.py
+@@ -0,0 +1,57 @@
++"""Offline nose downturn and coordinated upper-fascia taper.
++
++Operate after the overhang correction, on every existing exterior layer. The
++projectors translate inward without squeezing their circular cross-sections.
++Topology, contour-pair attributes and the rearward shoulder stay intact.
++"""
++import numpy as np
++from challenger_side_surface import ramp, unit
++
++
++def point_map(points):
++    p = np.asarray(points)
++    q = p.copy()
++    x, y, z = p[:, 0], p[:, 1], p[:, 2]
++    upper = ramp(.32, .60, y)
++    # Zero first and second derivatives where the new bonnet run begins;
++    # increasing slope towards the leading edge prevents another lifted tip.
++    run = np.maximum((-z - 1.62) / .50, 0)
++    q[:, 1] -= .054 * run**3 * upper
++    # Integral of the quintic ramp: linear grille compression transitions
++    # smoothly to a rigid 45 mm inward shift throughout each lamp assembly.
++    a = np.abs(x)
++    t = np.clip((a - .40) / .10, 0, 1)
++    integral = .10 * (2.5*t**4 - 3*t**5 + t**6) + np.maximum(a - .50, 0)
++    inset = .10 * (a - integral)
++    taper = (1 - ramp(-2.10, -1.72, z)) * upper
++    q[:, 0] -= np.sign(x) * inset * taper
++    return q
++
++
++def normal_map(points, normals):
++    e = .000025
++    columns = []
++    for axis in range(3):
++        d = np.zeros(3)
++        d[axis] = e
++        columns.append((point_map(points+d)-point_map(points-d))/(2*e))
++    a, b, c = columns
++    determinant = np.sum(a*np.cross(b, c), axis=1)
++    assert determinant.min() > .65, 'Nose chart must preserve orientation and thickness'
++    n = np.asarray(normals)
++    return unit(n[:, 0, None]*np.cross(b, c)
++                + n[:, 1, None]*np.cross(c, a)
++                + n[:, 2, None]*np.cross(a, b))
++
++
++def finish(exports):
++    for obj in exports:
++        mesh = obj.data
++        p = np.asarray([v.co[:] for v in mesh.vertices])[:, [0, 2, 1]] * [1, 1, -1]
++        loops = np.asarray([loop.vertex_index for loop in mesh.loops])
++        n = np.asarray([corner.vector[:] for corner in mesh.corner_normals])[:, [0, 2, 1]] * [1, 1, -1]
++        q = point_map(p)
++        nn = normal_map(p[loops], n)
++        mesh.vertices.foreach_set('co', (q[:, [0, 2, 1]] * [1, -1, 1]).ravel())
++        mesh.update()
++        mesh.normals_split_custom_set((nn[:, [0, 2, 1]] * [1, -1, 1]).tolist())
+diff --git a/scripts/prepare_challenger.py b/scripts/prepare_challenger.py
+index ad0e3b4..31f15a2 100644
+--- a/scripts/prepare_challenger.py
++++ b/scripts/prepare_challenger.py
+@@ -718,10 +718,13 @@ for simple in [False,True]:
+     # monotone front-overhang map. Wheel geometry is generated separately.
+     from challenger_side_finish import shorten,front_z
+     shorten(exports)
++    from challenger_nose_finish import finish as finish_nose,point_map as nose_point_map
++    finish_nose(exports)
+     if not simple:
+         shortened_outline=factory_hood_outline.copy()
+         shortened_outline[:,2]=front_z(shortened_outline[:,2])
+-        (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'reference bonnet boundary with corrected front overhang','physical_width_metres':.0025,'points':shortened_outline.tolist()},indent=2),encoding='utf-8')
++        shortened_outline=nose_point_map(shortened_outline)
++        (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'reference bonnet boundary with corrected overhang and downturned tapered nose','physical_width_metres':.0025,'points':shortened_outline.tolist()},indent=2),encoding='utf-8')
+     fitted_contours=len(next(obj for obj in exports if obj.name=='body__contour').data.vertices)
+     bpy.ops.object.select_all(action='DESELECT')
+     for obj in pieces:obj.hide_set(True);obj.hide_render=True
+@@ -747,6 +750,7 @@ if cached_source:record['conversion_input']={'kind':'retained measured body geom
+ record['wheel_geometry']='Native round tyres and five-spoke/custom rims; source wheel centres retained as alignment reference.'
+ record['opaque_glazing']='Single smooth opaque exterior panes, 2% pane overlap and an opaque low-poly backing inset clear of the panes. No cabin contents or rig.'
+ record['refinement']={'reference_form_refined':True,'legacy_intermediate_nose_extension_metres':.14,'final_front_shortening_metres':.14,'nose_stretch_starts_z':-1.72,
++    'nose_finish':{'downturn_cubic_coefficient_metres':.054,'downturn_starts_z':-1.62,'lamp_inset_each_metres':.045,'central_grille_width_reduction_metres':.090},
+     'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,
+     'side_surface':'one C2 shoulder curve and regular crowned side section; retained factory Y/Z silhouette and upper body',
+     'fitted_hood_height_reference':'reference crown evaluated in the original attachment domain','hood':'continuous reference crown and controlled central power bulge; native supported marking',

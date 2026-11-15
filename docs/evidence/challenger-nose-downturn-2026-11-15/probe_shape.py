@@ -1,0 +1,2 @@
+from pathlib import Path
+s=Path('docs/evidence/challenger-nose-downturn-2026-11-15/check_shape.py').read_text();exec(s.split("for tier in ['simple','full']:")[0]);print('PROFILE',profile(new['full']['body_paint']));print('BASE',profile(old['full']['body_paint']))

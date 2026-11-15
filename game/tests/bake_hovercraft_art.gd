@@ -25,7 +25,7 @@ func run() -> void:
 			var color: Color = pixels.get_pixel(x,y)
 			if color.a > 0.0 and color.a < 1.0: pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
 	assert(pixels.save_png("res://assets/menu/hovercraft_illustration_v1.png") == OK)
-	pixels.resize(176,112,Image.INTERPOLATE_LANCZOS)
+	pixels.resize(preload("res://ui/header_car_icons.gd").SIZE.x,preload("res://ui/header_car_icons.gd").SIZE.y,Image.INTERPOLATE_LANCZOS)
 	assert(pixels.save_png("res://assets/menu/header_cars_v1/hovercraft.png") == OK)
 	preview.free()
 	canvas.free()

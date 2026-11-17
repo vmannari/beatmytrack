@@ -25,7 +25,7 @@ class HeldCloud extends "res://backend/cloud_tracks.gd":
 	signal release_ticket
 	var entered: int = 0
 	var reply: Dictionary = {}
-	func ticket(_track: NativeTrack, _creator_test: bool = false, _vehicle_id: String = "", _attempt_handling: HandlingConfig = null, _issued: Dictionary = {}) -> Dictionary:
+	func ticket(_track: NativeTrack, _creator_test: bool = false, _vehicle_id: String = "", _attempt_handling: HandlingConfig = null, _issued: Dictionary = {}, _purpose: String = "race") -> Dictionary:
 		entered += 1
 		await release_ticket
 		return reply.duplicate(true)

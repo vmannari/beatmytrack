@@ -46,7 +46,6 @@ func run() -> void:
 		var view := VictoryCar.new()
 		view.vehicle_id = id
 		view.podium_presentation = true
-		view.simple_model = true
 		view.livery = VehicleLivery.defaults(id)
 		view.livery.colors.body = GaragePage.LIVERY_COLORS[0][0]
 		view.livery.colors.accent = GaragePage.LIVERY_COLORS[0][1]

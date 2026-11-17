@@ -74,7 +74,6 @@ func run() -> void:
 func make_preview(value: Dictionary, polished: bool, location: Vector2) -> Control:
 	var preview: Control = Preview.new()
 	preview.vehicle_id = value.vehicle_id
-	preview.simple_model = true
 	preview.podium_presentation = polished
 	preview.livery = value.livery.duplicate(true)
 	preview.customisation = value.customisation.duplicate(true)
@@ -133,7 +132,6 @@ func display_density() -> void:
 	scaled.scale = Vector2.ONE*2.5
 	root.add_child(scaled)
 	var preview: Control = Preview.new()
-	preview.simple_model = true
 	preview.podium_presentation = true
 	preview.size = Vector2(120,64)
 	scaled.add_child(preview)

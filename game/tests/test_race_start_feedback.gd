@@ -8,7 +8,7 @@ var evidence: String = "res://../docs/evidence/race-start-feedback-2026-10-11"
 class HeldTicket extends "res://backend/cloud_tracks.gd":
 	signal released
 	var requested: bool = false
-	func ticket(_track: NativeTrack, _creator: bool = false, _vehicle: String = "", _handling: HandlingConfig = null, _issued: Dictionary = {}) -> Dictionary:
+	func ticket(_track: NativeTrack, _creator: bool = false, _vehicle: String = "", _handling: HandlingConfig = null, _issued: Dictionary = {}, _purpose: String = "race") -> Dictionary:
 		requested = true
 		last_error = ""
 		await released

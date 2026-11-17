@@ -1,6 +1,8 @@
 extends Node
 ## Menu shell and navigation state. Native feature composition loads on demand.
 
+var editor_state = preload("res://editor/editor_state.gd").new()
+
 var ObjectControls: Script:
 	get: return _feature_resource("res://editor/object_properties.gd")
 var GAME_SCENE: PackedScene:
@@ -66,53 +68,122 @@ var content: VBoxContainer
 var menu_layer: CanvasLayer
 var game: Node
 var selected_track: NativeTrack
-var library := TrackLibrary.new()
-var document: Dictionary = {}
+var library: TrackLibrary = TrackLibrary.new():
+	set(value):
+		library = value
+		if is_instance_valid(_editor_module): _editor_module.storage = value
+var document: Dictionary:
+	get: return editor_state.document
+	set(value): editor_state.document = value
 var EDITOR_HISTORY: Script:
 	get: return _feature_resource("res://editor/editor_history.gd")
-var editor_session = preload("res://editor/editor_session.gd").new()
+var editor_session: RefCounted:
+	get: return editor_state.session
+	set(value): editor_state.session = value
 var history: Array[Dictionary]:
 	get: return editor_session.undo
 	set(value): editor_session.undo = value
 var redo_history: Array[Dictionary]:
 	get: return editor_session.redo
 	set(value): editor_session.redo = value
-var canvas: Control
-var editor_status: Label
-var editor_guidance: String = ""
-var test_button: Button
-var publish_button: Button
-var share_button: Button
+var canvas: Control:
+	get: return editor_state.canvas
+	set(value): editor_state.canvas = value
+var editor_status: Label:
+	get: return editor_state.status
+	set(value): editor_state.status = value
+var editor_guidance: String:
+	get: return editor_state.guidance
+	set(value): editor_state.guidance = value
+var test_button: Button:
+	get: return editor_state.test_button
+	set(value): editor_state.test_button = value
+var publish_button: Button:
+	get: return editor_state.publish_button
+	set(value): editor_state.publish_button = value
+var share_button: Button:
+	get: return editor_state.share_button
+	set(value): editor_state.share_button = value
 var capture_path: String = ""
 var returning_to_editor: bool = false
 var ui_touch_scale: float = 1.0
 var ui_left_handed: bool = false
 var records := LocalRecords.new()
-var editor_view: Dictionary = {}
-var editor_return_screen: String = "biome"
-var editor_return_draft_view: Dictionary = {}
-var editor_mode_buttons: Dictionary = {}
-var editor_tools_open: bool = false
-var editor_tools_panel: PanelContainer
-var editor_map_panel: PanelContainer
-var editor_undo: Button
-var editor_redo: Button
-var editor_world: Control
-var object_browser_state: Dictionary = {}
-var object_browser: Control
-var object_population_panel: Control
-var editor_palette: Control
-var editor_context: HBoxContainer
-var surface_toolbar: PanelContainer
-var surface_actions: HBoxContainer
-var editor_issue_button: Button
-var editor_issues: Array[Dictionary] = []
-var editor_geometry: String = ""
-var object_controls_panel: PanelContainer
-var object_controls: Control
-var editor_object_property: String = ""
-var _object_controls_target: String = ""
-var editor_inspector: VBoxContainer
+var editor_view: Dictionary:
+	get: return editor_state.view
+	set(value): editor_state.view = value
+var editor_return_screen: String:
+	get: return editor_state.return_screen
+	set(value): editor_state.return_screen = value
+var editor_return_draft_view: Dictionary:
+	get: return editor_state.return_draft_view
+	set(value): editor_state.return_draft_view = value
+var editor_mode_buttons: Dictionary:
+	get: return editor_state.mode_buttons
+	set(value): editor_state.mode_buttons = value
+var editor_tools_open: bool:
+	get: return editor_state.tools_open
+	set(value): editor_state.tools_open = value
+var editor_tools_panel: PanelContainer:
+	get: return editor_state.tools_panel
+	set(value): editor_state.tools_panel = value
+var editor_map_panel: PanelContainer:
+	get: return editor_state.map_panel
+	set(value): editor_state.map_panel = value
+var editor_undo: Button:
+	get: return editor_state.undo
+	set(value): editor_state.undo = value
+var editor_redo: Button:
+	get: return editor_state.redo
+	set(value): editor_state.redo = value
+var editor_world: Control:
+	get: return editor_state.world
+	set(value): editor_state.world = value
+var object_browser_state: Dictionary:
+	get: return editor_state.object_browser_state
+	set(value): editor_state.object_browser_state = value
+var object_browser: Control:
+	get: return editor_state.object_browser
+	set(value): editor_state.object_browser = value
+var object_population_panel: Control:
+	get: return editor_state.object_population_panel
+	set(value): editor_state.object_population_panel = value
+var editor_palette: Control:
+	get: return editor_state.palette
+	set(value): editor_state.palette = value
+var editor_context: HBoxContainer:
+	get: return editor_state.context
+	set(value): editor_state.context = value
+var surface_toolbar: PanelContainer:
+	get: return editor_state.surface_toolbar
+	set(value): editor_state.surface_toolbar = value
+var surface_actions: HBoxContainer:
+	get: return editor_state.surface_actions
+	set(value): editor_state.surface_actions = value
+var editor_issue_button: Button:
+	get: return editor_state.issue_button
+	set(value): editor_state.issue_button = value
+var editor_issues: Array[Dictionary]:
+	get: return editor_state.issues
+	set(value): editor_state.issues = value
+var editor_geometry: String:
+	get: return editor_state.geometry
+	set(value): editor_state.geometry = value
+var object_controls_panel: PanelContainer:
+	get: return editor_state.object_controls_panel
+	set(value): editor_state.object_controls_panel = value
+var object_controls: Control:
+	get: return editor_state.object_controls
+	set(value): editor_state.object_controls = value
+var editor_object_property: String:
+	get: return editor_state.object_property
+	set(value): editor_state.object_property = value
+var _object_controls_target: String:
+	get: return editor_state._object_controls_target
+	set(value): editor_state._object_controls_target = value
+var editor_inspector: VBoxContainer:
+	get: return editor_state.inspector
+	set(value): editor_state.inspector = value
 var browser_state: Dictionary = {}
 var discovery_provider := TrackDiscoveryProvider.new()
 var track_catalog: TrackCatalog
@@ -122,11 +193,21 @@ var _publication_request_active: bool = false
 var _publication_dialog: AcceptDialog
 var _queued_track_link: String = ""
 var _track_link_generation: int = 0
-var editor_preview_cancel: RefCounted
-var editor_preview_thread: Thread
-var editor_preview_document: Dictionary = {}
-var editor_raster_cache: Dictionary = {"enabled":true}
-var editor_compiled_cache: Array[Dictionary] = []
+var editor_preview_cancel: RefCounted:
+	get: return editor_state.preview_cancel
+	set(value): editor_state.preview_cancel = value
+var editor_preview_thread: Thread:
+	get: return editor_state.preview_thread
+	set(value): editor_state.preview_thread = value
+var editor_preview_document: Dictionary:
+	get: return editor_state.preview_document
+	set(value): editor_state.preview_document = value
+var editor_raster_cache: Dictionary:
+	get: return editor_state.raster_cache
+	set(value): editor_state.raster_cache = value
+var editor_compiled_cache: Array[Dictionary]:
+	get: return editor_state.compiled_cache
+	set(value): editor_state.compiled_cache = value
 const EDITOR_COMPILED_BUDGET: int = 16 * 1024 * 1024
 var editor_memory = preload("res://core/app_memory.gd").new()
 var _editor_exiting: bool = false
@@ -142,33 +223,75 @@ var editor_validation_errors: Array[String]:
 var editor_workflow_presentation: Dictionary:
 	get: return editor_session.workflow
 	set(value): editor_session.workflow = value
-var editor_writes = preload("res://editor/write_queue.gd").new()
-var editor_saved_snapshot: Dictionary = {}
-var editor_route_pieces: Array = []
-var editor_route_fields: Dictionary = {}
-var editor_loading: PanelContainer
-var editor_pending_road_bake: Dictionary = {}
-var editor_save_button: Button
-var editor_save_error: Error = OK
-var editor_save_message: String = ""
-var editor_pending_tools: Dictionary = {}
-var editor_pending_id: String = ""
+var editor_writes: RefCounted:
+	get: return editor_state.writes
+	set(value): editor_state.writes = value
+var editor_saved_snapshot: Dictionary:
+	get: return editor_state.saved_snapshot
+	set(value): editor_state.saved_snapshot = value
+var editor_route_pieces: Array:
+	get: return editor_state.route_pieces
+	set(value): editor_state.route_pieces = value
+var editor_route_fields: Dictionary:
+	get: return editor_state.route_fields
+	set(value): editor_state.route_fields = value
+var editor_loading: PanelContainer:
+	get: return editor_state.loading
+	set(value): editor_state.loading = value
+var editor_pending_road_bake: Dictionary:
+	get: return editor_state.pending_road_bake
+	set(value): editor_state.pending_road_bake = value
+var editor_save_button: Button:
+	get: return editor_state.save_button
+	set(value): editor_state.save_button = value
+var editor_save_error: Error:
+	get: return editor_state.save_error
+	set(value): editor_state.save_error = value
+var editor_save_message: String:
+	get: return editor_state.save_message
+	set(value): editor_state.save_message = value
+var editor_pending_tools: Dictionary:
+	get: return editor_state.pending_tools
+	set(value): editor_state.pending_tools = value
+var editor_pending_id: String:
+	get: return editor_state.pending_id
+	set(value): editor_state.pending_id = value
 var editor_gesture_history: Array[Dictionary]:
 	get: return editor_session.gesture_undo
 	set(value): editor_session.gesture_undo = value
 var editor_gesture_redo: Array[Dictionary]:
 	get: return editor_session.gesture_redo
 	set(value): editor_session.gesture_redo = value
-var editor_issue_cursor: int = -1
-var editor_hint_generation: int = 0
-var editor_hint_active: bool = false
-var editor_wip_saved: String = ""
-var editor_wip_snapshot: Dictionary = {}
-var editor_wip_store: TrackLibrary
-var editor_saved_store: TrackLibrary
-var editor_wip_disk_hash: String = ""
-var editor_saved_disk_hash: String = ""
-var editor_retry_original: bool = false
+var editor_issue_cursor: int:
+	get: return editor_state.issue_cursor
+	set(value): editor_state.issue_cursor = value
+var editor_hint_generation: int:
+	get: return editor_state.hint_generation
+	set(value): editor_state.hint_generation = value
+var editor_hint_active: bool:
+	get: return editor_state.hint_active
+	set(value): editor_state.hint_active = value
+var editor_wip_saved: String:
+	get: return editor_state.wip_saved
+	set(value): editor_state.wip_saved = value
+var editor_wip_snapshot: Dictionary:
+	get: return editor_state.wip_snapshot
+	set(value): editor_state.wip_snapshot = value
+var editor_wip_store: TrackLibrary:
+	get: return editor_state.wip_store
+	set(value): editor_state.wip_store = value
+var editor_saved_store: TrackLibrary:
+	get: return editor_state.saved_store
+	set(value): editor_state.saved_store = value
+var editor_wip_disk_hash: String:
+	get: return editor_state.wip_disk_hash
+	set(value): editor_state.wip_disk_hash = value
+var editor_saved_disk_hash: String:
+	get: return editor_state.saved_disk_hash
+	set(value): editor_state.saved_disk_hash = value
+var editor_retry_original: bool:
+	get: return editor_state.retry_original
+	set(value): editor_state.retry_original = value
 var online: AccountController
 var account_button: Button
 var _account_setup_pending: bool = false
@@ -178,7 +301,10 @@ var guest_records: LocalRecords
 var guest_library: TrackLibrary
 var active_profile: String = ""
 var cloud: Node
-var lifecycle: TrackLifecycle
+var lifecycle: TrackLifecycle:
+	set(value):
+		lifecycle = value
+		if is_instance_valid(_editor_module): _editor_module.publication = value
 var test_library_snapshot: TrackLibrary
 var test_scope_snapshot: String = ""
 var test_vehicle_snapshot: String = "compact"
@@ -367,6 +493,7 @@ func _ready() -> void:
 	appearance_sync.changed.connect(_garage_appearance_changed)
 	header_car_cache = preload("res://ui/header_car_appearance_cache.gd").new()
 	header_car_cache.allowed = _header_car_work_allowed
+	header_car_cache.read_allowed = _header_car_read_allowed
 	header_car_cache.capture_allowed = _header_car_capture_allowed
 	header_car_cache.capture_started.connect(_header_car_capture_started)
 	header_car_cache.capture_finished.connect(_header_car_capture_finished)
@@ -486,6 +613,8 @@ func _ready() -> void:
 	var achievement_layer := CanvasLayer.new()
 	achievement_layer.name = "AchievementOverlayLayer"
 	achievement_layer.layer = 30
+	# Decorative awards must not count as a modal that blocks page swipes.
+	achievement_layer.set_meta("menu_input_passthrough", true)
 	add_child(achievement_layer)
 	achievement_notification = preload("res://ui/achievement_notification.gd").new()
 	achievement_notification.app = self
@@ -605,7 +734,7 @@ func _show_screen(next: String) -> void:
 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span}
 	if is_instance_valid(canvas):
 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
+		editor_view = load("res://editor/view_state.gd").capture(canvas,not editor_world._detail.enabled if is_instance_valid(editor_world) else false)
 	screen = next
 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
 	canvas = null
@@ -2187,6 +2316,11 @@ func _prepare_garage_pictures() -> bool:
 
 var _header_capture_navigation: int = -1
 
+func _header_car_read_allowed() -> bool:
+	# Existing pictures need only a bounded PNG read and texture upload. Do not
+	# wait for account restoration or unrelated menu data before displaying them.
+	return _publishing_slots_foreground and not is_instance_valid(game) and not is_instance_valid(race_loading) and not is_instance_valid(_feature_loading)
+
 func _header_car_work_allowed() -> bool:
 	return startup_complete and _publishing_slots_foreground and not is_instance_valid(game) and _background_work_allowed() and screen != "restoring"
 
@@ -3013,6 +3147,12 @@ func _install_feature_resource(path: String, resource: Resource) -> Object:
 	if path.begins_with("res://core/features/"):
 		var controller: Node = resource.new()
 		controller.name = "AppFeature_"+path.get_file().get_basename()
+		if path == "res://core/features/editor.gd":
+			controller.editor_state = editor_state
+			controller.storage = library
+			controller.publication = lifecycle
+			controller.notice_requested.connect(_notice)
+			controller.navigation_requested.connect(_show_screen)
 		_feature_resources[path] = controller
 		add_child(controller)
 	else: _feature_resources[path] = resource

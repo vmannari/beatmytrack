@@ -1,20 +1,20 @@
 extends SceneTree
 ## Compile every project script in one engine process; never instantiate test entrypoints.
 var checked: int = 0
-var failed: bool = false
+var failures: int = 0
 
 func _initialize() -> void:
 	call_deferred("run")
 
 func run() -> void:
 	scan("res://")
-	print("SCRIPT_PARSE: %d scripts, %d failures" % [checked,1 if failed else 0])
-	quit(1 if failed or checked == 0 else 0)
+	print("SCRIPT_PARSE: %d scripts, %d failures" % [checked,failures])
+	quit(1 if failures > 0 or checked == 0 else 0)
 
 func scan(path: String) -> void:
 	var directory := DirAccess.open(path)
 	if directory == null:
-		failed = true
+		failures += 1
 		return
 	# Match Godot's resource import boundary. Android's ignored Gradle template
 	# includes vendor instrumented-test assets that are not project scripts.
@@ -26,7 +26,7 @@ func scan(path: String) -> void:
 		# Loading compiles the script and its dependencies. Reloading an autoload
 		# or another script with live instances is prohibited by the engine.
 		if script == null or not script.can_instantiate():
-			failed = true
+			failures += 1
 			print("FAIL: "+path.path_join(filename))
 	for child: String in directory.get_directories():
 		if child.begins_with("."): continue

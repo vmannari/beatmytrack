@@ -45,7 +45,7 @@ func run() -> void:
 	check(records.settings.control_layout.version == 2 and ControlLayout.valid(records.settings.control_layout),"saved grouped controls upgrade before entering live input")
 	var colors: Dictionary = VehicleLivery.for_car(records.settings,"compact").colors
 	check(colors.body == pigment.colors.body and colors.accent == pigment.colors.accent,"old body/accent pigments survive the input upgrade")
-	check(records.settings.music_record == "exploration" and not records.settings.has("music_records"),"retired import metadata is removed at the read boundary")
+	check(records.settings.music_record == preload("res://soundtrack/record_library.gd").DEFAULT_ID and not records.settings.has("music_records"),"retired import metadata is removed at the read boundary")
 	check(FileAccess.get_sha256(path) == original_hash,"reading an old save does not rewrite the owner file")
 	check(records.settings.favorites == old.settings.favorites and records.settings.cosmetic_legacy == [],"unrelated preferences and ownership snapshot survive")
 	DirAccess.make_dir_absolute(path+".tmp")

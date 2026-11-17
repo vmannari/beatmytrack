@@ -1,0 +1,448 @@
+extends Node
+## Authenticated rivalry adapter. All points and results come from the server.
+signal changed
+var circuit_mode: bool = false
+var circuit_vehicle: String = "compact"
+var client: Node
+var result_poll_allowed: Callable
+var appearance_provider: Callable
+var appearance_sync: Callable
+var _synced_appearance: String = ""
+var model := WeeklyRivalry.new()
+var busy: bool = false
+var error: String = ""
+var snapshot_scope: String = ""
+var request_scope: String = ""
+var result_ticket: String = ""
+var result_state: String = ""
+var test_population: bool = false
+var _generation: int = 0
+var result_polling: bool = false
+var _poll_failures: int = 0
+var _poll_ticket: String = ""
+var _poll_started_msec: int = 0
+var _next_poll_msec: int = 0
+var _ghost_cache: Dictionary = {}
+var _ghost_pending: Dictionary = {}
+var cache_directory: String = ""
+var cached_snapshot: bool = false
+var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+var _last_refresh_msec: int = -60000
+var _failed_fetch_scope: String = ""
+var _cache_bypass_scope: String = ""
+var _continue_group: String = ""
+var _continue_key: String = ""
+const REFRESH_INTERVAL_MSEC: int = 30000
+
+func _ready() -> void:
+	if is_instance_valid(client) and client.has_signal("run_completed"): client.run_completed.connect(poll_result)
+	if is_instance_valid(client) and is_instance_valid(client.get("safety")): client.safety.changed.connect(_safety_changed)
+
+func _safety_changed() -> void:
+	if not is_instance_valid(client.get("safety")): return
+	if not snapshot_scope.is_empty() and snapshot_scope != scope():
+		reset()
+		changed.emit()
+		return
+	client.safety.mask_public(model.server_standings)
+	for track: Dictionary in model.tracks:
+		client.safety.mask_public(track.entries)
+		if not client.safety.allows(track.entry): track.available = false
+	changed.emit()
+	if client.signed_in() and not busy: refresh.call_deferred()
+
+func _cache_scope() -> String:
+	return scope()+"/"+VehicleSimulation.PHYSICS_VERSION+"/"+RaceRules.KEY+"/"+TrackCompiler.VERSION+"/"+JSON.stringify(VehicleCatalog.config(vehicle()).snapshot(),"",true).sha256_text()
+
+func _configure_cache() -> void:
+	snapshot_cache.max_entries = 1
+	snapshot_cache.max_age_seconds = 86400
+	var identity: String = _cache_scope()
+	snapshot_cache.configure(cache_directory.path_join(identity.sha256_text()+".json") if not cache_directory.is_empty() else "",identity)
+
+func _restore_snapshot() -> void:
+	if has_snapshot() or not client.signed_in(): return
+	_configure_cache()
+	var saved: Dictionary = snapshot_cache.read("current")
+	var value: Variant = saved.get("snapshot")
+	if not value is Dictionary or not valid_snapshot(value) or value.get("state") == "not_joined": return
+	if str(value.get("self_id","")) != str(client.player.get("id","")) or str(value.get("vehicle_id","")) != vehicle() or bool(value.get("test_population",false)) != test_population: return
+	var age: int = maxi(0,int(Time.get_unix_time_from_system())-int(saved.get("received_at",0)))
+	var remaining: int = maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0))-age)
+	if value.state == "active" and remaining == 0: return
+	value.remaining_seconds = remaining
+	if is_instance_valid(client.get("safety")): client.safety.mask_public(value)
+	model.apply_snapshot(value)
+	snapshot_scope = scope()
+	cached_snapshot = true
+
+func _remember_snapshot(value: Dictionary) -> void:
+	_configure_cache()
+	if value.get("state") == "not_joined":
+		snapshot_cache.forget("current")
+	else:
+		snapshot_cache.remember("current",{"snapshot":value,"received_at":int(Time.get_unix_time_from_system())})
+
+func vehicle() -> String:
+	return circuit_vehicle if circuit_mode else VehicleCatalog.selected
+
+func set_circuit_mode(enabled: bool, selected_car: String = "compact") -> void:
+	selected_car = VehicleCatalog.valid_id(selected_car)
+	if circuit_mode == enabled and (not enabled or (not test_population and circuit_vehicle == selected_car)): return
+	circuit_mode = enabled
+	if enabled: circuit_vehicle = selected_car
+	if enabled: test_population = false
+	reset()
+	changed.emit()
+
+func scope() -> String:
+	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+vehicle()+("/test" if test_population else "/real")
+
+func reset() -> void:
+	_generation += 1
+	_synced_appearance = ""
+	model = WeeklyRivalry.new()
+	snapshot_scope = ""
+	request_scope = ""
+	result_ticket = ""
+	result_state = ""
+	error = ""
+	busy = false
+	result_polling = false
+	_poll_ticket = ""
+	_next_poll_msec = 0
+	_ghost_cache.clear()
+	_ghost_pending.clear()
+	cached_snapshot = false
+	_last_refresh_msec = -60000
+	_failed_fetch_scope = ""
+	_continue_group = ""
+	_continue_key = ""
+
+static func valid_snapshot(value: Dictionary) -> bool:
+	if value.has("personal_best_slots"):
+		if not value.personal_best_slots is Array or value.personal_best_slots.size() > 5: return false
+		var seen: Array[int] = []
+		for slot: Variant in value.personal_best_slots:
+			if not (slot is int or slot is float) or not is_finite(float(slot)) or float(slot) != floor(float(slot)) or slot < 0 or slot >= 5 or seen.has(int(slot)): return false
+			seen.append(int(slot))
+	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+	if value.has("test_population") and not value.test_population is bool: return false
+	if value.has("automatic_test_drivers") and not value.automatic_test_drivers is bool: return false
+	if value.get("state") == "not_joined": return value.has_all(["week","ends_at","server_now"])
+	if not value.has_all(["group_id","self_id","week","tracks","standings"]): return false
+	if not value.tracks is Array or value.tracks.size() != 5 or not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
+	var self_found: bool = false
+	for row: Variant in value.standings:
+		if not row is Dictionary or not row.has_all(["id","name","points","rank"]): return false
+		if row.has("is_test_driver") and not row.is_test_driver is bool: return false
+		if row.id == value.self_id: self_found = true
+	for track: Variant in value.tracks:
+		if not track is Dictionary or not track.has_all(["board_id","entry","entries"]) or not track.get("entry") is Dictionary or not track.get("entries") is Array: return false
+		if not track.entry.has_all(["name","version_id","content_hash","points","creator","track_id"]): return false
+		if track.entries.size() != value.standings.size(): return false
+		for row: Variant in track.entries:
+			if not row is Dictionary or not row.has_all(["id","name","ms","rank","points"]): return false
+	return self_found
+
+static func valid_outcome(value: Dictionary) -> bool:
+	if not value.has_all(["improved","before","after","overall_before","overall_after","points_delta","ms","beaten"]): return false
+	if not value.improved is bool or not value.beaten is Array or value.beaten.size() > 19: return false
+	if not (value.ms is float or value.ms is int) or not is_finite(float(value.ms)) or float(value.ms) <= 0.0: return false
+	if not (value.points_delta is float or value.points_delta is int) or not is_finite(float(value.points_delta)) or float(value.points_delta) < 0.0 or float(value.points_delta) > 30.0: return false
+	for key: String in ["before","after","overall_before","overall_after"]:
+		if not value[key] is Dictionary or not value[key].has_all(["id","name","rank","points"]): return false
+	for row: Variant in value.beaten:
+		if not row is Dictionary or not row.has_all(["id","name","rank","ms"]): return false
+	return true
+
+func has_snapshot() -> bool:
+	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
+
+func _sync_appearance() -> void:
+	if appearance_sync.is_valid():
+		await appearance_sync.call()
+		return
+	if not appearance_provider.is_valid() or not client.signed_in(): return
+	var value: Variant = appearance_provider.call(vehicle())
+	if not value is Dictionary or not value.has_all(["vehicle_id","livery","customisation"]): return
+	if not VehicleLivery.valid(value.livery) or not VehicleCustomisation.valid(value.customisation): return
+	var original: String = scope()
+	var generation: int = _generation
+	var signature: String = original+"/"+JSON.stringify(value,"",true).sha256_text()
+	if signature == _synced_appearance: return
+	var response: Dictionary = await client.request_api("/rivalry/appearance",HTTPClient.METHOD_PUT,value,"",true)
+	if generation == _generation and original == scope() and response.get("ok",false): _synced_appearance = signature
+
+func refresh(force: bool = true) -> void:
+	var previous_scope: String = request_scope if busy else snapshot_scope
+	# Development rivalries use the server capability automatically. Release
+	# and ordinary services retain the real-player population.
+	if OS.is_debug_build() and client.has_method("test_drivers_available"):
+		var automatic: bool = client.test_drivers_available()
+		if automatic != test_population:
+			test_population = automatic
+			reset()
+	if busy and request_scope == scope(): return
+	# A changed car/account must publish its fresh board once. Keep startup
+	# cache restoration, but do not flash saved scores during a scope switch.
+	if not previous_scope.is_empty() and previous_scope != scope(): _cache_bypass_scope = scope()
+	if busy: reset()
+	if snapshot_scope != scope() and _failed_fetch_scope != scope(): reset()
+	if not client.signed_in():
+		error = "Sign in to join Weekly Rivalry."
+		changed.emit()
+		return
+	# Keep failures visible through menu activation/prefetch using the normal
+	# refresh interval. Refresh and Join still retry explicitly without waiting.
+	if not force and _failed_fetch_scope == scope() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+	if _cache_bypass_scope != scope(): _restore_snapshot()
+	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+	var original: String = scope()
+	var generation: int = _generation
+	busy = true
+	request_scope = original
+	# Clear the previous scope's visible board before either request can yield.
+	changed.emit()
+	# Appearance reconciliation may involve several network requests. Standings
+	# do not depend on it, and the page uses the local appearance for our car.
+	_sync_appearance()
+	if generation != _generation or original != scope(): return
+	await _fetch("/rivalry/current?vehicle_id="+vehicle().uri_encode()+("&test_population=true" if test_population else ""))
+
+func join() -> void:
+	if busy: return
+	var original: String = scope()
+	var generation: int = _generation
+	busy = true
+	request_scope = original
+	await _sync_appearance()
+	if generation != _generation or original != scope(): return
+	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":vehicle(),"test_population":test_population,"automatic_test_drivers":test_population})
+
+func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
+	busy = true
+	error = ""
+	_failed_fetch_scope = ""
+	var original: String = scope()
+	var generation: int = _generation
+	request_scope = original
+	changed.emit()
+	var response: Dictionary = await client.request_api(path,method,payload,client.new_operation_key() if method == HTTPClient.METHOD_POST else "",true)
+	if generation != _generation or original != scope(): return
+	busy = false
+	request_scope = ""
+	if response.ok and valid_snapshot(response.data):
+		var needs_enrollment: bool = response.data.state == "not_joined" or (response.data.state == "active" and not bool(response.data.get("automatic_test_drivers",false)))
+		if test_population and needs_enrollment and path != "/rivalry/join":
+			# This is an intermediate response. Publish only the enrolled board;
+			# join's loading notification must not expose these temporary scores.
+			await join()
+			return
+		if model.group_id != str(response.data.get("group_id","")):
+			model = WeeklyRivalry.new()
+			result_ticket = ""
+			result_state = ""
+			_ghost_cache.clear()
+			_ghost_pending.clear()
+			_continue_group = ""
+			_continue_key = ""
+		model.apply_snapshot(response.data)
+		snapshot_scope = original
+		cached_snapshot = false
+		_last_refresh_msec = Time.get_ticks_msec()
+		_remember_snapshot(response.data)
+		# A car with no results has no finale to review. Use the same scoped,
+		# idempotent acknowledgement and current-week enrollment as Continue.
+		if model.empty_completed_week() and path != "/rivalry/join":
+			await continue_week()
+			return
+	else:
+		_failed_fetch_scope = original
+		_last_refresh_msec = Time.get_ticks_msec()
+		error = "Five eligible tracks are needed before a rivalry can open." if str(response.get("error","")) == "NOT_ENOUGH_ELIGIBLE_TRACKS" else "Rivalry unavailable. Check your connection and try again."
+	changed.emit()
+
+func ticket(slot: int) -> Dictionary:
+	if busy or cached_snapshot or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
+	var original: String = scope()
+	var generation: int = _generation
+	# Cosmetic sharing must not queue fresh race authorization behind uploads.
+	_sync_appearance()
+	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tickets",HTTPClient.METHOD_POST,{"slot":slot},client.new_operation_key(),true)
+	if original != scope() or generation != _generation: return {}
+	if not response.ok:
+		error = str(response.get("error","Race unavailable"))
+		changed.emit()
+		return {}
+	return response.data
+
+func _ghost_key(slot: int, driver: String) -> String:
+	if slot < 0 or slot >= model.tracks.size() or driver.is_empty(): return ""
+	var run_id: String = ""
+	for row: Dictionary in model.tracks[slot].get("entries",[]):
+		if str(row.get("driver_id",row.get("id",""))) == driver: run_id = str(row.get("run_id",""))
+	return "" if run_id.is_empty() else scope()+"/"+model.group_id+"/"+str(slot)+"/"+driver+"/"+run_id
+
+func cached_ghost(slot: int, driver: String) -> Dictionary:
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
+	var value: Dictionary = _ghost_cache.get(_ghost_key(slot,driver),{})
+	return value.get("recording",{}) if snapshot_scope == scope() and Time.get_ticks_msec()-int(value.get("at",-60000)) < 30000 else {}
+
+func prefetch_ghost(slot: int, driver: String) -> void:
+	var key: String = _ghost_key(slot,driver)
+	if key.is_empty() or _ghost_pending.has(key) or not cached_ghost(slot,driver).is_empty(): return
+	await ghost(slot,driver)
+
+func ghost(slot: int, driver: String) -> Dictionary:
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
+	if driver.is_empty() or snapshot_scope != scope(): return {}
+	var original: String = scope()
+	var generation: int = _generation
+	var cache_key: String = _ghost_key(slot,driver)
+	if cache_key.is_empty(): return {}
+	var cached: Dictionary = cached_ghost(slot,driver)
+	if not cached.is_empty(): return cached
+	if _ghost_pending.has(cache_key):
+		var pending: Dictionary = _ghost_pending[cache_key]
+		while not pending.done:
+			await get_tree().process_frame
+			if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
+		return pending.recording
+	var pending: Dictionary = {"done":false,"recording":{}}
+	_ghost_pending[cache_key] = pending
+	pending.recording = await _download_ghost(slot,driver,cache_key,original,generation)
+	pending.done = true
+	if _ghost_pending.get(cache_key) == pending: _ghost_pending.erase(cache_key)
+	return pending.recording
+
+func _download_ghost(slot: int, driver: String, cache_key: String, original: String, generation: int) -> Dictionary:
+	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
+	var path: String = "/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode()
+	var response: Dictionary
+	if client.has_method("fetch_recording"):
+		var recording: Dictionary = await client.fetch_recording(path,true,run_id)
+		response = {"ok":not recording.is_empty(),"data":{"run_id":run_id,"recording":recording}}
+	else:
+		response = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
+	if not response.ok:
+		_ghost_cache.erase(cache_key)
+		return {}
+	var checked: Variant = await client._background(_validate_ghost.bind(response.data.get("recording",{})))
+	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver) or not checked is Dictionary or checked.is_empty(): return {}
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
+	var recording: Dictionary = checked
+	if not run_id.is_empty() and str(response.data.get("run_id","")) == run_id:
+		_ghost_cache.erase(cache_key)
+		_ghost_cache[cache_key] = {"recording":recording,"at":Time.get_ticks_msec(),"bytes":recording.poses.size()*200}
+		var size: int = 0
+		for value: Dictionary in _ghost_cache.values(): size += int(value.bytes)
+		while _ghost_cache.size() > 8 or size > 8388608:
+			var oldest: String = str(_ghost_cache.keys()[0])
+			size -= int(_ghost_cache[oldest].bytes)
+			_ghost_cache.erase(oldest)
+	return recording
+
+static func _validate_ghost(recording: Variant) -> Dictionary:
+	if not recording is Dictionary or not recording.has_all(["poses","ticks"]) or not recording.poses is Array or recording.poses.size() < 2 or recording.poses.size() > 36007: return {}
+	var previous: float = -1.0
+	for pose: Variant in recording.poses:
+		if not pose is Array or pose.size() != 7: return {}
+		for number: Variant in pose:
+			if not (number is float or number is int) or not is_finite(float(number)): return {}
+		for component: int in range(1,7):
+			if absf(float(pose[component])) > 100000.0: return {}
+		if float(pose[0]) <= previous: return {}
+		previous = float(pose[0])
+	if not (recording.ticks is float or recording.ticks is int) or not is_finite(float(recording.ticks)): return {}
+	if float(recording.ticks) <= 0 or float(recording.ticks) > PersonalGhostRun.MAX_TICKS or previous != float(recording.ticks) or float(recording.poses[0][0]) != 0.0: return {}
+	return recording
+
+func poll_result() -> void:
+	if result_poll_allowed.is_valid() and not bool(result_poll_allowed.call()): return
+	if busy or result_polling or result_ticket.is_empty() or snapshot_scope != scope(): return
+	var current_msec: int = Time.get_ticks_msec()
+	if _poll_ticket != result_ticket:
+		_poll_ticket = result_ticket
+		_poll_started_msec = current_msec
+		_next_poll_msec = 0
+	# Durable-upload status reads can already hold the verified receipt. Consume
+	# it immediately without another HTTP poll or waiting for this poll's timer.
+	var recent: Dictionary = client.recent_run(result_ticket)
+	var confirmed: bool = recent.get("status") in ["verified","skipped"] and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
+	if current_msec < _next_poll_msec and not confirmed: return
+	var original: String = scope()
+	var ticket_id: String = result_ticket
+	var generation: int = _generation
+	result_polling = true
+	var response: Dictionary = {"ok":true,"status":200,"data":recent} if not recent.is_empty() and recent.has("outcome") else await client.request_api("/rivalry/tickets/"+ticket_id+"/result",HTTPClient.METHOD_GET,{},"",true)
+	if generation != _generation: return
+	result_polling = false
+	if original != scope() or result_ticket != ticket_id: return
+	var elapsed: int = Time.get_ticks_msec()-_poll_started_msec
+	var delay: int = maxi(int(response.data.get("poll_after_ms",2500)),1000 if elapsed < 10000 else 2500 if elapsed < 60000 else 5000)
+	_next_poll_msec = Time.get_ticks_msec()+delay+int(Crypto.new().generate_random_bytes(1)[0])
+	if not response.ok:
+		_poll_failures = mini(6,_poll_failures+1)
+		var backoff: int = maxi(int(response.get("retry_after",0))*1000,mini(60000,5000*int(pow(2,_poll_failures-1))))
+		_next_poll_msec = Time.get_ticks_msec()+backoff+int(Crypto.new().generate_random_bytes(1)[0])*10
+		error = "Result saved. Reconnect to verify your rivalry result."
+		changed.emit()
+		return
+	error = ""
+	_poll_failures = 0
+	result_state = str(response.data.get("status","upload_pending"))
+	if result_state == "failed" and response.data.get("failure_code") == "verifier_unavailable":
+		result_state = "retry_pending"
+		error = "Your race is saved. Verification will retry when the service recovers."
+		_next_poll_msec = Time.get_ticks_msec()+15000+int(Crypto.new().generate_random_bytes(1)[0])*10
+		changed.emit()
+		return
+	if result_state in ["verified","skipped"] and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
+		var outcome: Dictionary = response.data.outcome
+		var index: int = int(response.data.slot)
+		# Confirm feedback as soon as its proof arrives. Refresh the full board
+		# afterwards; that extra request must not hold the result screen pending.
+		model.apply_outcome(outcome,index)
+		changed.emit()
+		await _fetch("/rivalry/"+model.group_id)
+		if original != scope() or generation != _generation: return
+	elif result_state in ["verified","skipped"]:
+		model.last_result = {"ms":model.last_result.get("ms",0)}
+		error = "Result details unavailable. Refresh Rivalry to check your standings."
+		changed.emit()
+	elif result_state in ["rejected","failed","expired"]:
+		model.last_result = {"ms":model.last_result.get("ms",0)}
+		error = "This race was not verified. Your weekly best is unchanged."
+		changed.emit()
+
+func continue_week() -> void:
+	if busy or not model.completed or snapshot_scope != scope() or not client.signed_in(): return
+	var original: String = scope()
+	# Own the whole acknowledgement/enrollment transition before yielding. Late
+	# result polls belong to the old week and must not replace the new board.
+	_generation += 1
+	var generation: int = _generation
+	result_polling = false
+	busy = true
+	request_scope = original
+	error = ""
+	if _continue_group != model.group_id:
+		_continue_group = model.group_id
+		_continue_key = client.new_operation_key()
+	changed.emit()
+	var response: Dictionary = await client.request_api("/rivalry/"+_continue_group+"/continue",HTTPClient.METHOD_POST,{},_continue_key,true)
+	if original != scope() or generation != _generation: return
+	if response.ok:
+		_configure_cache()
+		snapshot_cache.forget("current")
+		cached_snapshot = false
+		# Join targets the actual current UTC week even on an older backend with
+		# several unreviewed finales. Keep the finale visible until it succeeds.
+		await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":vehicle(),"test_population":test_population,"automatic_test_drivers":test_population})
+	else:
+		busy = false
+		request_scope = ""
+		error = "Could not continue. Try again."
+		changed.emit()

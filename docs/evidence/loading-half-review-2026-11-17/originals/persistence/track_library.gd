@@ -1,0 +1,388 @@
+class_name TrackLibrary
+extends RefCounted
+## Local drafts have no count quota. Imported content is bounded plain JSON.
+
+var directory: String
+var last_error: String = ""
+var revision: int = 0
+var owner_name: String = ""
+const ENCODING = preload("res://persistence/document_encoding.gd")
+const READ_CACHE = preload("res://persistence/document_read_cache.gd")
+var last_read_path: String = ""
+var last_read_digest: String = ""
+
+
+func _init(root: String = "user://tracks") -> void:
+	directory = root.trim_suffix("/")
+
+
+static func unique_id() -> String:
+	return "track_" + Crypto.new().generate_random_bytes(16).hex_encode()
+
+
+func list_documents() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var folder := DirAccess.open(directory)
+	if folder == null:
+		return result
+	var ids: Array[String] = []
+	for filename: String in folder.get_files():
+		var base: String = filename.trim_suffix(".bak").trim_suffix(".tmp")
+		if not base.ends_with(".json"):
+			continue
+		var id: String = base.trim_suffix(".json")
+		if TrackDocument.valid_id(id) and id not in ids:
+			ids.append(id)
+	ids.sort()
+	for id: String in ids:
+		var document: Dictionary = load_document(id)
+		if not document.is_empty():
+			result.append(document)
+	return result
+
+
+func save_document(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
+	if is_published(str(document.get("id",""))):
+		last_error = "Published tracks are locked against editing."
+		return ERR_UNAUTHORIZED
+	var errors: Array[String] = ENCODING.prepared(document).errors
+	if not errors.is_empty():
+		last_error = errors[0]
+		return ERR_INVALID_DATA
+	var first_save: bool = load_document(str(document.id)).is_empty()
+	var review_error: Error = invalidate_test_if_changed(document)
+	if review_error != OK: return review_error
+	var error: Error = DirAccess.make_dir_recursive_absolute(directory)
+	if error != OK:
+		last_error = "Could not open the local track folder."
+		return error
+	error = _atomic_write(document,directory.path_join(document.id+".json"))
+	if error == OK:
+		revision += 1
+		if first_save:
+			var date_file := FileAccess.open(directory.path_join(document.id+".created"),FileAccess.WRITE)
+			if date_file != null: date_file.store_string(str(int(Time.get_unix_time_from_system())))
+	return error
+
+
+func load_document(id: String, summary: bool = false) -> Dictionary:
+	if not TrackDocument.valid_id(id):
+		last_error = "The track identifier is invalid."
+		return {}
+	var path: String = directory.path_join(id+".json")
+	# Prefer committed state, then last known good state, then a first-save
+	# temporary. Reads recover even after a crash between the two renames.
+	for candidate: String in [path,path+".bak",path+".tmp"]:
+		var data: Dictionary = _read_summary(candidate) if summary else _read(candidate)
+		if not data.is_empty() and data.id == id:
+			last_read_path = candidate
+			last_error = ""
+			return data
+	last_error = "This saved track could not be read."
+	return {}
+
+
+func export_document(document: Dictionary, path: String) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
+	if not TrackDocument.validate(document).is_empty():
+		last_error = "Fix the route before exporting it."
+		return ERR_INVALID_DATA
+	return _atomic_write(document,path)
+
+
+func import_document(path: String) -> Dictionary:
+	return _read(path)
+
+
+func _read(path: String) -> Dictionary:
+	var file := FileAccess.open(path,FileAccess.READ)
+	if file == null:
+		last_error = "Could not open the track file."
+		return {}
+	if file.get_length() > TrackDocument.MAX_BYTES:
+		last_error = "This file is too large; creator tracks are at most %d KB." % (TrackDocument.MAX_BYTES/1024)
+		file.close()
+		return {}
+	var content: PackedByteArray = file.get_buffer(file.get_length())
+	file.close()
+	return _decode_document(path,content)
+
+func _decode_document(path: String, content: PackedByteArray) -> Dictionary:
+	last_read_digest = READ_CACHE.digest(content)
+	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
+	var cached: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest)
+	if not cached.is_empty():
+		last_error = ""
+		return cached
+	var text: String = content.get_string_from_utf8()
+	var parser := JSON.new()
+	if parser.parse(text) != OK:
+		last_error = "This file is not valid track JSON."
+		return {}
+	var errors: Array[String] = TrackDocument.validate(parser.data,false)
+	if not errors.is_empty():
+		last_error = errors[0]
+		return {}
+	last_error = ""
+	READ_CACHE.put_value(cache_path,last_read_digest,parser.data)
+	return parser.data
+
+func _read_summary(path: String) -> Dictionary:
+	var file := FileAccess.open(path,FileAccess.READ)
+	if file == null: return {}
+	if file.get_length() > TrackDocument.MAX_BYTES: file.close(); return {}
+	var content: PackedByteArray = file.get_buffer(file.get_length()); file.close()
+	last_read_digest = READ_CACHE.digest(content)
+	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
+	var summary: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest,true)
+	if not summary.is_empty(): return summary
+	var doc: Dictionary = _decode_document(path,content)
+	if doc.is_empty(): return {}
+	summary = {"id":doc.id,"name":doc.name,"creator":doc.get("creator",""),"theme":doc.theme,"pieces":doc.pieces,
+		"piece_count":doc.pieces.size(),"object_count":doc.objects.size(),"fingerprint":draft_fingerprint(doc)}
+	READ_CACHE.put_value(cache_path,last_read_digest,summary,true)
+	return summary
+
+
+func _atomic_write(document: Dictionary, path: String) -> Error:
+	var content: String = ENCODING.prepared(document).content
+	if content.to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
+		last_error = "This creator track exceeds %d KB." % (TrackDocument.MAX_BYTES/1024)
+		return ERR_INVALID_DATA
+	var temporary: String = path+".tmp"
+	var backup: String = path+".bak"
+	var file := FileAccess.open(temporary,FileAccess.WRITE)
+	if file == null:
+		last_error = "Could not write the track file."
+		return FileAccess.get_open_error()
+	file.store_string(content)
+	file.flush()
+	var error: Error = file.get_error()
+	file.close()
+	if error != OK or _read(temporary).is_empty():
+		last_error = "The track write could not be verified."
+		return ERR_FILE_CANT_WRITE
+	if FileAccess.file_exists(path):
+		# Never replace a recoverable good backup with a corrupt primary.
+		if not _read(path).is_empty():
+			if FileAccess.file_exists(backup):
+				error = DirAccess.remove_absolute(backup)
+				if error != OK:
+					last_error = "Could not prepare the track backup."
+					return error
+			error = DirAccess.rename_absolute(path,backup)
+		else:
+			error = DirAccess.remove_absolute(path)
+		if error != OK:
+			last_error = "Could not preserve the previous track."
+			return error
+	error = DirAccess.rename_absolute(temporary,path)
+	last_error = "" if error == OK else "Could not finish saving; the previous track is recoverable."
+	return error
+
+
+func delete_document(id: String) -> Error:
+	if not TrackDocument.valid_id(id):
+		last_error = "The track identifier is invalid."
+		return ERR_INVALID_PARAMETER
+	# Remove recovery files before the primary so a successful deletion cannot
+	# reappear through backup recovery. Never enumerate or delete directories.
+	for suffix: String in [".json.tmp",".json.bak",".json"]:
+		var path: String = directory.path_join(id+suffix)
+		if not FileAccess.file_exists(path): continue
+		var error: Error = DirAccess.remove_absolute(path)
+		if error != OK:
+			last_error = "Could not delete the track. Check storage permissions."
+			return error
+	revision += 1
+	last_error = ""
+	return OK
+
+
+func save_wip(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
+	if is_published(str(document.get("id",""))):
+		last_error = "Published tracks are locked against editing."
+		return ERR_UNAUTHORIZED
+	var review_error: Error = invalidate_test_if_changed(document)
+	if review_error != OK: return review_error
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
+	var error: Error=drafts.save_document(document)
+	last_error=drafts.last_error
+	if error == OK: revision += 1
+	return error
+
+func load_wip(id: String) -> Dictionary:
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
+	var result: Dictionary=drafts.load_document(id)
+	last_error=drafts.last_error
+	return result
+
+func delete_wip(id: String) -> Error:
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
+	var error: Error = drafts.delete_document(id)
+	last_error = drafts.last_error
+	if error == OK: revision += 1
+	return error
+
+func editable_entries(summaries: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
+	# Saved originals and editor autosaves are versions of the same local draft.
+	var by_id: Dictionary = {}
+	for source: String in ["saved","wip"]:
+		var store := TrackLibrary.new(directory.path_join("wip") if source == "wip" else directory)
+		var folder := DirAccess.open(store.directory)
+		if folder == null: continue
+		var ids: Dictionary = {}
+		for filename: String in folder.get_files():
+			var base: String = filename.trim_suffix(".bak").trim_suffix(".tmp")
+			if base.ends_with(".json") and TrackDocument.valid_id(base.trim_suffix(".json")): ids[base.trim_suffix(".json")] = true
+		var sorted_ids: Array = ids.keys(); sorted_ids.sort()
+		for id: String in sorted_ids:
+			if cancelled.is_valid() and cancelled.call(): return []
+			var doc: Dictionary = store.load_document(id,summaries)
+			if doc.is_empty(): continue
+			if is_published(str(doc.id)): continue
+			if _retired_backend_backup(id,store.last_read_path): continue
+			var modified: int = FileAccess.get_modified_time(store.last_read_path)
+			var item: Dictionary = {"id":doc.id,"document":doc,"modified":modified,"source":source,
+				"load_id":("wip:" if source == "wip" else "")+str(doc.id)}
+			if not by_id.has(doc.id) or modified >= int(by_id[doc.id].modified): by_id[doc.id] = item
+	var result: Array[Dictionary] = []
+	for item: Dictionary in by_id.values(): result.append(item)
+	result.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
+		if a.modified != b.modified: return a.modified > b.modified
+		return str(a.document.name).naturalnocasecmp_to(str(b.document.name)) < 0)
+	return result
+
+func _retired_backend_backup(id: String, path: String) -> bool:
+	# A completed transfer removes the original but may retain an older, different
+	# recovery copy. Keep those bytes without promoting them into a fresh draft.
+	# Primary/temporary files and recovery written after the transfer stay editable.
+	if not path.ends_with(".json.bak"): return false
+	var primary: String = path.trim_suffix(".bak")
+	if FileAccess.file_exists(primary) or FileAccess.file_exists(primary+".tmp"): return false
+	var binding_path: String = directory.path_join(".backend").path_join(id+".json")
+	if not FileAccess.file_exists(binding_path) or FileAccess.get_modified_time(path) > FileAccess.get_modified_time(binding_path): return false
+	var file := FileAccess.open(binding_path,FileAccess.READ)
+	if file == null or file.get_length() > 4096: return false
+	var parser := JSON.new()
+	if parser.parse(file.get_as_text()) != OK or not parser.data is Dictionary: return false
+	var binding: Dictionary = parser.data
+	for key: String in ["backend_url","track_id","version_id"]:
+		if not binding.get(key) is String or str(binding[key]).is_empty(): return false
+	for key: String in ["content_hash","source_fingerprint"]:
+		if not binding.get(key) is String or str(binding[key]).length() != 64 or not str(binding[key]).is_valid_hex_number(false): return false
+	return true
+
+func delete_editable(id: String) -> Error:
+	if is_published(id):
+		last_error = "Published tracks are locked."
+		return ERR_UNAUTHORIZED
+	var review_error: Error = _test_library().delete_document(id)
+	if review_error != OK: return review_error
+	var drafts := TrackLibrary.new(directory.path_join("wip"))
+	drafts.owner_name = owner_name
+	var error: Error = drafts.delete_document(id)
+	if error != OK:
+		last_error = drafts.last_error
+		return error
+	return delete_document(id)
+
+func _test_library() -> TrackLibrary:
+	var version: String = (VehicleSimulation.PHYSICS_VERSION+RaceRules.KEY+TrackCompiler.VERSION).sha256_text().left(12)
+	return TrackLibrary.new(directory.path_join(".tested-"+version))
+
+static func draft_fingerprint(document: Dictionary) -> String:
+	return ENCODING.prepared(document).fingerprint
+
+func is_tested(document: Dictionary) -> bool:
+	if not TrackDocument.valid_id(document.get("id")): return false
+	var snapshot: Dictionary = _test_library().load_document(str(document.id))
+	return not snapshot.is_empty() and draft_fingerprint(snapshot) == draft_fingerprint(document)
+
+func is_tested_fingerprint(id: String, fingerprint: String) -> bool:
+	var summary: Dictionary = _test_library().load_document(id,true)
+	return not summary.is_empty() and summary.fingerprint == fingerprint
+
+func mark_tested(document: Dictionary) -> Error:
+	if not owner_name.is_empty(): document["creator"] = owner_name
+	if not TrackDocument.validate(document).is_empty(): return ERR_INVALID_DATA
+	if not document.has("start_line") or not RoadPieces.route_from_pieces(document).ok:
+		last_error = "Connect the roads and place a start line before completing a test."
+		return ERR_INVALID_DATA
+	var reviews := _test_library()
+	var error: Error = DirAccess.make_dir_recursive_absolute(reviews.directory)
+	if error == OK: error = reviews._atomic_write(document,reviews.directory.path_join(str(document.id)+".json"))
+	last_error = reviews.last_error
+	return error
+
+func invalidate_test_if_changed(document: Dictionary) -> Error:
+	var reviews := _test_library()
+	var snapshot: Dictionary = reviews.load_document(str(document.id))
+	if snapshot.is_empty() or draft_fingerprint(snapshot) == draft_fingerprint(document): return OK
+	var error: Error = reviews.delete_document(str(document.id))
+	last_error = reviews.last_error
+	return error
+
+func is_published(id: String) -> bool:
+	if not TrackDocument.valid_id(id): return false
+	return not TrackLibrary.new(directory.path_join(".published")).load_document(id).is_empty()
+
+func commit_backend_binding(source: Dictionary, receipt: Dictionary, backend_url: String) -> bool:
+	if not TrackDocument.valid_id(source.get("id")): return false
+	var path: String = directory.path_join(".backend").path_join(str(source.id)+".json")
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var value: Dictionary = {"backend_url":backend_url,"track_id":receipt.track_id,
+		"version_id":receipt.version_id,"content_hash":receipt.content_hash,
+		"source_fingerprint":draft_fingerprint(source)}
+	var file := FileAccess.open(path+".tmp",FileAccess.WRITE)
+	if file == null: return false
+	file.store_string(JSON.stringify(value))
+	file.flush()
+	var ok: bool = file.get_error() == OK
+	file.close()
+	return ok and DirAccess.rename_absolute(path+".tmp",path) == OK
+
+static func authoring_equivalent(first: Dictionary, second: Dictionary) -> bool:
+	# Derived automatic routes and authenticated display attribution may have
+	# changed in the approved legacy seeder. Physical authoring data must match.
+	var a: Dictionary = first.duplicate(true)
+	var b: Dictionary = second.duplicate(true)
+	for key: String in ["points","widths","corners","route_override","creator"]:
+		a.erase(key)
+		b.erase(key)
+	return not a.is_empty() and a == b
+
+func cleanup_backend_publication(source: Dictionary, remote: Dictionary) -> Error:
+	if not TrackDocument.valid_id(source.get("id")) or not authoring_equivalent(source,remote):
+		last_error = "The published document differs from this draft; local files were preserved."
+		return ERR_INVALID_DATA
+	var id: String = str(source.id)
+	var stores: Array[String] = [directory,directory.path_join("wip"),directory.path_join(".published")]
+	var folder := DirAccess.open(directory)
+	if folder != null:
+		for child: String in folder.get_directories():
+			if child.begins_with(".tested-"): stores.append(directory.path_join(child))
+	for store: String in stores:
+		for suffix: String in [".json.bak",".json.tmp",".json"]:
+			var path: String = store.path_join(id+suffix)
+			if not FileAccess.file_exists(path): continue
+			var candidate: Dictionary = TrackLibrary.new(store)._read(path)
+			# Preserve newer edits and unreadable recovery evidence.
+			if candidate.is_empty() or not authoring_equivalent(candidate,remote): continue
+			var error: Error = DirAccess.remove_absolute(path)
+			if error != OK:
+				last_error = "Could not remove the transferred local copy."
+				return error
+	if not FileAccess.file_exists(directory.path_join(id+".json")):
+		var created: String = directory.path_join(id+".created")
+		if FileAccess.file_exists(created):
+			var error: Error = DirAccess.remove_absolute(created)
+			if error != OK: return error
+	revision += 1
+	last_error = ""
+	return OK

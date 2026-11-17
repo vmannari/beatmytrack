@@ -1,0 +1,433 @@
+diff --git a/docs/CAR_PICTURE_LOADING_AUDIT_2026_11_17.md b/docs/CAR_PICTURE_LOADING_AUDIT_2026_11_17.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d1d36b8573f6d0f0469712fe1555f30766fc60e
+--- /dev/null
++++ b/docs/CAR_PICTURE_LOADING_AUDIT_2026_11_17.md
+@@ -0,0 +1,119 @@
++# Remaining car-picture delay investigated - 2026-11-17
++
++CPI01 investigates the remaining startup delay. CPI02 investigates opening the
++car dropdown, as clarified by the owner. CPI03 compares bounded improvements while
++keeping this task an investigation. No production behaviour was changed.
++
++The cache is working. The remaining delay has several distinct causes:
++
++1. The dropdown deliberately fades from transparent over 220 ms, even with every
++   picture already available. Its first draw was around 6–13 ms after opening in
++   the final fixtures, at roughly 19–39% opacity. The second, settled opening took
++   about 204–218 ms to reach full opacity. These are animation timings, not PNG
++   loading. The first opening follows synchronous benchmark loops; the tween can
++   consume that preceding long frame's delta and finish sooner. Its shorter
++   107–123 ms wall time should not be interpreted as a stable opening target.
++2. Cached pictures restore through one worker job per car. Each read completes
++   cheaply, but the main thread publishes it and dispatches the next car on a
++   later frame. The selected car already has priority; it does not wait behind
++   all six. The other five pictures accumulate frame waits, especially at 30 fps.
++3. Opening an already warm dropdown requests a full cache scan. Each scan emits
++   six `changed` notifications despite unchanged textures. Retained header,
++   dropdown and Garage views repeat their lookups and refreshes. Twenty repeated
++   opens produced 120 extra notifications. This is avoidable CPU work, although
++   it is smaller than the visible animation and multi-frame loading costs.
++4. Startup also contains synchronous App setup before the cache's first process
++   opportunity. In the final actual offline-App probes, `_ready` occupied
++   212/260 ms on Compatibility/Mobile. The selected picture published at 229/280 ms;
++   all six were published at 313/370 ms. These clocks start immediately before
++   adding an already-loaded App script to the tree. They exclude engine launch,
++   script loading before the probe and online account restoration, and are not
++   whole-app startup measurements.
++
++Final desktop samples, medians of three runs per row. Times end at the last
++picture publication rather than the following test-observation frame:
++
++| Renderer / frame cap | Current all six | Audit prototype all six | Warm dropdown CPU, current → prototype |
++|---|---:|---:|---:|
++| Compatibility / 60 | 103.6 ms | 72.4 ms | 4.88 → 1.31 ms |
++| Compatibility / 30 | 197.7 ms | 132.8 ms | 4.96 → 1.00 ms |
++| Mobile/Vulkan desktop / 60 | 101.3 ms | 69.3 ms | 4.71 → 1.23 ms |
++| Mobile/Vulkan desktop / 30 | 197.2 ms | 132.6 ms | 4.78 → 1.13 ms |
++
++The prototype reads the selected PNG first, then the other five in one worker
++batch, publishing at most two textures per frame. It also avoids a full rescan
++when all current pictures are already available. Its warm-open notifications
++drop from six to zero. Selected-picture medians remain roughly 24–40 ms across
++frame caps; this small sample does not establish a selected-picture speedup.
++The combined prototype's maximum observed cache-process interval was 4.94 ms on
++Compatibility and 3.67 ms on desktop Mobile, versus current maxima of 5.90/2.56 ms.
++Batching can increase an individual frame's work even while reducing total wait.
++The audit includes a batch-only variant to distinguish batching from reduced
++refresh work; raw samples and ranges are retained in the report.
++
++Direct warm-file read/decode probes were generally around 1.5–3 ms per PNG,
++including the key lookup. Fixture PNGs are 36–88 KiB, using the six shipped image
++files under private valid keys. Their assigned custom settings are intentional
++IO fixtures; they do not qualify those images as correct painted-car artwork.
++These timings do not measure cold filesystem storage or phone performance.
++
++Another development-build issue is confirmed separately: the shared header
++visual identity includes `game/editor/view_state.gd`,
++`game/editor/object_properties.gd`, and the cache scheduling implementation itself.
++Thus changes in those files invalidate every customised picture when generated
++identity is refreshed. App layout and translations are already excluded. This
++can cause fresh rendering on an updated development build despite unchanged car
++pixels. One car's model changes also invalidate every car through the shared
++revision. Narrowing that boundary needs a verified rendering dependency manifest;
++this audit did not reuse or relabel stale images.
++
++Recommended implementation order:
++
++1. Stop redundant warm-dropdown requests/notifications and shorten the opening
++   fade. The fade is the largest directly visible warm-open cost found here.
++2. Integrate selected-first batched PNG reads, retaining a frame publication
++   budget. The fixture prototype still needs production handling for misses,
++   corrupt files, captures, foreground/race restrictions, account replacement,
++   stale appearances, cancellation and memory pressure before publication.
++3. Start the selected read during binding where safe, and separately profile
++   synchronous App setup. Cache scheduling alone cannot eliminate that setup.
++4. Audit and narrow nonvisual invalidation inputs, with changed-renderer/model
++   negative controls. Do not weaken freshness checks to hide misses.
++
++Changed files are diagnostic only: `game/tests/audit_car_picture_loading.gd`
++(current path plus private hit-only prototypes),
++`scripts/audit_picture_identity_inputs.ps1`,
++`scripts/summarize_picture_loading_audit.py`, and this report. The production
++profile, dropdown, carousel, cache, identities and settings were not authored.
++Both desktop renderers complete 254 checks with zero rejections; all fixture
++views share the same cached texture objects, and the actual App restores six
++PNGs with zero captures. Production parser: 583 scripts, zero failures.
++
++Actual commands:
++
++```powershell
++python scripts/run_shared_car_pictures.py gl_compatibility-loading-audit-2026-11-17 res://tests/audit_car_picture_loading.gd --direct
++python scripts/run_shared_car_pictures.py gl_compatibility-loading-audit-paired-2026-11-17 res://tests/audit_car_picture_loading.gd --direct
++python scripts/run_shared_car_pictures.py mobile-loading-audit-paired-2026-11-17 res://tests/audit_car_picture_loading.gd --direct
++python scripts/run_shared_car_pictures.py gl_compatibility-loading-audit-final-2026-11-17 res://tests/audit_car_picture_loading.gd --direct
++python scripts/run_shared_car_pictures.py mobile-loading-audit-final-2026-11-17 res://tests/audit_car_picture_loading.gd --direct
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/audit_picture_identity_inputs.ps1
++python scripts/summarize_picture_loading_audit.py
++python scripts/run_shared_car_pictures.py headless-loading-audit-parse-2026-11-17 res://tests/check_model_refinement_parse.gd --direct
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean_build.ps1 -Apply
++```
++
++The initial inline PowerShell identity probe was rejected by the shell's script
++execution policy. The explicit process-local `-ExecutionPolicy Bypass -File`
++invocation above completed without changing the user's execution policy.
++
++[Summary, ranges and source hashes](evidence/car-picture-loading-audit-2026-11-17/report.json)
++and [identity-input probe](evidence/car-picture-loading-audit-2026-11-17/identity-inputs.json).
++Raw commands and logs remain in the linked evidence folders. The source-only
++private checkpoint is checked in both directions and excludes concurrent work
++and the shared index. Standard build retention applies.
++
++No UI appearance change was applied, so no before/after appearance claim is made.
++No physical-device query/test, owner-save access/edit, owner-process action,
++export, backend/live service request or deployment was performed. Phone startup,
++real cold launch, signed-in networking and owner acceptance remain unmeasured.
+diff --git a/game/tests/audit_car_picture_loading.gd b/game/tests/audit_car_picture_loading.gd
+new file mode 100644
+index 0000000000000000000000000000000000000000..04f3c36dce1671cc66cc1d8e42181d169f91348a
+--- /dev/null
++++ b/game/tests/audit_car_picture_loading.gd
+@@ -0,0 +1,219 @@
++extends SceneTree
++## CPI01-CPI03: loading audit only; private PNG fixtures, no production changes.
++const Icons = preload("res://ui/header_car_icons.gd")
++const Cache = preload("res://ui/header_car_appearance_cache.gd")
++var output: String
++var results: Array[Dictionary] = []
++var failures: int = 0
++var checks: int = 0
++
++class TimedCache extends "res://ui/header_car_appearance_cache.gd":
++	var origin: int
++	var events: Array[Dictionary] = []
++	var processing_us: int = 0
++	var peak_processing_us: int = 0
++	func _process(delta: float) -> void:
++		var old_io: RefCounted = _io
++		var started: int = Time.get_ticks_usec()
++		super._process(delta)
++		var duration: int=Time.get_ticks_usec()-started
++		processing_us += duration
++		peak_processing_us=maxi(peak_processing_us,duration)
++		if _io != null and _io != old_io:
++			events.append({"event":"dispatch","vehicle":_io_job.get("vehicle",""),"kind":_io_kind,"ms":float(Time.get_ticks_usec()-origin)/1000.0})
++
++class ObservedApp extends "res://core/app.gd":
++	var origin: int
++	var picture_events: Array[Dictionary] = []
++	func _header_car_capture_allowed(_id: String) -> bool: return false
++	func _header_car_picture_ready(id: String) -> void:
++		picture_events.append({"vehicle":id,"ms":float(Time.get_ticks_usec()-origin)/1000.0,"startup_complete":startup_complete,"screen":screen})
++		super._header_car_picture_ready(id)
++
++class BatchProbe extends TimedCache:
++	# Audit-only hit-path prototype: selected file first, then one remaining batch.
++	# At most two texture publications per frame. Miss/capture integration is excluded.
++	var ready_packets: Array[Dictionary] = []
++	var selected_dispatched: bool = false
++	var coalesce_demand: bool = false
++	func request_pictures(owner_records: LocalRecords) -> void:
++		if coalesce_demand and owner_records==records:
++			var all_ready: bool=true
++			for id: String in VehicleCatalog.IDS:
++				if not Icons.ready(id,records): all_ready=false; break
++			if all_ready: return
++		super.request_pictures(owner_records)
++	func idle() -> bool: return super.idle() and ready_packets.is_empty()
++	func reads_idle() -> bool: return super.reads_idle() and ready_packets.is_empty()
++	func _process(_delta: float) -> void:
++		var started: int=Time.get_ticks_usec()
++		if _io!=null and _io.done:
++			if _io.result is Array:
++				for packet: Dictionary in _io.result: ready_packets.append(packet)
++			_io=null; _io_job={}
++		for _index: int in range(mini(2,ready_packets.size())):
++			var packet: Dictionary=ready_packets.pop_front()
++			if not _valid(packet.job) or not packet.image is Image: continue
++			Icons.publish(packet.job.key,packet.image)
++			disk_hits+=1
++			changed.emit(packet.job.vehicle)
++		if _io==null and not _jobs.is_empty():
++			_jobs.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.vehicle==VehicleCatalog.selected and b.vehicle!=VehicleCatalog.selected)
++			var batch: Array[Dictionary]=[]
++			while not _jobs.is_empty() and batch.size()<(6 if selected_dispatched else 1):
++				var job: Dictionary=_jobs.pop_front()
++				if _valid(job) and not Icons.customized.has(job.key): batch.append(job)
++			if not batch.is_empty():
++				selected_dispatched=true
++				_io_job=batch[0]; _io_kind="read"
++				_io=Work.start(_read_packet.bind(directory,batch),get_tree())
++				events.append({"event":"dispatch","vehicle":batch[0].vehicle,"kind":"read-batch","count":batch.size(),"ms":float(Time.get_ticks_usec()-origin)/1000.0})
++		var duration: int=Time.get_ticks_usec()-started
++		processing_us+=duration
++		peak_processing_us=maxi(peak_processing_us,duration)
++		if idle(): set_process(false)
++	static func _read_packet(cancelled: Callable, path: String, jobs: Array[Dictionary]) -> Array[Dictionary]:
++		var packets: Array[Dictionary]=[]
++		for job: Dictionary in jobs:
++			if cancelled.call(): break
++			var result: Dictionary=Cache._read(cancelled,path.path_join(job.key+".png"))
++			packets.append({"job":job,"image":result.get("image")})
++		return packets
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks+=1
++	if not ok: failures += 1; printerr("AUDIT_REJECT: ",label)
++func frames(count: int = 4) -> void:
++	for _frame: int in range(count): await process_frame
++func fixture(folder: String) -> LocalRecords:
++	var records:=LocalRecords.new(folder.path_join("records.json"))
++	var paints: Dictionary={}
++	var parts: Dictionary={}
++	for id: String in VehicleCatalog.IDS:
++		var paint: Dictionary=VehicleLivery.defaults(id)
++		paint.colors.body="3388aa"
++		paints[id]=paint
++		parts[id]=VehicleCustomisation.defaults()
++	records.settings={"music_enabled":false,"selected_car":"super_rally","vehicle_liveries":paints,"vehicle_customisation":parts}
++	var directory: String=folder.path_join("header_appearance_icons")
++	DirAccess.make_dir_recursive_absolute(directory)
++	for id: String in VehicleCatalog.IDS:
++		# Use shipped PNG byte sizes/complexity; fixtures do not qualify appearance.
++		var bytes: PackedByteArray=FileAccess.get_file_as_bytes(Icons.DIRECTORY+id+".png")
++		FileAccess.open(directory.path_join(Icons.appearance_key(id,records)+".png"),FileAccess.WRITE).store_buffer(bytes)
++	return records
++
++func component(records: LocalRecords, fps: int, repetition: int, mode: String) -> void:
++	Engine.max_fps=fps
++	Icons.customized.clear()
++	VehicleCatalog.selected="super_rally"
++	var cache: TimedCache=TimedCache.new() if mode=="current" else BatchProbe.new()
++	if mode=="batch-coalesced": cache.coalesce_demand=true
++	cache.allowed=func() -> bool: return false
++	cache.read_allowed=func() -> bool: return true
++	root.add_child(cache)
++	var shared: Node=load("res://ui/garage_shared_pictures.gd").new()
++	shared.records=records; shared.header_cache=cache
++	root.add_child(shared)
++	var header: Control=load("res://ui/profile_car.gd").new()
++	header.records=records
++	root.add_child(header)
++	var picker: MenuButton=load("res://ui/header_car_picker.gd").new()
++	picker.records=records; picker.request_pictures=cache.request_pictures
++	root.add_child(picker)
++	var notifications: Array[int]=[0]
++	cache.changed.connect(func(id: String) -> void:
++		notifications[0]+=1
++		cache.events.append({"event":"publish","vehicle":id,"ms":float(Time.get_ticks_usec()-cache.origin)/1000.0})
++		if id==VehicleCatalog.selected: header.refresh()
++		picker.refresh_picture(id))
++	var cards: Array[Control]=[]
++	for id: String in VehicleCatalog.IDS:
++		var card: Control=load("res://ui/garage_cached_thumbnail.gd").new()
++		card.vehicle_id=id; card.livery=VehicleLivery.for_car(records.settings,id)
++		card.customisation=VehicleCustomisation.for_car(records.settings,id)
++		card.preview_service=shared
++		root.add_child(card); cards.append(card)
++	cache.origin=Time.get_ticks_usec()
++	cache.bind_records(records)
++	var deadline: int=Time.get_ticks_msec()+10000
++	while not cache.idle() and Time.get_ticks_msec()<deadline: await process_frame
++	var elapsed: float=float(Time.get_ticks_usec()-cache.origin)/1000.0
++	check(cache.disk_hits==VehicleCatalog.IDS.size() and cache.captures==0,"all six cached files restore")
++	for card: Control in cards:
++		check(card._image.texture==Icons.texture(card.vehicle_id,records),"same carousel texture "+card.vehicle_id)
++	check(header.preview.texture==Icons.texture(VehicleCatalog.selected,records),"same selected header texture")
++	var initial_events: Array=cache.events.duplicate(true)
++	var initial_signals: int=notifications[0]
++	var start: int=Time.get_ticks_usec()
++	for _iteration: int in range(20): picker._populate()
++	var warm_popup_us: int=Time.get_ticks_usec()-start
++	var repeat_signals: int=notifications[0]-initial_signals
++	var openings: Array[Dictionary]=[]
++	if mode=="current" and repetition==0:
++		picker.position=Vector2(16,16); picker.size=Vector2(100,56)
++		for _opening: int in range(2):
++			start=Time.get_ticks_usec()
++			picker.show_popup()
++			var synchronous: float=float(Time.get_ticks_usec()-start)/1000.0
++			await RenderingServer.frame_post_draw
++			var first_draw: float=float(Time.get_ticks_usec()-start)/1000.0
++			var motion: Node=picker.get_node("HeaderCarMotion")
++			var first_alpha: float=motion.progress
++			while motion.tween!=null: await RenderingServer.frame_post_draw
++			openings.append({"synchronous_ms":synchronous,"first_draw_ms":first_draw,"first_draw_alpha":first_alpha,"fully_opaque_ms":float(Time.get_ticks_usec()-start)/1000.0})
++			picker.get_popup().hide()
++			await create_timer(0.2).timeout
++	var direct_reads: Array[Dictionary]=[]
++	for id: String in VehicleCatalog.IDS:
++		start=Time.get_ticks_usec()
++		var pixels: Dictionary=Cache._read(func() -> bool: return false,cache.directory.path_join(Icons.appearance_key(id,records)+".png"))
++		direct_reads.append({"vehicle":id,"read_decode_ms":float(Time.get_ticks_usec()-start)/1000.0,"bytes":FileAccess.get_file_as_bytes(Icons.DIRECTORY+id+".png").size()})
++		check(pixels.get("image") is Image,"direct PNG decode "+id)
++	start=Time.get_ticks_usec()
++	for _iteration: int in range(100):
++		for id: String in VehicleCatalog.IDS: Icons.appearance_key(id,records)
++	var key_us: int=Time.get_ticks_usec()-start
++	results.append({"case":"six-cached-files","mode":mode,"fps_cap":fps,"repetition":repetition,"elapsed_ms":elapsed,"cache_process_ms":float(cache.processing_us)/1000.0,"peak_cache_process_ms":float(cache.peak_processing_us)/1000.0,"events":initial_events,"initial_notifications":initial_signals,"warm_popup_average_ms":float(warm_popup_us)/20000.0,"warm_popup_extra_notifications":repeat_signals,"appearance_key_average_ms":float(key_us)/float(100*VehicleCatalog.IDS.size()*1000),"direct_reads":direct_reads,"popup_openings":openings})
++	for card: Control in cards: card.queue_free()
++	picker.queue_free(); header.queue_free(); shared.queue_free(); cache.queue_free()
++	await frames()
++
++func actual_app(records: LocalRecords, fps: int) -> void:
++	Engine.max_fps=fps
++	Icons.customized.clear()
++	check(records.save_records()==OK,"save private actual-App fixture")
++	var app:=ObservedApp.new()
++	app.records=records
++	app.library=TrackLibrary.new(records.path.get_base_dir().path_join("tracks"))
++	app.cloud_root_override=records.path.get_base_dir().path_join("cloud")
++	app.origin=Time.get_ticks_usec()
++	root.add_child(app)
++	var add_child_ms: float=float(Time.get_ticks_usec()-app.origin)/1000.0
++	var deadline: int=Time.get_ticks_msec()+15000
++	while (not app.startup_complete or not app.header_car_cache.idle()) and Time.get_ticks_msec()<deadline: await process_frame
++	var elapsed: float=float(Time.get_ticks_usec()-app.origin)/1000.0
++	check(app.header_car_cache.disk_hits==6 and app.header_car_cache.captures==0,"actual App restores all cached pictures without captures")
++	results.append({"case":"actual-offline-App","fps_cap":fps,"ready_and_pictures_ms":elapsed,"synchronous_ready_ms":add_child_ms,"events":app.picture_events.duplicate(true),"disk_hits":app.header_car_cache.disk_hits,"captures":app.header_car_cache.captures})
++	app.queue_free()
++	await frames(12)
++
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--evidence-root="): output=arg.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(output)
++	OS.set_environment("BMT_API_URL","")
++	OS.set_environment("BMT_DEV_AUTH_KEY","")
++	root.gui_embed_subwindows=true
++	var folder: String="user://picture-loading-audit-"+TrackLibrary.unique_id()
++	var records: LocalRecords=fixture(folder)
++	for fps: int in [60,30]:
++		for mode: String in ["current","batch","batch-coalesced"]:
++			for repetition: int in range(3): await component(records,fps,repetition,mode)
++	await actual_app(records,60)
++	Engine.max_fps=0
++	var report: Dictionary={"requirements":["CPI01","CPI02","CPI03"],"renderer":RenderingServer.get_current_rendering_method(),"checks":checks,"failures":failures,"results":results,"limits":"Desktop private warm-filesystem fixtures; no cold-disk, owner-save or phone latency claim."}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("CAR_PICTURE_LOADING_AUDIT ",JSON.stringify(report))
++	quit(1 if failures else 0)
+diff --git a/scripts/audit_picture_identity_inputs.ps1 b/scripts/audit_picture_identity_inputs.ps1
+new file mode 100644
+index 0000000000000000000000000000000000000000..5402488f3cb5fc4d732b388190b16e0c8ca6960d
+--- /dev/null
++++ b/scripts/audit_picture_identity_inputs.ps1
+@@ -0,0 +1,19 @@
++$ErrorActionPreference = 'Stop'
++. (Join-Path $PSScriptRoot 'build_identity.ps1')
++$paths = @(
++    'game/editor/view_state.gd',
++    'game/editor/object_properties.gd',
++    'game/localization/en.po',
++    'game/ui/header_car_appearance_cache.gd',
++    'game/core/app.gd',
++    'game/vehicle/super_rally_model.gd',
++    'game/vehicle/electric_reference_body.gd',
++    'game/ui/header_icon_renderer.gd'
++)
++$result = @($paths | ForEach-Object {
++    [pscustomobject]@{ path = $_; invalidates_all_header_pictures = (Test-HeaderPreviewSource $_) }
++})
++$output = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/evidence/car-picture-loading-audit-2026-11-17'
++[void][IO.Directory]::CreateDirectory($output)
++$result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'identity-inputs.json') -Encoding UTF8
++$result | ConvertTo-Json
+diff --git a/scripts/summarize_picture_loading_audit.py b/scripts/summarize_picture_loading_audit.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b65a4ccbe4e27e19abd5970d70622b67587f74db
+--- /dev/null
++++ b/scripts/summarize_picture_loading_audit.py
+@@ -0,0 +1,52 @@
++"""Summarize the native picture-loading audit without changing runtime sources."""
++import hashlib
++import json
++from pathlib import Path
++import statistics
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/car-picture-loading-audit-2026-11-17"
++OUT.mkdir(parents=True, exist_ok=True)
++report = {"requirements": ["CPI01", "CPI02", "CPI03"], "renderers": {}}
++for renderer in ("gl_compatibility", "mobile"):
++    folder = ROOT / "docs/evidence/shared-car-pictures-2026-11-15" / f"{renderer}-loading-audit-final-2026-11-17"
++    audit = json.loads((folder / "report.json").read_text(encoding="utf-8"))
++    assert audit["checks"] == 254 and audit["failures"] == 0
++    summary = {"checks": audit["checks"], "failures": audit["failures"],
++               "evidence": str(folder.relative_to(ROOT)), "samples": []}
++    for fps in (60, 30):
++        for mode in ("current", "batch", "batch-coalesced"):
++            samples = [s for s in audit["results"] if s["case"] == "six-cached-files"
++                       and s["fps_cap"] == fps and s["mode"] == mode]
++            assert len(samples) == 3
++            last = [max(e["ms"] for e in s["events"] if e["event"] == "publish") for s in samples]
++            selected = [next(e["ms"] for e in s["events"] if e["event"] == "publish") for s in samples]
++            summary["samples"].append({
++                "fps_cap": fps, "mode": mode, "sample_count": len(samples),
++                "last_picture_ms_median": statistics.median(last),
++                "last_picture_ms_range": [min(last), max(last)],
++                "selected_picture_ms_median": statistics.median(selected),
++                "warm_dropdown_ms_median": statistics.median(s["warm_popup_average_ms"] for s in samples),
++                "extra_notifications_per_open": samples[0]["warm_popup_extra_notifications"] / 20,
++                "peak_cache_process_ms": max(s["peak_cache_process_ms"] for s in samples),
++            })
++    summary["actual_offline_app"] = next(s for s in audit["results"] if s["case"] == "actual-offline-App")
++    # Actual App entries have no mode; filter the case before reading mode.
++    summary["dropdown_openings"] = [{"fps_cap": s["fps_cap"], "openings": s["popup_openings"]}
++                                   for s in audit["results"] if s["case"] == "six-cached-files"
++                                   and s["mode"] == "current" and s["popup_openings"]]
++    report["renderers"][renderer] = summary
++report["production_source_sha256_at_summary"] = {
++    path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
++    for path in ("game/core/app.gd", "game/ui/header_car_appearance_cache.gd",
++                 "game/ui/header_car_icons.gd", "game/ui/header_car_picker.gd",
++                 "game/ui/header_car_motion.gd", "game/ui/garage_shared_pictures.gd",
++                 "scripts/build_identity.ps1")
++}
++report["scope"] = "Audit and fixture-only prototypes; no production change, phone test or whole-startup claim."
++(OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++for renderer, values in report["renderers"].items():
++    print(renderer, "checks", values["checks"], "failures", values["failures"])
++    for s in values["samples"]:
++        print(s["fps_cap"], s["mode"], "last", round(s["last_picture_ms_median"], 2),
++              "dropdown", round(s["warm_dropdown_ms_median"], 2), "peak", round(s["peak_cache_process_ms"], 2))

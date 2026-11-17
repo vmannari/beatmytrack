@@ -44,6 +44,7 @@ var race_context: bool = false
 var live_ghost_settings: bool = true
 var allowed_sections: Array[String] = []
 var dirty: bool = false
+var _change_revision: int = 0
 var compact: bool = false
 var narrow: bool = false
 var category_picker: OptionButton
@@ -226,7 +227,7 @@ func _build_panel() -> void:
 	status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	footer.add_child(status)
-	var apply: Button = MenuStyle.button("Apply settings", _apply, true)
+	var apply: Button = MenuStyle.button("Apply settings", _apply_async, true)
 	apply_button = apply
 	apply.name = "ApplySettings"
 	apply.icon = MenuIcon.texture("check")
@@ -400,7 +401,7 @@ func _development() -> void:
 	body.add_child(_label("The backend console uses a separate administrator credential.",16,true))
 
 func _test_rewarded_ad() -> void:
-	if ad_test_busy or not draft_show_ads or not _apply(): return
+	if ad_test_busy or not draft_show_ads or not await _apply_async(): return
 	ad_test_busy = true
 	ad_test_button.disabled = true
 	status.text = "Loading test ad…"
@@ -630,6 +631,7 @@ func _account() -> void:
 	row.add_child(manage)
 
 func _changed() -> void:
+	_change_revision += 1
 	dirty = true
 	status.text = "Unapplied changes"
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
@@ -685,7 +687,7 @@ func _reset() -> void:
 	_changed()
 	_show_section(section)
 
-func _apply() -> bool:
+func _stage_settings() -> bool:
 	if records.path.is_empty():
 		status.text = "Could not save. Please try again."
 		return false
@@ -701,19 +703,33 @@ func _apply() -> bool:
 	records.settings.optional_analytics = draft_analytics
 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
 	if development_available: records.settings.development_show_ads = draft_show_ads
-	var error: Error = records.save_records()
+	return true
+
+func _apply() -> bool:
+	if not _stage_settings(): return false
+	return _applied(records.save_records(),_change_revision)
+
+func _apply_async() -> bool:
+	if not _stage_settings(): return false
+	var revision: int = _change_revision
+	var owner: LocalRecords = records
+	var error: Error = await owner.save_records_async()
+	if not is_inside_tree() or records != owner: return error == OK
+	return _applied(error,revision)
+
+func _applied(error: Error, revision: int) -> bool:
 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
 	if error == OK: GameSoundtrack.instance().apply_settings(records.settings)
 	if error == OK:
-		dirty = false
+		dirty = revision != _change_revision
 		if not race_context: TouchControls.SteeringHaptics.press(draft_haptics)
 		privacy_changed.emit(draft_analytics)
 		settings_applied.emit()
 	return error == OK
 
 func _customize() -> void:
-	if _apply(): customize_requested.emit()
+	if await _apply_async(): customize_requested.emit()
 
 func _row(node_name: String, padding: int) -> BoxContainer:
 	var panel := PanelContainer.new()

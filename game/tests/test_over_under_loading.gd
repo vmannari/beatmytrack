@@ -7,7 +7,7 @@ var checks: int = 0
 class HeldTicket extends "res://backend/cloud_tracks.gd":
 	signal released
 	var requested: bool = false
-	func ticket(_track: NativeTrack, _creator: bool = false, _vehicle: String = "", _handling: HandlingConfig = null, _issued: Dictionary = {}) -> Dictionary:
+	func ticket(_track: NativeTrack, _creator: bool = false, _vehicle: String = "", _handling: HandlingConfig = null, _issued: Dictionary = {}, _purpose: String = "race") -> Dictionary:
 		last_error = "Isolated held request"
 		requested = true
 		await released

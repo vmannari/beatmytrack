@@ -29,6 +29,9 @@ func run() -> void:
 	app.selected_track = track
 	app._start_race(track,false,true)
 	check(is_instance_valid(app.race_loading) and app.game == null,"race cancellation occurs at the real first yield")
+	# The loading cover precedes the lazily loaded controller. Observe that
+	# actual installation before asserting the controller's lifetime.
+	while not app._feature_resources.has("res://core/features/race.gd"): await process_frame
 	var controller: WeakRef = weakref(app._feature_resources["res://core/features/race.gd"])
 	check(controller.get_ref().get_parent() == app,"race controller has App lifetime")
 	var previous: WeakRef = weakref(app)
@@ -42,6 +45,8 @@ func run() -> void:
 	check(app.editor_preview_thread != null,"real editor worker started")
 	controller = weakref(app._feature_resources["res://core/features/editor.gd"])
 	check(controller.get_ref().get_parent() == app,"editor controller has App lifetime")
+	check(controller.get_ref().editor_state == app.editor_state and app.editor_state.session == app.editor_session,"controller owns the same typed state used by App entry points")
+	check(controller.get_ref().storage == app.library and controller.get_ref().publication == app.lifecycle,"editor services bind to the current profile")
 	previous = weakref(app)
 	app.queue_free()
 	app = null

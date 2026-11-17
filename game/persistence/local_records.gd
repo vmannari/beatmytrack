@@ -16,6 +16,11 @@ var _committed_settings: Dictionary = {}
 var _condition_store: Node
 var _condition_revision: int = -1
 var _condition_committed_revision: int = -1
+var _pending_save: Dictionary = {}
+var _records_json: String = ""
+var _document_text: String = ""
+static var _writers: Array[LocalRecords] = []
+static var _writer_tree: SceneTree
 
 
 func _init(file_path: String = "user://local_records.json") -> void:
@@ -23,6 +28,8 @@ func _init(file_path: String = "user://local_records.json") -> void:
 
 
 func load_records() -> void:
+	flush_save()
+	_flush_path(path)
 	if is_instance_valid(_condition_store): _condition_store.flush(); _condition_store.release(self)
 	_condition_store = null
 	_condition_revision = -1
@@ -31,6 +38,8 @@ func load_records() -> void:
 	settings = {}
 	_committed_records = {}
 	_committed_settings = {}
+	_records_json = ""
+	_document_text = ""
 	# A temporary is uncommitted and is never loaded as a personal best.
 	for candidate: String in [path,path+".bak"]:
 		var document: Dictionary = _read_document(candidate)
@@ -38,10 +47,12 @@ func load_records() -> void:
 			continue
 		records = document.records
 		settings = document.settings
+		_document_text = FileAccess.get_file_as_string(candidate)
 		break
 	# A small sidecar overrides legacy embedded cosmetics, including when the
 	# PB file does not yet exist. Old files remain intact until a normal commit.
 	_remember_committed()
+	_records_json = JSON.stringify(_committed_records,"",true)
 	_conditions()
 
 
@@ -107,7 +118,7 @@ func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps
 	return save_records()
 
 
-func save_records() -> Error:
+func _prepare_save() -> Error:
 	if settings.has("vehicle_conditions") and not VehicleCondition.valid_collection(settings.vehicle_conditions): return _failed(ERR_INVALID_DATA)
 	if is_instance_valid(_condition_store):
 		# A caller may still deliberately update the legacy settings API. Keep
@@ -118,46 +129,166 @@ func save_records() -> Error:
 		if condition_error != OK: return _failed(condition_error)
 		_condition_revision = -1
 		_sync_conditions()
-	var document: Dictionary = _normalize({"schema":SCHEMA,"records":records,"settings":settings})
+	return OK
+
+
+func save_records() -> Error:
+	flush_save()
+	_flush_path(path)
+	var error: Error = _prepare_save()
+	if error != OK: return error
+	var result: Dictionary = _write_document(path,{"schema":SCHEMA,"records":records,"settings":settings},_save_cache())
+	if result.error != OK: return _failed(result.error)
+	_accept_save(result)
+	return OK
+
+
+func save_records_async() -> Error:
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	if tree == null: return save_records()
+	# Every caller observes its own durable result. The synchronous entry point
+	# joins this same writer before reusing the primary/backup/temporary paths.
+	var destination: String = _absolute_path(path)
+	while not _pending_save.is_empty() or _path_pending(destination): await tree.process_frame
+	var error: Error = _prepare_save()
+	if error != OK: return error
+	var job: Dictionary = {"destination":destination,"source":{"schema":SCHEMA,"records":records.duplicate(true),"settings":settings.duplicate(true)},"thread":Thread.new(),"done":false,"error":OK}
+	_pending_save = job
+	error = job.thread.start(_write_document.bind(destination,job.source,_save_cache()),Thread.PRIORITY_LOW)
+	if error != OK:
+		_pending_save = {}
+		return _failed(error)
+	_writers.append(self)
+	if _writer_tree == null:
+		_writer_tree = tree
+		tree.process_frame.connect(_poll_saves)
+		tree.root.tree_exiting.connect(_flush_saves)
+	while not job.done:
+		if job.thread.is_alive(): await tree.process_frame
+		else: flush_save()
+	return job.error
+
+
+static func _poll_saves() -> void:
+	for owner: LocalRecords in _writers.duplicate():
+		if not owner._pending_save.is_empty() and not owner._pending_save.thread.is_alive(): owner.flush_save()
+
+
+static func _absolute_path(destination: String) -> String:
+	var absolute: String = ProjectSettings.globalize_path(destination).simplify_path()
+	return absolute.to_lower() if OS.get_name() == "Windows" else absolute
+
+
+static func _path_pending(destination: String) -> bool:
+	for owner: LocalRecords in _writers:
+		if owner._pending_save.destination == destination: return true
+	return false
+
+
+static func _flush_path(destination: String) -> void:
+	var absolute: String = _absolute_path(destination)
+	for owner: LocalRecords in _writers.duplicate():
+		if not owner._pending_save.is_empty() and owner._pending_save.destination == absolute: owner.flush_save()
+
+
+static func _flush_saves() -> void:
+	for owner: LocalRecords in _writers.duplicate(): owner.flush_save()
+	_writer_tree = null
+
+
+func flush_save() -> void:
+	if _pending_save.is_empty(): return
+	var job: Dictionary = _pending_save
+	var result: Dictionary = job.thread.wait_to_finish()
+	job.thread = null
+	_pending_save = {}
+	_writers.erase(self)
+	# Preserve edits authored while the immutable worker snapshot was in flight.
+	var live_records: Dictionary = records
+	var live_settings: Dictionary = settings
+	job.error = result.error
+	if result.error == OK:
+		_accept_save(result,job.source,{"records":live_records,"settings":live_settings})
+	else:
+		_failed(result.error)
+		_merge_edits(records,job.source.records,live_records)
+		_merge_edits(settings,job.source.settings,live_settings)
+	job.done = true
+
+
+static func _merge_edits(target: Dictionary, source: Dictionary, live: Dictionary) -> void:
+	for key: Variant in source:
+		if not live.has(key): target.erase(key)
+	for key: Variant in live:
+		if not source.has(key) or source[key] != live[key]: target[key] = live[key]
+
+
+func _save_cache() -> Dictionary:
+	return {"records":_committed_records,"records_json":_records_json,"content":_document_text}
+
+
+static func _write_document(destination: String, source: Dictionary, cache: Dictionary) -> Dictionary:
+	# Validated PBs are immutable between record commits. Preference writes can
+	# reuse their encoding while still validating every changed preference.
+	var same_records: bool = not cache.records_json.is_empty() and source.records == cache.records
+	var document: Dictionary = _normalize({"schema":SCHEMA,"records":{},"settings":source.settings} if same_records else source)
 	if document.is_empty():
-		return _failed(ERR_INVALID_DATA)
-	var content: String = JSON.stringify(document,"",true)
-	if content.to_utf8_buffer().size() > MAX_BYTES:
-		return _failed(ERR_OUT_OF_MEMORY)
-	var temporary: String = path+".tmp"
-	var backup: String = path+".bak"
+		return {"error":ERR_INVALID_DATA}
+	var encoded_records: String = cache.records_json if same_records else JSON.stringify(document.records,"",true)
+	if same_records: document.records = cache.records
+	var content: String = '{"records":'+encoded_records+',"schema":'+str(SCHEMA)+',"settings":'+JSON.stringify(document.settings,"",true)+'}'
+	var bytes: PackedByteArray = content.to_utf8_buffer()
+	if bytes.size() > MAX_BYTES:
+		return {"error":ERR_OUT_OF_MEMORY}
+	var temporary: String = destination+".tmp"
+	var backup: String = destination+".bak"
 	var file := FileAccess.open(temporary,FileAccess.WRITE)
 	if file == null:
-		return _failed(FileAccess.get_open_error())
-	file.store_string(content)
+		return {"error":FileAccess.get_open_error()}
+	file.store_buffer(bytes)
 	file.flush()
 	var error: Error = file.get_error()
 	file.close()
-	if error != OK or _read_document(temporary).is_empty():
-		return _failed(ERR_FILE_CANT_WRITE)
-	if FileAccess.file_exists(path):
-		if not _read_document(path).is_empty():
+	# Compare the complete bytes against the already validated encoding.
+	if error != OK or FileAccess.get_file_as_bytes(temporary) != bytes:
+		return {"error":ERR_FILE_CANT_WRITE}
+	if FileAccess.file_exists(destination):
+		var known_primary: bool = not cache.content.is_empty() and FileAccess.get_file_as_bytes(destination) == cache.content.to_utf8_buffer()
+		if known_primary or not _read_document(destination).is_empty():
 			if FileAccess.file_exists(backup):
 				error = DirAccess.remove_absolute(backup)
 				if error != OK:
-					return _failed(error)
-			error = DirAccess.rename_absolute(path,backup)
+					return {"error":error}
+			error = DirAccess.rename_absolute(destination,backup)
 		else:
 			# Keep the previous good backup when the primary is corrupt.
-			error = DirAccess.remove_absolute(path)
+			error = DirAccess.remove_absolute(destination)
 		if error != OK:
-			return _failed(error)
-	error = DirAccess.rename_absolute(temporary,path)
+			return {"error":error}
+	error = DirAccess.rename_absolute(temporary,destination)
 	if error != OK:
-		return _failed(error)
-	records = document.records
+		return {"error":error}
+	return {"error":OK,"document":document,"records_json":encoded_records,"content":content,"same_records":same_records}
+
+
+func _accept_save(result: Dictionary, source: Dictionary = {}, live: Dictionary = {}) -> void:
+	var document: Dictionary = result.document
+	_records_json = result.records_json
+	_document_text = result.content
+	if not result.same_records: records = document.records
 	settings = document.settings
 	var awards_changed: bool = settings.get("achievements",{}).get("unlocked",{}) != _committed_settings.get("achievements",{}).get("unlocked",{})
 	var appearance_changed: bool = settings.get("vehicle_liveries",{}) != _committed_settings.get("vehicle_liveries",{}) or settings.get("vehicle_customisation",{}) != _committed_settings.get("vehicle_customisation",{})
-	_remember_committed()
+	_remember_committed(result.same_records)
+	if not source.is_empty():
+		_merge_edits(records,source.records,live.records)
+		_merge_edits(settings,source.settings,live.settings)
+	if is_instance_valid(_condition_store):
+		_condition_revision = -1
+		_condition_committed_revision = -1
+		_sync_conditions()
 	if awards_changed: achievement_progress_committed.emit()
 	if appearance_changed: appearance_committed.emit()
-	return OK
 
 
 func _failed(error: Error) -> Error:
@@ -168,8 +299,8 @@ func _failed(error: Error) -> Error:
 	return error
 
 
-func _remember_committed() -> void:
-	_committed_records = records.duplicate(true)
+func _remember_committed(same_records: bool = false) -> void:
+	if not same_records: _committed_records = records.duplicate(true)
 	_committed_settings = settings.duplicate(true)
 
 
@@ -246,7 +377,7 @@ static func _normalize(data: Variant) -> Dictionary:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "control_layout":
 			if not ControlLayout.valid(preferences[field]): return {}
-		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "reduced_car_models", "optional_analytics", "music_enabled", "drift_haptics"]:
+		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "optional_analytics", "music_enabled", "drift_haptics"]:
 			if not preferences[field] is bool:
 				return {}
 		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:

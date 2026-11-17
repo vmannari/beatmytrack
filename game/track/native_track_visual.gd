@@ -1322,17 +1322,22 @@ func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2,
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
 
 func _asphalt_edge_faces(tool: SurfaceTool, support: RefCounted) -> void:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+	if native != null and not native.has_method("road_asphalt_sides"): native = null
+	var ends := PackedVector3Array()
+	var outwards := PackedVector3Array()
 	# Close the raised asphalt with side faces only on the exposed union edge.
 	for polygon: PackedVector2Array in support.floors:
 		if editor_road_update.has("tiles"):
 			var bounds := Rect2(polygon[0],Vector2.ZERO)
 			for point: Vector2 in polygon: bounds = bounds.expand(point)
 			if not preload("res://editor/road_update.gd").intersects(bounds,editor_road_update.tiles): continue
+		var miters: PackedVector2Array = RoadEdges.edge_miters(polygon)
 		for i: int in range(polygon.size()):
 			var a: Vector2 = polygon[i]
 			var b: Vector2 = polygon[(i+1)%polygon.size()]
-			var miter_a: Vector2 = RoadEdges._edge_miter(polygon,i)
-			var miter_b: Vector2 = RoadEdges._edge_miter(polygon,(i+1)%polygon.size())
+			var miter_a: Vector2 = miters[i]
+			var miter_b: Vector2 = miters[(i+1)%polygon.size()]
 			var outward: Vector2 = (b-a).normalized().orthogonal()
 			if Geometry2D.is_point_in_polygon((a+b)*0.5+outward*0.003,polygon): outward = -outward
 			var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
@@ -1342,8 +1347,18 @@ func _asphalt_edge_faces(tool: SurfaceTool, support: RefCounted) -> void:
 				var probe: Vector2 = (p+q)*0.5+outward*0.003
 				if support.on_floor(probe) or CreatorBridges.at_any(support.track.creator_bridges,probe): continue
 				var top: float = ROAD_HEIGHT.ROAD+support.lift
-				ASPHALT_EDGE.append(tool,VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(q)+Vector3.UP*top,
-					VisualGeometry.world(miter_a.lerp(miter_b,float(step)/steps)),VisualGeometry.world(miter_a.lerp(miter_b,float(step+1)/steps)),0.013,0.013)
+				var a3: Vector3 = VisualGeometry.world(p)+Vector3.UP*top
+				var b3: Vector3 = VisualGeometry.world(q)+Vector3.UP*top
+				var outward_a: Vector3 = VisualGeometry.world(miter_a.lerp(miter_b,float(step)/steps))
+				var outward_b: Vector3 = VisualGeometry.world(miter_a.lerp(miter_b,float(step+1)/steps))
+				if native == null: ASPHALT_EDGE.append(tool,a3,b3,outward_a,outward_b,0.013,0.013)
+				else:
+					ends.append(a3); ends.append(b3)
+					outwards.append(outward_a); outwards.append(outward_b)
+	if native != null and not native.road_asphalt_sides(tool,ends,outwards,0.013):
+		# Unsupported input is rejected before native emission begins.
+		for i: int in range(0,ends.size(),2):
+			ASPHALT_EDGE.append(tool,ends[i],ends[i+1],outwards[i],outwards[i+1],0.013,0.013)
 
 
 func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:

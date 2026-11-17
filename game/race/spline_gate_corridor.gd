@@ -29,6 +29,10 @@ static func lane(track: NativeTrack, fraction: float, constant_width: bool = fal
 	# Basis belongs only to this preparation. Preserve double scalar values and
 	# the original ordered Vector2 multiplies; do not fold their rounding steps.
 	if basis.is_empty(): basis = _lane_basis(track)
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").checkpoints()
+	if native != null:
+		var prepared: PackedVector2Array = native.checkpoint_lane(track.route,basis,fraction,constant_width,rejoin_start,recovery_m,Geometry2D)
+		if not prepared.is_empty(): return prepared
 	var path := PackedVector2Array()
 	var normals: PackedVector2Array = basis.normals
 	var halves: PackedFloat64Array = basis.halves
@@ -79,6 +83,9 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 		var key := Vector2i((track.route[i]/8.0).floor())
 		if not route_bins.has(key): route_bins[key] = []
 		route_bins[key].append(i)
+	# This job owns the native route index; it is released with preparation.
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").checkpoints() if track.get_script().resource_path == "res://track/native_track.gd" else null
+	if native != null and not native.checkpoint_prepare(track.route,PackedFloat64Array(Array(track.route_cumulative))): native = null
 	# A recovery lane can erase the very hairpin it should recover around.
 	# Expanding an inner lane with a neighbouring wider road can erase it too.
 	# Use interior road/kerb references for the required order; full recovery lanes
@@ -204,7 +211,7 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 				var point: Vector2 = path[i]
 				var progress: float = float(projections.get(point,NAN))
 				if is_nan(progress):
-					progress = _projection(track,point,route_bins)
+					progress = _projection(track,point,route_bins,native)
 					projections[point] = progress
 				var ahead: float = wrapf(progress-session._start_progress-session._progress[gate],-track.route_length*0.5,track.route_length*0.5)
 				reach = maxf(reach,ahead+1.0)
@@ -227,6 +234,10 @@ static func _cached_crossings(session: RefCounted, path: PackedVector2Array, cac
 	return cache[key]
 
 static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").checkpoints()
+	if native != null:
+		var prepared: PackedFloat64Array = native.checkpoint_crossings(session._centers,session._directions,PackedVector2Array(session._widths),path)
+		if prepared.size() == session._centers.size(): return prepared
 	var events := PackedFloat64Array()
 	# Index segment bounds once per lane. Only segments overlapping a gate's
 	# finite span can cross it; preserve ascending order for equal-distance ties.
@@ -269,7 +280,10 @@ static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedF
 		events.append(event)
 	return events
 
-static func _projection(track: NativeTrack, point: Vector2, bins: Dictionary) -> float:
+static func _projection(track: NativeTrack, point: Vector2, bins: Dictionary, native: RefCounted = null) -> float:
+	if native != null:
+		var prepared: float = native.checkpoint_projection(point)
+		if not is_nan(prepared): return prepared
 	var key := Vector2i((point/8.0).floor())
 	var best: float = INF
 	var nearest: int = 0

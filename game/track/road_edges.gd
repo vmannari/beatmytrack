@@ -106,15 +106,27 @@ static func _clean_outline(source: PackedVector2Array) -> PackedVector2Array:
 	return result
 
 
-static func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
+static func _winding_area(polygon: PackedVector2Array) -> float:
+	var area: float = 0.0
+	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
+	return area
+
+static func edge_miters(polygon: PackedVector2Array) -> PackedVector2Array:
+	# The polygon is immutable during this build. Keep the original ordered
+	# double sum, and each Vector2 calculation, while doing the sum once.
+	var area: float = _winding_area(polygon)
+	var miters := PackedVector2Array()
+	for i: int in range(polygon.size()): miters.append(_edge_miter(polygon,i,area))
+	return miters
+
+static func _edge_miter(polygon: PackedVector2Array, index: int, area: float = NAN) -> Vector2:
 	var point: Vector2 = polygon[index]
 	var before: Vector2 = (point-polygon[(index+polygon.size()-1)%polygon.size()]).normalized().orthogonal()
 	var after: Vector2 = (polygon[(index+1)%polygon.size()]-point).normalized().orthogonal()
 	var normal: Vector2 = (before+after).normalized()
 	# A tiny containment probe at a nearly-collinear boundary is unstable.
 	# Use the whole polygon's winding so consecutive normals cannot flip.
-	var area: float = 0.0
-	for i: int in range(polygon.size()): area += polygon[i].cross(polygon[(i+1)%polygon.size()])
+	if is_nan(area): area = _winding_area(polygon)
 	if area < 0.0: normal = -normal
 	return normal / maxf(absf(normal.dot(after)),0.5)
 

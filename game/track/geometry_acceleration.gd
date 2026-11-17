@@ -2,8 +2,12 @@ extends RefCounted
 ## Optional local CPU implementation. Never called by the simulation step.
 static var enabled: bool = true
 static var roads_enabled: bool = true
+static var checkpoints_enabled: bool = true
 static var winter_enabled: bool = true
 static var raster_enabled: bool = true
+
+static func checkpoints() -> RefCounted:
+	return _feature("checkpoint_algorithm_version") if checkpoints_enabled else null
 
 static func winter() -> RefCounted:
 	return _feature("winter_algorithm_version") if winter_enabled else null

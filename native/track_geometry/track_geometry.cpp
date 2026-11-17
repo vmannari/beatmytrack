@@ -126,16 +126,25 @@ struct Relief {
 #include "editor_streams.hpp"
 #include "raster_geometry.hpp"
 #include "winter_geometry.hpp"
+#include "checkpoint_geometry.hpp"
+#include "asphalt_sides.hpp"
 
 class BmtTrackGeometry : public RefCounted {
     GDCLASS(BmtTrackGeometry,RefCounted)
+    checkpoint_geometry::Route checkpoint_route;
 protected:
     static void _bind_methods() {
         ClassDB::bind_method(D_METHOD("relief","streams","terrain","transform","refine","cancelled"),&BmtTrackGeometry::relief);
         ClassDB::bind_method(D_METHOD("algorithm_version"),&BmtTrackGeometry::algorithm_version);
         ClassDB::bind_method(D_METHOD("road_algorithm_version"),&BmtTrackGeometry::road_algorithm_version);
+        ClassDB::bind_method(D_METHOD("road_asphalt_sides","tool","ends","outwards","bottom"),&BmtTrackGeometry::road_asphalt_sides);
         ClassDB::bind_method(D_METHOD("winter_algorithm_version"),&BmtTrackGeometry::winter_algorithm_version);
         ClassDB::bind_method(D_METHOD("raster_algorithm_version"),&BmtTrackGeometry::raster_algorithm_version);
+        ClassDB::bind_method(D_METHOD("checkpoint_algorithm_version"),&BmtTrackGeometry::checkpoint_algorithm_version);
+        ClassDB::bind_method(D_METHOD("checkpoint_crossings","centers","directions","widths","path"),&BmtTrackGeometry::checkpoint_crossings);
+        ClassDB::bind_method(D_METHOD("checkpoint_prepare","route","cumulative"),&BmtTrackGeometry::checkpoint_prepare);
+        ClassDB::bind_method(D_METHOD("checkpoint_projection","point"),&BmtTrackGeometry::checkpoint_projection);
+        ClassDB::bind_method(D_METHOD("checkpoint_lane","route","basis","fraction","constant_width","rejoin_start","recovery","geometry"),&BmtTrackGeometry::checkpoint_lane);
         ClassDB::bind_method(D_METHOD("winter_row","anchor","outward","points","cache","drift","pack"),&BmtTrackGeometry::winter_row);
         ClassDB::bind_method(D_METHOD("winter_section","tool","anchors","points","cache","drift","pack"),&BmtTrackGeometry::winter_section);
         ClassDB::bind_method(D_METHOD("winter_markers","triangles","route","bridges","cancelled"),&BmtTrackGeometry::winter_markers);
@@ -155,8 +164,14 @@ protected:
 public:
     int64_t algorithm_version() const { return 1; }
     int64_t road_algorithm_version() const { return 1; }
+    bool road_asphalt_sides(Object *tool,const PackedVector3Array &ends,const PackedVector3Array &outwards,double bottom) const {return asphalt_sides::emit(tool,ends,outwards,bottom);}
     int64_t winter_algorithm_version() const { return 1; }
     int64_t raster_algorithm_version() const { return 1; }
+    int64_t checkpoint_algorithm_version() const { return 1; }
+    PackedFloat64Array checkpoint_crossings(const PackedVector2Array &centers,const PackedVector2Array &directions,const PackedVector2Array &widths,const PackedVector2Array &path) const {return checkpoint_geometry::crossings(centers,directions,widths,path);}
+    bool checkpoint_prepare(const PackedVector2Array &route,const PackedFloat64Array &cumulative) {return checkpoint_route.prepare(route,cumulative);}
+    double checkpoint_projection(Vector2 point) const {return checkpoint_route.projection(point);}
+    PackedVector2Array checkpoint_lane(const PackedVector2Array &route,const Dictionary &basis,double fraction,bool constant_width,bool rejoin_start,double recovery,Object *geometry) const {return checkpoint_geometry::lane(route,basis,fraction,constant_width,rejoin_start,recovery,geometry);}
     Dictionary winter_row(Vector2 anchor,Vector2 outward,const PackedVector2Array &points,Dictionary cache,Object *drift,Object *pack) const {return winter_geometry::row(anchor,outward,points,cache,drift,pack);}
     bool winter_section(Object *tool,const PackedVector2Array &anchors,const PackedVector2Array &points,Dictionary cache,Object *drift,Object *pack) const {return winter_geometry::section(tool,anchors,points,cache,drift,pack);}
     Dictionary winter_markers(const Array &triangles,const PackedVector2Array &route,const Array &bridges,const Callable &cancelled) const {return winter_geometry::markers(triangles,route,bridges,cancelled);}

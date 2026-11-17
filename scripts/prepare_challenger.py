@@ -708,7 +708,7 @@ for simple in [False,True]:
         profile=hood_panel.profile()
         px,pz=np.meshgrid(profile['x'],profile['z'],indexing='ij')
         mapped=clean_panels.world(np.c_[px.ravel(),hood_panel.height(px,pz).ravel(),pz.ravel()])
-        profile['heights']=np.round(contour_hood.reference_field.height(mapped[:,0],mapped[:,2]).reshape(px.shape),7).tolist()
+        profile['heights']=np.round(contour_hood.reference_field.attachment_height(mapped[:,0],mapped[:,2]).reshape(px.shape),7).tolist()
         (output/'hood_profile.json').write_text(json.dumps(profile,separators=(',',':')),encoding='utf-8')
         factory_hood_outline=contour_hood.boundary().copy()
         (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'rounded reference bonnet boundary','physical_width_metres':.0025,'points':factory_hood_outline.tolist()},indent=2),encoding='utf-8')
@@ -720,11 +720,62 @@ for simple in [False,True]:
     shorten(exports)
     from challenger_nose_finish import finish as finish_nose,point_map as nose_point_map
     finish_nose(exports)
+    from challenger_hood_geometry import finish_seams
+    seam_outline = contour_hood.boundary().copy()
+    seam_outline[:,2] = front_z(seam_outline[:,2])
+    seam_outline = nose_point_map(seam_outline)
+    seam_finish = finish_seams(exports, seam_outline, simple)
+    from challenger_convex_fenders import refine as refine_convex_fenders
+    convex_patch, convex_stats = refine_convex_fenders(exports, seam_outline, lattice, simple,
+        None if not simple else convex_profile)
+    if '--debug-cache' in args:
+        (output/(tier+'_convex-field.json')).write_text(json.dumps(convex_patch.field.profile()))
+    from challenger_front_surface import refine as refine_front_surface
+    front_surface, front_surface_stats = refine_front_surface(exports, simple, convex_patch.field)
+    print('FRONT_SURFACE', tier, front_surface_stats, flush=True)
+    if not simple:
+        convex_profile = convex_patch.field.profile()
+        # Fitted parts consume the existing attachment grid. Bake the same
+        # local fringe correction into it; no new runtime surface is created.
+        heights = np.asarray(profile['heights'])
+        attachment = mapped.copy()
+        attachment[:, 1] = heights.ravel()
+        from challenger_reference_form import front_scale
+        attachment[:, 0] *= front_scale(attachment[:, 2])
+        attachment[:, 2] = front_z(attachment[:, 2])
+        final_points = nose_point_map(attachment)
+        targets = np.asarray([convex_patch.hood_point(p) for p in final_points])
+        # The attachment grid follows the actual final triangles, including
+        # their limited low-poly interpolation between convex field samples.
+        from mathutils.bvhtree import BVHTree
+        hp,hf,_ = clean_panels._read(next(obj for obj in exports if obj.name=='hood__paint'))
+        hood_skin = BVHTree.FromPolygons(hp.tolist(),hf.tolist(),all_triangles=True)
+        for index,point in enumerate(final_points):
+            leading = point[2] < front_surface.REAR
+            if not leading and (abs(point[0]) <= .50 or not convex_patch.START < point[2] < convex_patch.END):
+                continue
+            hit,*_ = hood_skin.ray_cast((float(point[0]),2,float(point[2])),(0,-1,0),2)
+            if hit is not None:targets[index,1] = hit.y
+        offset = np.zeros_like(attachment); offset[:, 1] = .0001
+        derivative = (nose_point_map(attachment+offset)[:, 1]-nose_point_map(attachment-offset)[:, 1])/.0002
+        heights += ((targets[:, 1]-final_points[:, 1])/derivative).reshape(heights.shape)
+        profile['heights'] = np.round(heights, 7).tolist()
+        (output/'hood_profile.json').write_text(json.dumps(profile,separators=(',',':')),encoding='utf-8')
+    print('CONVEX_FENDERS',tier,convex_stats,flush=True)
+    from challenger_rear_surface import refine as refine_rear_surface
+    rear_profile, rear_stats = refine_rear_surface(exports, simple, None if not simple else rear_profile)
+    print('REAR_SURFACE', tier, rear_stats, flush=True)
     exhaust_attachment=exterior_detail.seat_exhaust(exports)
     if not simple:
         shortened_outline=factory_hood_outline.copy()
         shortened_outline[:,2]=front_z(shortened_outline[:,2])
         shortened_outline=nose_point_map(shortened_outline)
+        shortened_outline=np.asarray([convex_patch.hood_point(p) for p in shortened_outline])
+        for point in shortened_outline:
+            if point[2] < front_surface.REAR:
+                old = front_surface.old_height(point[0], point[2], hood_only=True)
+                if old is not None:
+                    point[1] += front_surface.height(point[0], point[2])-old[0]
         (output/'bonnet_contour.json').write_text(json.dumps({'baked':True,'method':'reference bonnet boundary with corrected overhang and downturned tapered nose','physical_width_metres':.0025,'points':shortened_outline.tolist()},indent=2),encoding='utf-8')
     fitted_contours=len(next(obj for obj in exports if obj.name=='body__contour').data.vertices)
     bpy.ops.object.select_all(action='DESELECT')
@@ -741,6 +792,10 @@ for simple in [False,True]:
     record['tiers'][tier]={'triangles':total,'surfaces':len(exports),'parts':statistics}
     record['tiers'][tier]['clean_panels']=clean_stats
     record['tiers'][tier]['exhaust_attachment']=exhaust_attachment
+    record['tiers'][tier]['hood_seams']=seam_finish
+    record['tiers'][tier]['convex_fenders']=convex_stats
+    record['tiers'][tier]['front_surface']=front_surface_stats
+    record['tiers'][tier]['rear_surface']=rear_stats
     record['tiers'][tier]['joined_shell']=shell_stats
     record['tiers'][tier]['shoulder_strips']=strip_stats
     record['tiers'][tier]['fitted_contour_vertices']=fitted_contours
@@ -755,7 +810,7 @@ record['refinement']={'reference_form_refined':True,'legacy_intermediate_nose_ex
     'nose_finish':{'downturn_cubic_coefficient_metres':.054,'downturn_starts_z':-1.62,'lamp_inset_each_metres':.063,'central_grille_width_reduction_metres':.126,'front_crown_thinning_metres':.024},
     'flush_contour_offset_metres':.0018,'flush_contour_width_metres':.0025,
     'side_surface':'one C2 shoulder curve and regular crowned side section; retained factory Y/Z silhouette and upper body',
-    'fitted_hood_height_reference':'reference crown evaluated in the original attachment domain','hood':'continuous reference crown and controlled central power bulge; native supported marking',
+    'fitted_hood_height_reference':'replacement bonnet evaluated in the original attachment domain','hood':'2018 Challenger Demon deck, open forward Air-Grabber scoop and two recessed extractors',
     'panel_joins':'common side coordinates and tangents across factory panel seams; bonnet attachment and upper body retained',
     'contours':'explicit producer-authored ribbon pairs, baked offline into native pixel-coverage attributes',
     'glazing':'single exterior pane skins; one measured tangent field per pane','glazing_backing_inset_scale':.93,

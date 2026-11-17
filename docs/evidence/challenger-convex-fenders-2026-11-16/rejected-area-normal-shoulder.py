@@ -1,0 +1,509 @@
+"""Offline convex fender crown with one shared geometric height field."""
+import numpy as np
+from challenger_side_surface import Curve, ramp, unit
+
+
+class ConvexFender:
+    TEMPERATURE = .003
+    ANCHORS = np.array([[.735, -2.100], [.750, -.775], [.880, -1.450]])
+
+    def __init__(self, values, profile=None):
+        from mathutils.bvhtree import BVHTree
+        points = np.asarray(values)[:, :, :3]
+        cross = np.cross(points[:, 1]-points[:, 0], points[:, 2]-points[:, 0])
+        centre = points.mean(1)
+        top = (centre[:, 0] > .50) & (points[:, :, 1].min(1) > .69)
+        flat = points.reshape(-1, 3)
+        faces = np.arange(len(flat)).reshape(-1, 3)
+        self.original = BVHTree.FromPolygons(flat.tolist(), faces[top].tolist(), all_triangles=True)
+        if profile is None:
+            import bmesh
+            selected = top & (centre[:, 1] > .68) & (centre[:, 2] > -2.12) & (centre[:, 2] < -.70)
+            samples = points[selected].reshape(-1, 3)
+            samples = samples[(samples[:, 0] > .50) & (samples[:, 1] > .68) & (samples[:, 1] < 1.005)
+                              & (samples[:, 2] > -2.12) & (samples[:, 2] < -.70)]
+            samples = np.unique(np.round(samples, 7), axis=0)
+            mesh = bmesh.new()
+            for point in samples:
+                mesh.verts.new(point)
+            bmesh.ops.convex_hull(mesh, input=list(mesh.verts), use_existing_faces=False)
+            mesh.normal_update()
+            interior = samples.mean(0)
+            rows = []
+            for face in mesh.faces:
+                normal = np.array(face.normal)
+                if normal @ (interior-np.array(face.verts[0].co)) > 0:
+                    normal = -normal
+                if normal[1] > .05:
+                    distance = float(np.max(samples @ normal))
+                    rows.append([distance/normal[1], -normal[0]/normal[1], -normal[2]/normal[1]])
+            mesh.free()
+            self.planes = np.unique(np.round(rows, 7), axis=0)
+            self.affine = np.zeros(3)
+            targets = []
+            for x, z in self.ANCHORS:
+                support = self.old_height(np.array([x, .9, z]))
+                assert support is not None, 'Every crown anchor has existing surface support'
+                targets.append(support[0]-float(self.height(x, z)[0]))
+            self.affine = np.linalg.solve(np.c_[np.ones(3), self.ANCHORS], targets)
+        else:
+            self.planes = np.asarray(profile['planes'])
+            self.affine = np.asarray(profile['affine'])
+        assert len(self.planes) >= 4
+
+    def profile(self):
+        return {'planes':self.planes.tolist(), 'affine':self.affine.tolist()}
+
+    def height(self, x, z):
+        x, z = np.broadcast_arrays(x, z)
+        bounds = self.planes[:, 0] + x[..., None]*self.planes[:, 1] + z[..., None]*self.planes[:, 2]
+        lowest = bounds.min(-1)
+        weights = np.exp(-(bounds-lowest[..., None])/self.TEMPERATURE)
+        total = weights.sum(-1)
+        height = lowest-self.TEMPERATURE*np.log(total)
+        height += self.affine[0]+self.affine[1]*x+self.affine[2]*z
+        dx = np.sum(weights*self.planes[:, 1], axis=-1)/total+self.affine[1]
+        dz = np.sum(weights*self.planes[:, 2], axis=-1)/total+self.affine[2]
+        return height, dx, dz
+
+    def old_height(self, point):
+        from mathutils import Vector
+        x, y, z = abs(point[0]), point[1], point[2]
+        hit, normal, *_ = self.original.ray_cast((float(x), 2, float(z)), (0, -1, 0), 2)
+        if hit is None:
+            hit, normal, _, distance = self.original.find_nearest(Vector((float(x), float(y), float(z))))
+            if hit is None or distance > .055 or abs(normal.y) < .05:
+                return None
+        if abs(normal.y) < .05:
+            return None
+        dx, dz = -normal.x/normal.y, -normal.z/normal.y
+        height = hit.y+dx*(x-hit.x)+dz*(z-hit.z)
+        return height, dx, dz
+
+
+
+def convex_diagonals(points, faces):
+    """Choose each interior diagonal for the sampled convex geometric hull."""
+    faces = np.array(faces, dtype=int, copy=True)
+    for iteration in range(100):
+        edges = {}
+        for i, face in enumerate(faces):
+            for a, b, c in [face, np.roll(face, 1), np.roll(face, 2)]:
+                edges.setdefault(tuple(sorted((int(a), int(b)))), []).append((i, int(c)))
+        changed = False
+        used = set()
+        for (a, b), linked in edges.items():
+            if len(linked) != 2:
+                continue
+            (first, c), (second, d) = linked
+            if first in used or second in used:
+                continue
+            p = points[faces[first]]
+            n = np.cross(p[1]-p[0], p[2]-p[0])
+            if n[1] < 0:
+                n *= -1
+            if np.dot(n, points[d]-p[0]) <= 1e-10:
+                continue
+            proposals = np.array([[c, d, a], [d, c, b]])
+            cross = np.cross(points[proposals[:, 1]]-points[proposals[:, 0]], points[proposals[:, 2]]-points[proposals[:, 0]])
+            # The opposite vertices must lie on opposite sides of the new edge.
+            if cross[0, 1]*cross[1, 1] <= 1e-16:
+                continue
+            proposals[cross[:, 1] < 0] = proposals[cross[:, 1] < 0, ::-1]
+            faces[first], faces[second] = proposals
+            used.update([first, second])
+            changed = True
+        if not changed:
+            return faces
+    raise AssertionError('Convex fender diagonal fitting did not converge')
+
+
+class FenderPatch:
+    FRONT = -2.065
+    REAR = -.86
+    START = -2.110
+    END = -.70
+
+    def __init__(self, body, hood, outline, profile=None):
+        from mathutils.bvhtree import BVHTree
+        self.field = ConvexFender(np.concatenate([body, hood]), profile)
+        self.body = body
+        points = body[:, :, :3].reshape(-1, 3)
+        self.side = BVHTree.FromPolygons(points.tolist(), np.arange(len(points)).reshape(-1, 3).tolist(), all_triangles=True)
+        self.outline = np.asarray(outline)
+        self.cache = {}
+        self.old_root_curve = None
+        self.old_slope_curve = None
+        stations = np.linspace(self.FRONT, self.REAR, 33)
+        controls = np.array([self.roots(z) for z in stations])
+        second = np.diff(np.eye(len(stations)), n=2, axis=0)
+        widths = np.linalg.solve(np.eye(len(stations))+2*second.T@second, controls[:, 0])
+        # The target side slope is known from the convex crown. Smooth the
+        # previous slope before using it to transport the existing shoulder.
+        target_slopes = []
+        for z, root in zip(stations, controls[:, 1]):
+            target_slopes.append(1/float(self.field.height(root, z)[1]))
+        old_slopes = np.asarray(target_slopes)-controls[:, 2]
+        old_slopes = np.linalg.solve(np.eye(len(stations))+8*second.T@second, old_slopes)
+        self.old_root_curve = Curve(stations, widths)
+        self.old_slope_curve = Curve(stations, old_slopes)
+        self.cache.clear()
+
+    def belt(self, z):
+        return .767+.038*(np.asarray(z)-self.FRONT)/(self.REAR-self.FRONT)
+
+    def blend(self, z):
+        return ramp(self.START, self.FRONT, z)*(1-ramp(self.REAR, self.END, z))
+
+    def inner(self, z):
+        boundary = self.outline
+        following = np.roll(boundary, -1, axis=0)
+        crossing = ((boundary[:, 2] <= z)&(following[:, 2] >= z))|((boundary[:, 2] >= z)&(following[:, 2] <= z))
+        ids = np.flatnonzero(crossing & (abs(following[:, 2]-boundary[:, 2]) > 1e-10))
+        if not len(ids):
+            return .600
+        t = (z-boundary[ids, 2])/(following[ids, 2]-boundary[ids, 2])
+        return max(.600, float(np.max(boundary[ids, 0]+t*(following[ids, 0]-boundary[ids, 0]))))
+
+    def roots(self, z):
+        key = round(float(z), 8)
+        if key not in self.cache:
+            level = float(self.belt(z))
+            query_z = float(np.clip(z, self.FRONT, self.REAR))
+            query_y = float(self.belt(query_z))
+            point, normal, *_ = self.side.ray_cast((2, query_y, query_z), (-1, 0, 0), 2)
+            if point is None or point.x < .60:
+                for epsilon in [.000001, .00001, .0001, .0005, .001, .002, .004, .008]:
+                    samples = []
+                    for offset_y, offset_z in [(0, epsilon), (0, -epsilon), (epsilon, 0), (-epsilon, 0)]:
+                        hit, hint, *_ = self.side.ray_cast((2, query_y+offset_y, query_z+offset_z), (-1, 0, 0), 2)
+                        if hit is not None and hit.x > .60 and abs(hint.x) > .10:
+                            samples.append((hit, hint))
+                    if samples:
+                        point, normal = samples[0]
+                        break
+            assert point is not None and point.x > .60, 'The fender shoulder needs an original outer skin '+str((z, level))
+            old_x = float(point.x)
+            if abs(normal.x) > .10:
+                old_x -= (normal.y*(query_y-point.y)+normal.z*(query_z-point.z))/normal.x
+            old_slope = -normal.y/normal.x if abs(normal.x) > .05 else -.5
+            if self.old_root_curve is not None:
+                old_x = float(self.old_root_curve(z))
+                old_slope = float(self.old_slope_curve(z))
+            lower, upper = self.inner(z), .98
+            for _ in range(26):
+                middle = (lower+upper)*.5
+                if float(self.field.height(middle, z)[0]) > level:
+                    lower = middle
+                else:
+                    upper = middle
+            new_x = (lower+upper)*.5
+            _, dx, _ = self.field.height(new_x, z)
+            self.cache[key] = old_x, new_x, 1/float(dx)-old_slope
+        return self.cache[key]
+
+    def side_shift(self, point):
+        x, y, z = abs(point[0]), point[1], point[2]
+        if x < .60 or z <= self.START or z >= self.END:
+            return 0.0
+        level = float(self.belt(z))
+        if y < level-.14:
+            return 0.0
+        old_x, new_x, slope = self.roots(z)
+        weight = self.blend(z)*ramp(level-.14, level-.025, y)
+        return float(weight*((new_x-old_x)+slope*(y-level)))
+
+    def hood_point(self, point):
+        x, y, z = point
+        if abs(x) < .50 or z <= self.START or z >= self.END or y > 1.04:
+            return point.copy()
+        previous = self.field.old_height(point)
+        if previous is None:
+            return point.copy()
+        edge = self.inner(z)
+        weight = float(self.blend(z)*ramp(edge-.10, edge-.005, abs(x)))
+        target = float(self.field.height(abs(x), z)[0])
+        q = point.copy()
+        q[1] += weight*(target-previous[0])
+        return q
+
+    def body_point(self, point):
+        x, y, z = point
+        if abs(x) < .60 or z <= self.START or z >= self.END or y > 1.04:
+            return point.copy()
+        level = float(self.belt(z))
+        q = point.copy()
+        if y <= level+.00001:
+            q[0] += np.sign(x)*self.side_shift(point)
+            return q
+        previous = self.field.old_height(point)
+        if previous is None:
+            return point.copy()
+        old_x, new_x, _ = self.roots(z)
+        inner = self.inner(z)
+        u = (abs(x)-inner)/max(old_x-inner, .025)
+        target_x = inner+u*(new_x-inner)
+        weight = float(self.blend(z))
+        q[0] += np.sign(x)*weight*(target_x-abs(x))
+        target = float(self.field.height(abs(q[0]), z)[0])+min(0, y-previous[0])
+        q[1] += weight*(target-y)
+        return q
+
+    def transform(self, values, mapping, crown=False):
+        out = np.array(values, copy=True)
+        vertices = out.reshape(-1, 6)
+        maximum = 0.0
+        cache = {}
+        for vertex in vertices:
+            key = tuple(vertex)
+            if key in cache:
+                vertex[:] = cache[key]
+                continue
+            point, normal = vertex[:3].copy(), vertex[3:].copy()
+            q = mapping(point)
+            if mapping == self.body_point and self.FRONT-1e-7 <= point[2] <= self.REAR+1e-7:
+                if abs(point[1]-self.belt(point[2])) < 1e-7:
+                    if abs(abs(point[0])-self.roots(point[2])[0]) < .010:
+                        q[0] = np.sign(point[0])*self.roots(point[2])[1]
+            if np.linalg.norm(q-point) < 1e-10:
+                continue
+            maximum = max(maximum, float(np.linalg.norm(q-point)))
+            columns = []
+            for axis in range(3):
+                offset = np.zeros(3)
+                offset[axis] = .000025
+                columns.append((mapping(point+offset)-mapping(point-offset))/.00005)
+            a, b, c = columns
+            transported = unit(normal[0]*np.cross(b, c)+normal[1]*np.cross(c, a)+normal[2]*np.cross(a, b))
+            if mapping == self.body_point and point[1] <= self.belt(point[2])+.00001:
+                step = .000025
+                offset_y = np.array([0, step, 0])
+                offset_z = np.array([0, 0, step])
+                sy = (self.side_shift(point+offset_y)-self.side_shift(point-offset_y))/(2*step)
+                sz = (self.side_shift(point+offset_z)-self.side_shift(point-offset_z))/(2*step)
+                transported = unit(np.array([normal[0], normal[1]-np.sign(point[0])*sy*normal[0],
+                                              normal[2]-np.sign(point[0])*sz*normal[0]]))
+            if crown and normal[1] > .25:
+                _, dx, dz = self.field.height(abs(q[0]), q[2])
+                weight = float(self.blend(q[2]))
+                guide = unit(np.array([-np.sign(q[0])*float(dx), 1, -float(dz)]))
+                transported = unit(transported*(1-weight)+guide*weight)
+            if mapping == self.body_point and normal[0]*np.sign(point[0]) > .25:
+                distance = float(self.belt(point[2])-point[1])
+                if -.00001 <= distance < .035:
+                    root = self.roots(point[2])[1]
+                    _, dx, dz = self.field.height(root, point[2])
+                    guide = unit(np.array([-np.sign(point[0])*float(dx), 1, -float(dz)]))
+                    weight = float(self.blend(point[2])*(1-ramp(.005, .035, distance)))
+                    transported = unit(transported*(1-weight)+guide*weight)
+            vertex[:3], vertex[3:] = q, transported
+            cache[key] = vertex.copy()
+        return out, maximum
+
+    def shoulder_rows(self, values):
+        # Existing long triangles span the complete shoulder roll. Cut only
+        # those triangles into matching transverse rows before assigning its
+        # changing normal; inserted positions lie on the retained surface.
+        rows = [-.060, -.022]
+        output = []
+        for face in values:
+            d = face[:, 1]-self.belt(face[:, 2])
+            active = (face[:, 0].min() > .60 and face[:, 2].min() > self.START
+                      and face[:, 2].max() < self.END and d.min() < -.022 and d.max() > -.060)
+            pieces = [face]
+            if active:
+                for level in rows:
+                    next_pieces = []
+                    for polygon in pieces:
+                        distances = polygon[:, 1]-self.belt(polygon[:, 2])-level
+                        if distances.min() >= -1e-9 or distances.max() <= 1e-9:
+                            next_pieces.append(polygon)
+                            continue
+                        for sign in [-1, 1]:
+                            clipped = []
+                            for index, a in enumerate(polygon):
+                                b = polygon[(index+1)%len(polygon)]
+                                da, db = distances[index], distances[(index+1)%len(polygon)]
+                                if da*sign >= -1e-9:
+                                    clipped.append(a.copy())
+                                if da*db < -1e-18:
+                                    clipped.append(a+(b-a)*(-da/(db-da)))
+                            next_pieces.append(np.asarray(clipped))
+                    pieces = next_pieces
+            for polygon in pieces:
+                for i in range(1, len(polygon)-1):
+                    triangle = polygon[[0, i, i+1]]
+                    if np.linalg.norm(np.cross(triangle[1,:3]-triangle[0,:3], triangle[2,:3]-triangle[0,:3])) > 1e-11:
+                        output.append(triangle)
+        return np.asarray(output)
+
+    def smooth_side(self, values):
+        # The retained shoulder has disconnected source strips. Build one
+        # area-weighted, position-based normal field only on the continuous
+        # exterior; the physically rebuilt crown supplies its boundary.
+        points = values[:, :, :3]
+        crosses = np.cross(points[:, 1]-points[:, 0], points[:, 2]-points[:, 0])
+        centres = points.mean(1)
+        normals = unit(crosses)
+        area = np.linalg.norm(crosses, axis=1)
+        selected = (centres[:, 0] > .60) & (centres[:, 2] > self.START-.05) & (centres[:, 2] < self.END+.05)
+        selected &= (centres[:, 1] > self.belt(centres[:, 2])-.20) & (normals[:, 0] > .15)
+        source = centres[selected]
+        directions = normals[selected]
+        weights = area[selected]
+        out = values.copy()
+        for vertex in out.reshape(-1, 6):
+            x, y, z = vertex[:3]
+            d = float(self.belt(z)-y)
+            if x < .60 or not self.START < z < self.END or not -.00001 <= d < .16:
+                continue
+            distance = np.linalg.norm(source-vertex[:3], axis=1)
+            nearby = distance < .065
+            if not nearby.any():
+                continue
+            w = weights[nearby]*np.exp(-.5*(distance[nearby]/.024)**2)
+            guide = unit((directions[nearby]*w[:, None]).sum(0))
+            root = self.roots(z)[1]
+            _, dx, dz = self.field.height(root, z)
+            boundary = unit(np.array([-float(dx), 1, -float(dz)]))
+            transition = float(ramp(.002, .035, d))
+            guide = unit(boundary*(1-transition)+guide*transition)
+            amount = float(self.blend(z)*(1-ramp(.12, .16, d)))
+            vertex[3:] = unit(vertex[3:]*(1-amount)+guide*amount)
+        return out, {'method':'area weighted exterior normals with shared crown boundary',
+                     'position_changes':0, 'normal_radius_metres':.024}
+
+    def buried_hood_skirts(self, values):
+        points = values[:, :, :3]
+        cross = np.cross(points[:, 1]-points[:, 0], points[:, 2]-points[:, 0])
+        vertical = abs(cross[:, 1]) < .02*np.linalg.norm(cross, axis=1)
+        covered = []
+        for face, candidate in zip(points, vertical):
+            inside = (candidate and face[:, 2].min() >= self.FRONT and face[:, 2].max() <= self.REAR
+                      and np.min(face[:, 1]-self.belt(face[:, 2])) > .015)
+            if inside:
+                inside = all(abs(abs(x)-self.inner(z)) < .003 for x, _, z in face)
+            covered.append(inside)
+        covered = np.asarray(covered)
+        return values[~covered], int(covered.sum())
+
+    def rebuild(self, simple, lattice, triangle_credit=0):
+        import challenger_clean_panels as panels
+        body = self.body
+        positive = body[(body[:, :, 0].min(1) >= -1e-7)&(body[:, :, 0].max(1) > 1e-7)]
+        axis = body[abs(body[:, :, 0]).max(1) <= 1e-7]
+        kept = []
+        for face in positive:
+            extended = np.c_[face, face[:, 1]-self.belt(face[:, 2])]
+            pieces = panels._subtract_box(extended, [(0, .600, 2), (2, self.FRONT, self.REAR), (6, 0, 2), (1, 0, 1.04)])
+            kept.extend(piece[:, :6] for piece in pieces)
+        kept = np.asarray(kept)
+        zs = list(np.linspace(self.FRONT, self.REAR, 34))
+        for point in kept.reshape(-1, 6):
+            x, y, z = point[:3]
+            if self.FRONT-1e-7 <= z <= self.REAR+1e-7 and abs(y-self.belt(z)) < 1e-7:
+                if abs(x-self.roots(z)[0]) < .002:
+                    zs.append(float(z))
+        zs.extend(float(z) for x, _, z in self.outline if x > .6 and self.FRONT < z < self.REAR)
+        zs = np.unique(np.round(zs, 8))
+        inner = np.array([[self.inner(z), z] for z in zs])
+        outer = np.array([[self.roots(z)[1], z] for z in zs])
+        moved, maximum = self.transform(kept, self.body_point, crown=True)
+        moved = self.shoulder_rows(moved)
+        ends = []
+        for z in [self.REAR, self.FRONT]:
+            xs = []
+            for point in moved.reshape(-1, 6):
+                x, y, at = point[:3]
+                if abs(at-z) < 1e-7 and self.inner(z)+1e-7 < x < self.roots(z)[1]-1e-7:
+                    if abs(y-float(self.field.height(x, z)[0])) < .0015:
+                        xs.append(float(x))
+            xs = np.unique(np.round(xs, 8))
+            if z == self.FRONT:
+                xs = xs[::-1]
+            ends.append(np.c_[xs, np.full(len(xs), z)])
+        outline = np.concatenate([inner, ends[0], outer[::-1], ends[1]])
+        spacing = .025 if simple else .019
+        while True:
+            xy, faces = lattice(outline, spacing)
+            heights, dx, dz = self.field.height(xy[:, 0], xy[:, 1])
+            points = np.c_[xy[:, 0], heights, xy[:, 1]]
+            normals = unit(np.c_[-dx, np.ones(len(dx)), -dz])
+            faces = np.asarray(faces)
+            reverse = np.cross(points[faces[:, 1]]-points[faces[:, 0]], points[faces[:, 2]]-points[faces[:, 0]])[:, 1] < 0
+            faces[reverse] = faces[reverse, ::-1]
+            faces = convex_diagonals(points, faces)
+            patch = np.concatenate([points[faces], normals[faces]], axis=2)
+            if 2*(len(moved)+len(patch))+len(axis) <= len(body)+triangle_credit+(100 if simple else 0):
+                break
+            spacing *= 1.12
+            assert spacing < .150, 'Crown allocation '+str((len(body),len(moved),len(patch),triangle_credit))
+        moved, side_stats = self.smooth_side(moved)
+        right = np.concatenate([moved, patch])
+        left = right[:, ::-1].copy()
+        left[:, :, 0] *= -1
+        left[:, :, 3] *= -1
+        result = np.concatenate([right, left, axis])
+        return result, {'before_triangles':len(body), 'after_triangles':len(result),
+                        'patch_triangles_each_side':len(patch), 'spacing_metres':spacing,
+                        'maximum_transition_metres':maximum, 'boundary_stations':len(zs), 'side_profile':side_stats}
+
+
+def refine(exports, outline, lattice, simple, profile=None):
+    """Replace the original paint bucket offline; retain all contour channels."""
+    import challenger_clean_panels as panels
+    from mathutils.bvhtree import BVHTree
+    from mathutils import Vector
+    by_name = {obj.name:obj for obj in exports}
+    def records(name):
+        p, f, n = panels._read(by_name[name])
+        return np.concatenate([p[f], n.reshape(-1, 3, 3)], axis=2)
+    original_body = records('body__paint')
+    original_hood = records('hood__paint')
+    patch = FenderPatch(original_body, original_hood, outline, profile)
+    hood, credit = patch.buried_hood_skirts(original_hood)
+    body, stats = patch.rebuild(simple, lattice, credit)
+    stats['buried_hood_skirt_triangles_removed'] = credit
+    panels._write(by_name['body__paint'], body)
+    moved_hood = None
+    for name in ['hood__paint', 'hood__dark']:
+        previous = hood if name == 'hood__paint' else records(name)
+        moved, maximum = patch.transform(previous, patch.hood_point, crown=name == 'hood__paint')
+        if name == 'hood__paint':
+            moved_hood = moved
+        panels._write(by_name[name], moved)
+        stats[name] = {'maximum_displacement_metres':maximum}
+    # ContourPair and ContourPairBlock UVs are producer contracts. Update the
+    # existing vertices and custom corner normals without rebuilding channels.
+    contour = by_name['body__contour'].data
+    positions = np.asarray([v.co[:] for v in contour.vertices])[:, [0, 2, 1]]*[1, 1, -1]
+    loop_ids = np.asarray([loop.vertex_index for loop in contour.loops])
+    normals = np.asarray([n.vector[:] for n in contour.corner_normals])[:, [0, 2, 1]]*[1, 1, -1]
+    paint = np.concatenate([body, moved_hood])
+    flat = paint[:, :, :3].reshape(-1, 3)
+    tree = BVHTree.FromPolygons(flat.tolist(), np.arange(len(flat)).reshape(-1, 3).tolist(), all_triangles=True)
+    corrected = positions.copy()
+    guides = {}
+    for index, point in enumerate(positions):
+        if abs(point[0]) < .50 or not patch.START < point[2] < patch.END:
+            continue
+        proposed = patch.hood_point(point) if point[1] > patch.belt(point[2]) else patch.body_point(point)
+        hit, normal, _, distance = tree.find_nearest(Vector(proposed.tolist()))
+        if hit is not None and distance < .055:
+            guide = np.array(normal)
+            if guide[1] < 0 and proposed[1] > patch.belt(proposed[2]):
+                guide *= -1
+            if guide[0]*proposed[0] < 0 and proposed[1] <= patch.belt(proposed[2]):
+                guide *= -1
+            corrected[index] = np.array(hit)+guide*.0018
+            guides[index] = guide
+        else:
+            corrected[index] = proposed
+    for i, vertex_id in enumerate(loop_ids):
+        if vertex_id in guides:
+            normals[i] = guides[vertex_id]
+    contour.vertices.foreach_set('co', (corrected[:, [0, 2, 1]]*[1, -1, 1]).ravel())
+    contour.update()
+    contour.normals_split_custom_set((normals[:, [0, 2, 1]]*[1, -1, 1]).tolist())
+    stats['contour_vertices_refitted'] = len(guides)
+    return patch, stats

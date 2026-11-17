@@ -168,7 +168,7 @@ def rebuild(exports,lattice,simple,side):
     optics=manufactured_optics()
     for obj in exports:
         kind=obj.name.replace('__','_')
-        if kind=='body_contour':continue  # regenerated from the finished skins
+        if kind=='body_contour' or kind.startswith('hood_'):continue
         values=field.apply(records(obj),kind)
         values=replace_optics(values,kind,optics)
         panel._write(obj,values)
@@ -181,9 +181,18 @@ def rebuild(exports,lattice,simple,side):
             e=.00002;x,z=np.broadcast_arrays(x,z)
             return unit(np.c_[-(self.height(x+e,z)-self.height(x-e,z))/(2*e),np.ones(x.size),-(self.height(x,z+e)-self.height(x,z-e))/(2*e)])
     final=FinishedHood()
-    def bonnet_lattice(boundary,spacing,holes=(),feature_lines=()):
-        return lattice(boundary,.040 if simple else spacing,holes,feature_lines)
-    panel.rebuild_hood(exports,final,bonnet_lattice,simple)
+    from challenger_hood_geometry import rebuild as rebuild_hood, strip_legacy_trim
+    hood_profile = rebuild_hood(exports, final, lattice, simple)
+    removed_trim = 0
+    for obj in exports:
+        kind = obj.name.replace('__', '_')
+        if kind not in ['body_red', 'body_accent', 'body_metal', 'body_dark']:
+            continue
+        original = records(obj)
+        trimmed = strip_legacy_trim(original, kind, final)
+        removed_trim += len(original) - len(trimmed)
+        panel._write(obj, trimmed)
+    field.stats['hood_design'] = {**hood_profile.stats, 'removed_legacy_trim_triangles': removed_trim}
     from challenger_surface_quality import finish
     field.stats['surface_quality'] = finish(exports, field, simple)
     from challenger_side_finish import finish as finish_side
@@ -204,7 +213,7 @@ def rebuild(exports,lattice,simple,side):
             kept.append(face)
         right=np.asarray(kept);left=right[:,::-1,:].copy();left[:,:,0]*=-1;left[:,:,3]*=-1
         panel._write(obj,np.concatenate([right,left]))
-    return field.stats,NativeHoodGuide(hood,final,outline=final.boundary()),field
+    return field.stats,NativeHoodGuide(hood,hood_profile,outline=hood_profile.boundary()),hood_profile
 
 
 def replace_optics(values,kind,optics):

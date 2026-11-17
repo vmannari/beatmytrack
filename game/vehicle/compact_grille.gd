@@ -73,7 +73,11 @@ static func _emit_polygon(tool: SurfaceTool, polygon: Array[Dictionary], write_u
 		var b: Vector3 = polygon[index].p
 		var c: Vector3 = polygon[index+1].p
 		if (b-a).cross(c-a).length_squared()<1e-18: continue
-		for vertex: Dictionary in [polygon[0],polygon[index],polygon[index+1]]:
+		var triangle: Array[Dictionary]=[polygon[0],polygon[index],polygon[index+1]]
+		# The steel and applique use opposite parameter directions. Clipping
+		# keeps their attributes, then restores Godot's clockwise front faces.
+		if (b-a).cross(c-a).dot((triangle[0].n as Vector3)+(triangle[1].n as Vector3)+(triangle[2].n as Vector3))>0:triangle.reverse()
+		for vertex: Dictionary in triangle:
 			tool.set_normal(vertex.n)
 			if write_uv: tool.set_uv(vertex.uv)
 			tool.add_vertex(vertex.p)

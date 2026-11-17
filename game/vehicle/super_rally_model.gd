@@ -3,7 +3,7 @@ extends RefCounted
 ## Simplified owner-supplied CC-BY Challenger; native immutable meshes, no rig/interior.
 ## Attribution: legal/challenger_hellcat_notices.txt; preprocessing: scripts/prepare_challenger.py.
 ## Presentation only: Rally-like canonical handling and wheel contacts stay unchanged.
-const KEY: String = "super-rally-hellcat-12/"
+const KEY: String = "super-rally-hellcat-18/"
 const NOSE_INPUT: Array[float] = [1.72,1.80,1.88,1.96,2.04,2.1171]
 const NOSE_OUTPUT: Array[float] = [1.72,1.90,2.080,2.145,2.205,2.2571]
 const NOSE_TANGENT: Array[float] = [1.0,2.25,1.20,0.80,0.70,0.65]
@@ -98,7 +98,9 @@ static func _nose_point(point: Vector3) -> Vector3:
 	var inset: float=.10*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*upper
 	inset+=.04*(a-integral)*(1-_quintic(-2.10,-1.72,point.z))*_quintic(.50,.64,point.y)
 	var crown: float=_quintic(-2.115,-2.015,point.z)*(1-_quintic(-1.90,-1.68,point.z))
-	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper-.024*crown*_quintic(.60,.85,point.y),point.z)
+	var leading_roll: float=.008*(1-_quintic(-2.11,-1.93,point.z))
+	var corner_weight: float=_quintic(.64,.74,absf(point.x))
+	return Vector3(point.x-signf(point.x)*inset,point.y-.054*run*run*run*upper-(.024*crown+leading_roll*corner_weight)*_quintic(.60,.85,point.y),point.z)
 
 static func _front_z(z: float) -> float:
 	var t: float=clampf((z+2.23)/.55,0,1)

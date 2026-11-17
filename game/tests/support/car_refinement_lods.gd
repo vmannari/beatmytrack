@@ -46,10 +46,18 @@ func remember(path: String) -> void:
 			if previous.has(code): continue
 			var levels: Array=[]
 			var size: int=0
+			var surface_index: int=0
 			for packet: Dictionary in node.mesh.get("_surfaces"):
-				var lods: Array=packet.get("lods",[])
+				var lods: Array=packet.get("lods",[]).duplicate()
+				# Regional tables are rebuilt from the current exact-master asset.
+				# Reusing an old table at the same threshold can hide an index update.
+				for added: Array in node.mesh.get_meta("car_mechanics_added_levels",[]):
+					if int(added[0])!=surface_index:continue
+					for at: int in range(lods.size()-2,-1,-2):
+						if lods[at]==added[1]:lods.remove_at(at+1);lods.remove_at(at)
 				levels.append(lods)
 				for at: int in range(1,lods.size(),2): size+=lods[at].size()
+				surface_index+=1
 			if size>0 and bytes+size<=32*1024*1024: previous[code]=levels;bytes+=size
 	holder.free()
 
@@ -66,6 +74,7 @@ func prepare(source: Mesh) -> Mesh:
 			var result := ArrayMesh.new()
 			result.set("_surfaces",packets)
 			result.custom_aabb=source.custom_aabb;result.shadow_mesh=source.shadow_mesh
+			for property: StringName in source.get_meta_list():result.set_meta(property,source.get_meta(property))
 			for surface: int in range(source.get_surface_count()): assert(result.surface_get_arrays(surface)==source.surface_get_arrays(surface))
 			reused+=1
 			return result
@@ -77,6 +86,7 @@ func bake(path: String, vehicle: String = "", bias: float = 1.0) -> Error:
 	if scene==null: return ERR_CANT_OPEN
 	var holder: Node = scene.instantiate()
 	prepare_vehicle(holder,vehicle,bias)
+	mechanical_distance(holder,vehicle)
 	holder.set_meta("car_lod_policy",policy())
 	if vehicle in ["compact","forklift"]: preload("res://tests/support/car_model_buffers.gd").detach(holder)
 	var packed := PackedScene.new()
@@ -85,3 +95,33 @@ func bake(path: String, vehicle: String = "", bias: float = 1.0) -> Error:
 	holder.free()
 	print("CAR_LOD_REUSE ",path," exact_masters=",reused)
 	return error
+
+func mechanical_distance(holder: Node, vehicle: String) -> void:
+	# CME02-CME04: offline component levels refer to an exact final batch.
+	# Masters and existing farther levels retain their original encoded bytes.
+	if vehicle not in ["compact","kart","hovercraft"]: return
+	for part: MeshInstance3D in holder.find_children("*","MeshInstance3D",true,false):
+		if not part.mesh is ArrayMesh or part.mesh.get_blend_shape_count()>0: continue
+		var source: ArrayMesh=part.mesh
+		var code: String=master_key(source)
+		var path: String="res://assets/vehicles/car_coarse_v1/"+vehicle+"_mechanics_"+code+".res"
+		if not ResourceLoader.exists(path): continue
+		var native: Resource=load(path)
+		assert(native.get_meta("car_mechanics_vehicle","")==vehicle and native.get_meta("car_mechanics_master","")==code)
+		var packets: Array=source.get("_surfaces").duplicate(true)
+		var levels: Array=native.get_meta("car_mechanics_levels")
+		assert(levels.size()==packets.size())
+		var added: Array=[]
+		for sf: int in range(packets.size()):
+			var current: Array=packets[sf].get("lods",[]).duplicate()
+			var additions: Array=levels[sf]
+			for at: int in range(0,additions.size(),2):
+				if not current.is_empty() and float(additions[at])>=float(current[0]): continue
+				current.push_front(additions[at+1]);current.push_front(additions[at])
+				added.append([sf,additions[at]])
+			if not current.is_empty():packets[sf].lods=current
+		var result:=ArrayMesh.new();result.set("_surfaces",packets);result.custom_aabb=source.custom_aabb;result.shadow_mesh=source.shadow_mesh
+		for property: StringName in source.get_meta_list():result.set_meta(property,source.get_meta(property))
+		if not added.is_empty():result.set_meta("car_mechanics_added_levels",added)
+		assert(master_key(result)==code)
+		part.mesh=result

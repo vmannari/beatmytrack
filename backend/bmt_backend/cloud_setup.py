@@ -5,9 +5,9 @@ import re
 from sqlalchemy import inspect, text
 
 from .config import Settings
+from .database_privileges import DEFAULT_ROLES, configure, identifier
 from .db import make_engine
 from .migrate import upgrade
-from .database_privileges import DEFAULT_ROLES, configure, identifier
 
 
 def setup(engine, owner, roles=None, schema="public"):

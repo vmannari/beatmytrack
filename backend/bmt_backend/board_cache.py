@@ -1,5 +1,6 @@
 """Bounded aggregate cache keyed by database-maintained snapshot revision."""
 from collections import OrderedDict
+from concurrent.futures import Future
 from threading import Lock
 from weakref import WeakKeyDictionary
 
@@ -17,20 +18,24 @@ def cached(session, key, compute, *, namespace="default", max_entries=2048, max_
             cache.move_to_end(key)
             return cache[key]
         flights = _flights.setdefault(engine, {}).setdefault(namespace, {})
-        flight = flights.setdefault(key, Lock())
-    with flight:
+        owner = key not in flights
+        if owner:
+            flights[key] = Future()
+        flight = flights[key]
+    if not owner:
+        return flight.result()
+    try:
+        value = compute()
         with _lock:
-            if key in cache:
-                return cache[key]
-        try:
-            value = compute()
-            with _lock:
-                cache[key] = value
-                cache.move_to_end(key)
-                while len(cache) > max_entries or (max_weight is not None and sum(weight(item) for item in cache.values()) > max_weight):
-                    cache.popitem(last=False)
-            return value
-        finally:
-            with _lock:
-                if flights.get(key) is flight:
-                    flights.pop(key, None)
+            cache[key] = value
+            cache.move_to_end(key)
+            while len(cache) > max_entries or (max_weight is not None and sum(weight(item) for item in cache.values()) > max_weight):
+                cache.popitem(last=False)
+        flight.set_result(value)
+        return value
+    except BaseException as error:
+        flight.set_exception(error)
+        raise
+    finally:
+        with _lock:
+            flights.pop(key, None)

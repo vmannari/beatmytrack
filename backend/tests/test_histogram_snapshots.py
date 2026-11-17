@@ -155,23 +155,62 @@ def test_snapshot_overlay_does_not_mutate_shared_counts(domain):
     assert domain.client.get(route(version), headers=headers(domain)).json() == baseline
 
 
-def test_migration_backfills_snapshots_without_rewriting_results(domain):
-    from alembic import command
+def test_migration_backfills_snapshots_without_rewriting_results(domain, tmp_path):
+    from uuid import uuid4
 
+    from alembic import command
+    from sqlalchemy import MetaData, Table, create_engine
+
+    from bmt_backend.app import create_app
+    from bmt_backend.db import Base, make_engine, make_session_factory
     from bmt_backend.migrate import configuration, upgrade
+
     version, _ = public_course(domain)
     race(domain, version, "Alice", frames=20)
+    names = ("players", "tracks", "track_versions", "boards", "run_tickets", "runs", "personal_bests")
     with domain.factory() as session:
-        records = session.execute(select(Run.id, Run.status, Run.lap_ticks)).all()
-        pbs = session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)).all()
-    command.downgrade(configuration(domain.app.state.engine), "0021_challenge_attempts")
-    upgrade(domain.app.state.engine)
-    with domain.factory() as session:
-        assert session.execute(select(Run.id, Run.status, Run.lap_ticks)).all() == records
-        assert session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)).all() == pbs
-    assert snapshot(domain, version).generation == ""
-    refresh_all_for_diagnostics(domain.app)
-    assert domain.client.get(route(version), headers=headers(domain)).json()["race"]["population"] == 2
+        source = {name: list(session.execute(select(Base.metadata.tables[name])).mappings()) for name in names}
+        records = session.execute(select(Run.id, Run.status, Run.lap_ticks).order_by(Run.id)).all()
+        pbs = session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)
+                              .order_by(PersonalBest.board_id, PersonalBest.player_id)).all()
+    # Start at the historical schema. Later migrations deliberately refuse
+    # binary rollback, so a current service cannot serve as a downgrade fixture.
+    original = domain.app.state.engine
+    schema = "test_histogram_" + uuid4().hex if original.dialect.name == "postgresql" else ""
+    if schema:
+        with original.begin() as connection:
+            connection.exec_driver_sql("CREATE SCHEMA " + schema)
+        engine = create_engine(original.url, connect_args={"options": "-c search_path=" + schema})
+    else:
+        engine = make_engine("sqlite:///" + (tmp_path / "legacy-histograms.sqlite").as_posix())
+    try:
+        command.upgrade(configuration(engine), "0021_challenge_attempts")
+        metadata = MetaData()
+        legacy = {name: Table(name, metadata, autoload_with=engine) for name in names}
+        with engine.begin() as connection:
+            for name in names:
+                for row in source[name]:
+                    connection.execute(legacy[name].insert().values(
+                        **{column.name: row[column.name] for column in legacy[name].columns}))
+        upgrade(engine)
+        factory = make_session_factory(engine)
+        with factory() as session:
+            assert session.execute(select(Run.id, Run.status, Run.lap_ticks).order_by(Run.id)).all() == records
+            assert session.execute(select(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks)
+                                   .order_by(PersonalBest.board_id, PersonalBest.player_id)).all() == pbs
+            row = session.get(HistogramSnapshot, (version["version_id"], "compact", False))
+            assert row is not None and row.generation == ""
+        app = create_app(domain.app.state.settings, engine=engine, verifier=domain.app.state.verifier)
+        refresh_all_for_diagnostics(app)
+        with factory() as session:
+            row = session.get(HistogramSnapshot, (version["version_id"], "compact", False))
+            assert row.generation and row.population == 2
+            assert row.payload["race"]["cumulative"][-1] == 2
+    finally:
+        engine.dispose()
+        if schema:
+            with original.begin() as connection:
+                connection.exec_driver_sql("DROP SCHEMA " + schema + " CASCADE")
 
 
 def test_visibility_change_during_refresh_never_publishes_old_population(domain, monkeypatch):

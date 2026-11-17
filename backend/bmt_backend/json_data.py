@@ -18,7 +18,7 @@ def reject_constant(_value):
     raise ValueError("Nonfinite JSON value")
 
 
-def parse_json(body, *, maximum_nodes=1200000):
+def parse_json(body, *, maximum_nodes=1200000, maximum_integer=None):
     parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
     # Iterators keep traversal memory proportional to depth rather than the
     # number of siblings in a maximum replay or stored list.
@@ -42,6 +42,8 @@ def parse_json(body, *, maximum_nodes=1200000):
             if isinstance(value, float) and not math.isfinite(value):
                 # parse_constant does not catch exponent overflow (1e400).
                 raise ValueError("Nonfinite JSON number")
+            if maximum_integer is not None and isinstance(value, int) and not -maximum_integer-1 <= value <= maximum_integer:
+                raise ValueError("JSON integer limit")
             if isinstance(value, str):
                 value.encode("utf-8")
         else:

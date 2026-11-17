@@ -166,7 +166,8 @@ def test_failed_refresh_keeps_previous_snapshot_and_retries(domain,monkeypatch,f
     assert after.generation==baseline.generation and after.payload==baseline.payload
     assert after.source_revision==baseline.source_revision and after.dirty and not after.invalidated
     assert after.lease_token is None and after.lease_until==0 and after.next_refresh_at==clock+30
-    assert domain.client.get(route,headers=headers(domain)).json()==response
+    expected = {**response, "freshness": {**response["freshness"], "expires_at": clock+30}}
+    assert domain.client.get(route,headers=headers(domain)).json()==expected
     assert not refresh_one(domain.app,clock=clock+29)
     assert refresh_one(domain.app,clock=clock+30)
     assert snapshot(domain,version).population==2 and not snapshot(domain,version).dirty

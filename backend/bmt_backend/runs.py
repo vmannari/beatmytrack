@@ -520,7 +520,8 @@ def top(
     anchor = None
     if cursor:
         position = decode_cursor(cursor)
-        if type(position.get("ticks")) is not int or not isinstance(position.get("player"), str) or len(position["player"]) > 36:
+        if (type(position.get("ticks")) is not int or not 0 < position["ticks"] <= 216000
+                or not isinstance(position.get("player"), str) or len(position["player"]) != 36):
             raise HTTPException(422, "INVALID_CURSOR")
         anchor = (position["ticks"], position["player"])
         if position.get("board") == board_id and position.get("revision") == board.stats_revision and type(position.get("position")) is int:

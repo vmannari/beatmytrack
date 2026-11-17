@@ -130,8 +130,71 @@ static func _fitted_chord_clear(tree: TriangleMesh,a: Array,b: Array,outward: Ve
 		for across: float in [0.0,0.5,1.0]:
 			var p: Vector3 = (a[0] as Vector3).lerp(a[1],across).lerp((b[0] as Vector3).lerp(b[1],across),along)
 			var hit: Dictionary = tree.intersect_ray(p+outward*0.10,-outward)
-			if not hit.is_empty() and (p-hit.position).dot(outward)<0.00035: return false
+			if not hit.is_empty():
+				var exposure: float = (p-hit.position).dot(outward)
+				if exposure < 0.00035 or exposure > 0.0015: return false
 	return true
+
+static func _clip_patch_polygon(points: Array, a: Vector2, b: Vector2) -> Array:
+	var result: Array = []
+	if points.is_empty(): return result
+	var previous: Dictionary = points[-1]
+	var previous_distance: float = (b - a).cross(previous.uv - a)
+	for current: Dictionary in points:
+		var distance: float = (b - a).cross(current.uv - a)
+		if (distance >= 0.0) != (previous_distance >= 0.0):
+			var weight: float = previous_distance / (previous_distance - distance)
+			result.append({"uv": previous.uv.lerp(current.uv, weight), "point": previous.point.lerp(current.point, weight), "normal": previous.normal.lerp(current.normal, weight).normalized()})
+		if distance >= 0.0: result.append(current)
+		previous = current
+		previous_distance = distance
+	return result
+
+static func fitted_patch(parent: Node3D, label: String, skin: MeshInstance3D, outline: Array[Vector2], material: Material, outward: Vector3, simple: bool) -> void:
+	# Clip the existing backing triangles in their UV chart. Every overlay
+	# triangle shares its plane with the metal beneath it, including at creases.
+	skin.mesh.set_meta("car_keep_master", true)
+	skin.mesh.set_meta("car_authored_far", true)
+	skin.mesh.set_meta("car_surface_guide_locked", true)
+	var key: String = label + ("_simple" if simple else "")
+	if not meshes.has(key):
+		var arrays: Array = skin.mesh.surface_get_arrays(0)
+		var positions: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+		var tool := SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for at: int in range(0, indices.size(), 3):
+			var polygon: Array = []
+			for corner: int in range(3):
+				var index: int = indices[at + corner]
+				polygon.append({"uv": uv[index], "point": positions[index], "normal": normals[index]})
+			for edge: int in range(outline.size()):
+				polygon = _clip_patch_polygon(polygon, outline[edge], outline[(edge + 1) % outline.size()])
+			for triangle: int in range(1, polygon.size() - 1):
+				var a: Vector3 = polygon[0].point
+				var b: Vector3 = polygon[triangle].point
+				var c: Vector3 = polygon[triangle + 1].point
+				if (b-a).cross(c-a).length_squared() < 0.000000000000000001: continue
+				for corner: int in [0, triangle, triangle + 1]:
+					var vertex: Dictionary = polygon[corner]
+					tool.set_uv(vertex.uv)
+					tool.set_normal(vertex.normal)
+					tool.add_vertex(vertex.point + outward * 0.0008)
+		tool.index()
+		tool.generate_tangents()
+		var mesh: ArrayMesh = tool.commit()
+		mesh.set_meta("car_keep_master", true)
+		mesh.set_meta("car_authored_far", true)
+		mesh.set_meta("car_surface_guide_locked", true)
+		meshes[key] = mesh
+	var node := MeshInstance3D.new()
+	node.name = label
+	node.mesh = meshes[key]
+	node.material_override = material
+	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(node)
 
 static func rounded(parent: Node3D,label: String,size: Vector3,center: Vector3,radius: float,material: Material) -> void:
 	var half: Vector3=size*0.5

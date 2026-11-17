@@ -6,7 +6,7 @@ const AXLE := 2.46 / (2.0 * HandlingConfig.BODY_SCALE)
 const FRONT := -2.04
 const REAR := 2.01
 const WINDOW_A_FOOT := 0.055
-const WINDOW_B_FOOT := 0.472
+const WINDOW_B_FOOT := 0.522
 const WINDOW_C_FOOT := 0.805
 
 static func cabin_z(t: float) -> float:
@@ -358,23 +358,32 @@ static func front_recess(parent: Node3D,label: String,v0: float,v1: float,left: 
 			var uv:=Vector2(u,0.0) if edge==0 else Vector2(1.0,u) if edge==1 else Vector2(1.0-u,1.0) if edge==2 else Vector2(0.0,1.0-u)
 			return point.call(uv.x,uv.y)+Vector3.BACK*depth*v,dark,Vector3.FORWARD,simple)
 
+# Plan-view opening: practical straight edges with short formed corner radii.
+const BONNET_PANEL: Array[Vector2]=[Vector2(-0.65,-2.15),Vector2(0.65,-2.15),Vector2(0.72,-1.055),Vector2(-0.72,-1.055)]
+const BONNET_CORNER: float=0.025
+
+static func bonnet_shut_line_point(t: float) -> Vector3:
+	var station: float=fposmod(t,1.0)*8.0
+	var segment: int=int(station)
+	var edge: int=int(segment/2)
+	var next: int=(edge+1)%4
+	var direction: Vector2=(BONNET_PANEL[next]-BONNET_PANEL[edge]).normalized()
+	var weight: float=station-float(segment)
+	var p: Vector2
+	if segment%2==0:
+		p=(BONNET_PANEL[edge]+direction*BONNET_CORNER).lerp(BONNET_PANEL[next]-direction*BONNET_CORNER,weight)
+	else:
+		var outgoing: Vector2=(BONNET_PANEL[(next+1)%4]-BONNET_PANEL[next]).normalized()
+		var a: Vector2=BONNET_PANEL[next]-direction*BONNET_CORNER
+		var b: Vector2=BONNET_PANEL[next]+outgoing*BONNET_CORNER
+		p=a*(1.0-weight)*(1.0-weight)+BONNET_PANEL[next]*2.0*(1.0-weight)*weight+b*weight*weight
+	# The existing fitter projects this height hint onto the actual rendered skin.
+	return Vector3(p.x,shoulder(p.y)+0.025,p.y)
+
 static func build_hood(car: CarVisual,parent: Node3D,paint: Material,trim: Material) -> void:
 	var simple: bool=car.simple_model
 	M.patch(parent,"ReferenceHood",80,48,hood_point,paint,Vector3.UP,simple)
-	# A fitted shut line defines the bonnet instead of leaving one featureless
-	# upper casting. It closes around the cowl without crossing the glazing.
-	M.fitted_line(parent,"SportBonnetShutLine",parent.find_child("ReferenceHood",false,false),func(t: float)->Vector3:
-		var u: float
-		var v: float
-		if t<0.25:
-			u=lerpf(0.09,0.91,t*4.0);v=0.045
-		elif t<0.50:
-			u=0.91;v=lerpf(0.045,0.97,(t-0.25)*4.0)
-		elif t<0.75:
-			u=lerpf(0.91,0.09,(t-0.50)*4.0);v=0.97
-		else:
-			u=0.09;v=lerpf(0.97,0.045,(t-0.75)*4.0)
-		return hood_point(u,v),192,0.0022,trim,Vector3.UP,simple)
+	M.fitted_line(parent,"SportBonnetShutLine",parent.find_child("ReferenceHood",false,false),bonnet_shut_line_point,192,0.0022,trim,Vector3.UP,simple)
 
 static func build(car: CarVisual,paint: Material,trim: Material,bright: Material) -> void:
 	var body: Node3D=car.body
@@ -410,11 +419,11 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 			M.fitted_line(body,"ReferenceDoorSeam"+str(side)+str(seam),body.find_child("ReferenceSide"+str(side).replace(".","_"),false,false),func(t: float)->Vector3:
 				# Share the upper stations with the corresponding window edges.
 				var start: float=cabin_z([WINDOW_A_FOOT,WINDOW_B_FOOT,WINDOW_C_FOOT][seam])
-				var finish: float=[-0.88,0.05,0.75][seam]
+				var finish: float=[-0.88,cabin_z(WINDOW_B_FOOT),0.75][seam]
 				var z: float=lerpf(start,finish,t)
 				var seam_top: float=minf(0.96,shoulder(z)-0.002)
 				var y: float=lerpf(seam_top,0.31,t)
-				return side_point(side,z,y),96,0.0028,trim,Vector3(side,0,0),simple)
+				return side_point(side,z,y),32 if simple else 96,0.0028,trim,Vector3(side,0,0),simple)
 		for axle: float in [-AXLE,AXLE]:
 			build_wheelhouse(car,side,axle,paint,trim)
 	build_undertray(car,trim)

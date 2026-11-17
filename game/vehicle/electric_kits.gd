@@ -35,7 +35,7 @@ static func build(car: CarVisual, category: String) -> void:
 
 # Original surfaces informed by low EV bonnets and pressed performance-car
 # channels. Dimensions are metres before the existing whole-car scale.
-const HOOD_REVISION := "volt-solid-hoods-5"
+const HOOD_REVISION := "volt-fitted-hoods-6"
 const HOOD_MESH_ROOT := "res://assets/vehicles/electric_hoods_v5"
 const HOOD_MESH_SOURCES: Array[String] = ["electric_kits.gd","electric_reference_body.gd","electric_reference_mesh.gd"]
 static var _hood_mesh_bank_checked: bool = false
@@ -68,7 +68,7 @@ static func _hood_manifest_matches(manifest: Variant) -> bool:
 
 static func prepare_hood_meshes(option: String,simple: bool) -> void:
 	if not M.use_baked or not hood_mesh_bank_valid(): return
-	var labels: Array[String]=["VoltHoodSkinV5_"+option,"VoltHoodShutLineV5_"+option]
+	var labels: Array[String]=["VoltHoodSkinV5_"+option,"VoltHoodShutLineV5_"+option+"_fitted_v2"]
 	if option=="volt_carbon": labels.append("VoltCarbonInsetV4")
 	for label: String in labels:
 		var key: String=label+("_simple" if simple else "")
@@ -84,33 +84,32 @@ static func hood(car: CarVisual, parent: Node3D, option: String) -> void:
 	var i: int=index_for("hood",option)
 	var paint: Material=car.paint_materials.body
 	var dark: Material=CompactFinish.rubber(Color("10191d"))
-	M.patch(parent,"VoltHoodSkinV5_"+option,80,48,func(u: float,v: float)->Vector3:
-		return formed_hood_point(i,u,v),paint,Vector3.UP,car.simple_model)
-	# Reuse the factory panel perimeter. All four outer edges have exactly
-	# the factory positions and tangents; there is no floating replacement lid.
-	M.ribbon(parent,"VoltHoodShutLineV5_"+option,func(t: float)->Vector3:
-		var u: float
-		var v: float
-		if t<0.25:
-			u=lerpf(0.09,0.91,t*4.0); v=0.045
-		elif t<0.50:
-			u=0.91; v=lerpf(0.045,0.97,(t-0.25)*4.0)
-		elif t<0.75:
-			u=lerpf(0.91,0.09,(t-0.50)*4.0); v=0.97
-		else:
-			u=0.09; v=lerpf(0.97,0.045,(t-0.75)*4.0)
-		return formed_hood_point(i,u,v)+Vector3.UP*0.0012,144,0.0009,dark,car.simple_model)
+	# Keep the formed creases equally resolved on the racing hood. Halving
+	# this grid made diagonal channels break into visible reflection steps.
+	M.patch(parent,"VoltHoodSkinV5_"+option,256 if car.simple_model else 128,96 if car.simple_model else 48,func(u: float,v: float)->Vector3:
+		return formed_hood_point(i,u,v),paint,Vector3.UP,car.simple_model,Callable(),func(u: float,v: float)->Vector3:
+		return formed_hood_normal(i,u,v))
+	var skin: MeshInstance3D = parent.get_child(0)
+	if car.simple_model:
+		skin.mesh = preload("res://vehicle/car_static_reduction.gd").resolve(skin.mesh, "electric")
+		skin.mesh = preload("res://vehicle/car_coarse_reduction.gd").resolve(skin.mesh, "electric")
+	skin.mesh.set_meta("car_keep_master",true)
+	skin.mesh.set_meta("car_authored_far",true)
+	skin.mesh.set_meta("car_surface_guide_locked",true)
+	M.fitted_line(parent,"VoltHoodShutLineV5_"+option,skin,B.bonnet_shut_line_point,192,0.0022,dark,Vector3.UP,car.simple_model)
+	var line: MeshInstance3D = parent.get_child(1)
+	line.mesh.set_meta("car_keep_master",true)
+	line.mesh.set_meta("car_authored_far",true)
+	line.mesh.set_meta("car_surface_guide_locked",true)
 	if i==3:
 		var carbon:=CompactFinish.paint(Color("172126"))
 		carbon.roughness=0.46
 		carbon.clearcoat=0.10
-		M.patch(parent,"VoltCarbonInsetV4",28,32,func(u: float,v: float)->Vector3:
-			var along: float=lerpf(0.22,0.86,v)
-			var half_width: float=lerpf(0.10,0.20,smoothstep(0.0,0.75,v))
-			var across: float=0.5+(2.0*u-1.0)*half_width
-			return formed_hood_point(i,across,along)+Vector3.UP*0.0008,carbon,Vector3.UP,car.simple_model)
+		M.fitted_patch(parent,"VoltCarbonInsetV4",skin,[Vector2(0.40,0.22),Vector2(0.60,0.22),Vector2(0.70,0.86),Vector2(0.30,0.86)],carbon,Vector3.UP,car.simple_model)
 static func press(x: float,centre: float,width: float) -> float:
-	return 1.0-smoothstep(width*0.40,width,absf(x-centre))
+	var radius: float = maxf(width, 0.065)
+	var t: float = clampf((absf(x-centre)-radius*0.20)/(radius*0.80),0.0,1.0)
+	return 1.0-t*t*t*(t*(t*6.0-15.0)+10.0)
 
 static func formed_hood_point(i: int,u: float,v: float) -> Vector3:
 	var p: Vector3=B.hood_point(u,v)
@@ -138,30 +137,32 @@ static func formed_hood_point(i: int,u: float,v: float) -> Vector3:
 	p.y+=relief*envelope
 	return p
 
+static func formed_hood_normal(i: int,u: float,v: float) -> Vector3:
+	var sample: Callable = func(a: float,b: float)->Vector3: return formed_hood_point(i,a,b)
+	var original: Vector3 = M.normal_at(sample,u,v,Vector3.UP)
+	var du: Vector3 = formed_hood_point(i,minf(1.0,u+0.015),v)-formed_hood_point(i,maxf(0.0,u-0.015),v)
+	var dv: Vector3 = formed_hood_point(i,u,minf(1.0,v+0.020))-formed_hood_point(i,u,maxf(0.0,v-0.020))
+	var normal: Vector3 = du.cross(dv).normalized()
+	if normal.y < 0.0: normal = -normal
+	var blend: float = smoothstep(0.10,0.20,u)*(1.0-smoothstep(0.80,0.90,u))*smoothstep(0.10,0.28,v)*(1.0-smoothstep(0.82,0.96,v))
+	return original.slerp(normal,blend).normalized()
+
 static func aero(car: CarVisual, parent: Node3D, option: String) -> void:
 	var i: int = index_for("aero",option)
 	var paint: Material=car.paint_materials.body
 	var dark: Material=CompactFinish.rubber(Color("202c32"))
 	if i in [1,2]:
 		var rise: float=0.065 if i==1 else 0.145
-		M.patch(parent,"VoltDeckAeroV2_"+option,48,10,func(u: float,v: float)->Vector3:
-			var p: Vector3=B.deck_point(lerpf(0.12,0.88,u),lerpf(0.63,0.985,v))
-			p.y+=0.020+rise*pow(sin(PI*v*0.5),1.4)*sin(PI*u)
-			return p,dark,Vector3.UP,car.simple_model)
-		M.patch(parent,"VoltDeckAeroEdgeV2_"+option,48,4,func(u: float,v: float)->Vector3:
-			var p: Vector3=B.deck_point(lerpf(0.12,0.88,u),lerpf(0.90,0.985,v))
-			p.y+=0.025+rise*pow(sin(PI*lerpf(0.77,1.0,v)*0.5),1.4)*sin(PI*u)
-			return p,dark,Vector3.UP,car.simple_model)
-		M.patch(parent,"VoltDeckAeroFaceV2_"+option,48,6,func(u: float,v: float)->Vector3:
-			var p: Vector3=B.deck_point(lerpf(0.12,0.88,u),0.985)
-			p.y+=0.012+rise*v*sin(PI*u)
-			p.z+=0.007
-			return p,dark,Vector3.BACK,car.simple_model)
+		preload("res://vehicle/electric_body_kits.gd").shell(parent,"VoltDeckLipV6_"+option,48,12,func(u: float,v: float)->Vector3:
+			var p: Vector3 = B.deck_point(lerpf(0.12,0.88,u),lerpf(0.63,0.985,v))
+			p.y += 0.003 + rise * smoothstep(0.0,1.0,v) * sin(PI*u)
+			return p,func(u: float,v: float)->Vector3:
+			return B.deck_point(lerpf(0.12,0.88,u),lerpf(0.63,0.985,v)) - Vector3.UP*0.004,dark,Vector3.UP,car.simple_model)
 		return
 	var width: float = [0.0,1.10,1.18,1.18,1.27,1.22,1.30,1.43,1.27,1.38,1.38,1.36,1.16,1.50,1.48,1.30][i]
 	var height: float = [0.0,0.0,0.0,0.99,1.02,1.04,1.04,1.15,1.03,1.08,1.18,1.08,1.00,1.10,1.23,1.00][i]
 	var chord: float = [0.0,0.0,0.0,0.18,0.21,0.20,0.17,0.25,0.20,0.27,0.23,0.22,0.18,0.24,0.27,0.16][i]
-	var z: float=2.08
+	var z: float=2.14
 	var layers: int=2 if i in [6,11] else 1
 	for layer: int in range(layers):
 		var y: float=height+(float(layer)*0.065 if i!=11 else 0.0)
@@ -174,9 +175,16 @@ static func aero(car: CarVisual, parent: Node3D, option: String) -> void:
 				var along: float=u if edge<2 else float(edge-2)
 				var across: float=float(edge) if edge<2 else u
 				return wing_point(i,layer,width,y,chord,z,along,across,false).lerp(wing_point(i,layer,width,y,chord,z,along,across,true),v),dark,Vector3.UP,car.simple_model)
+	var deck_key: String = "ReferenceRearDeck" + ("_simple" if car.simple_model else "")
+	if not M.meshes.has(deck_key):
+		M.meshes[deck_key] = load(M.ASSET_ROOT.path_join(deck_key.sha256_text().left(24) + ".res"))
+	var deck_tree: TriangleMesh = (M.meshes[deck_key] as Mesh).generate_triangle_mesh()
 	for side: float in [-1.0,1.0]:
-		var foot: float=B.deck_point(0.25 if side<0 else 0.75,0.84).y
-		var support := VisualGeometry.box(parent,Vector3(0.045,height-foot,0.12),Vector3(side*width*0.32,(height+foot)*0.5,z),dark)
+		var contact: Dictionary = deck_tree.intersect_ray(Vector3(side*width*0.32,1.6,z),Vector3.DOWN)
+		assert(not contact.is_empty(),"Rear wing support requires painted deck backing")
+		var foot: float=contact.position.y-0.008
+		var support_top: float = height + (0.065 if i == 6 else 0.0)
+		var support := VisualGeometry.box(parent,Vector3(0.045,support_top-foot,0.12),Vector3(side*width*0.32,(support_top+foot)*0.5,z),dark)
 		support.name="VoltWingSupportV2_"+option+str(side)
 		if i in [7,9,10,13,14]:
 			var endplate := VisualGeometry.box(parent,Vector3(0.025,0.075,chord+0.06),Vector3(side*width*0.49,height,z+0.025),dark)
@@ -205,7 +213,10 @@ static func rim(car: CarVisual, parent: Node3D, side: float) -> void:
 		M.patch(parent,"VoltAeroDisc_"+str(side),48,8,func(u: float,v: float)->Vector3:
 			var a: float=TAU*u
 			var r: float=lerpf(0.035,0.285,v)
-			return Vector3(side*(0.145+0.008*(1.0-v)),r*sin(a),r*cos(a)),metal,Vector3(side,0,0),car.simple_model)
+			return Vector3(side*(0.160+0.004*(1.0-v)),r*sin(a),r*cos(a)),metal,Vector3(side,0,0),car.simple_model)
+		M.patch(parent,"VoltAeroDiscReturn_"+str(side),48,2,func(u: float,v: float)->Vector3:
+			var a: float=TAU*u
+			return Vector3(side*lerpf(0.145,0.160,v),0.285*sin(a),0.285*cos(a)),metal,Vector3(side,0,0),car.simple_model)
 	else:
 		var split: bool=i in [10,11,15]
 		for spoke: int in range(count):

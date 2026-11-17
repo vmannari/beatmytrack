@@ -58,8 +58,8 @@ static func glass_start(v: float) -> float:
 static func glass_end(_v: float) -> float:
 	return 0.965
 
-static func b_center(v: float) -> float:
-	return lerpf(Body.WINDOW_B_FOOT,0.460,v)
+static func b_center(_v: float) -> float:
+	return Body.WINDOW_B_FOOT
 
 static func c_center(v: float) -> float:
 	# Bow the rear door glass edge gently rearward while retaining its fitted

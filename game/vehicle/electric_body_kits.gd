@@ -2,7 +2,7 @@ extends RefCounted
 ## Complete formed lower coachwork. Metres in the reference body's coordinates.
 const M = preload("res://vehicle/electric_reference_mesh.gd")
 const B = preload("res://vehicle/electric_reference_body.gd")
-const REVISION := "volt-door-fender-fit-2"
+const REVISION := "volt-fitted-details-4"
 # Explicit silhouettes: projection, sill breadth, front rise and rear rise.
 # Road packages stay restrained; competition packages have deeper venturi decks.
 const PROFILES: Array[Vector4] = [
@@ -62,7 +62,16 @@ static func cap_surface(i: int,rear: bool,u: float,v: float,outer: bool=true) ->
 	if i in [3,8]: flare*=0.78+0.22*smoothstep(0.35,0.90,absf(across))
 	if i==11: flare*=1.0-0.34*exp(-pow(across/0.13,2))
 	if i in [6,15]: flare*=0.88+0.12*pow(1.0-across*across,2)
-	p.z+=direction*(0.004+flare+0.012*pow(sin(PI*v),2))
+	var depth: float = 0.004+flare+0.012*pow(sin(PI*v),2)
+	if rear:
+		# Cover the retained factory valance and five raised diffuser fences.
+		# Roll the added clearance into the closed upper return.
+		var factory_v: float = lerpf(0.0,height+crown,v)
+		var fin_t: float = clampf((factory_v-0.025)/0.195,0.0,1.0)
+		var trim_depth: float = 0.022+0.030*sin(PI*fin_t)
+		var trim_span: float = smoothstep(0.005,0.025,factory_v)*(1.0-smoothstep(0.25,0.26,factory_v))
+		depth = maxf(depth,trim_depth*trim_span)
+	p.z+=direction*depth
 	p.x+=across*(0.004+spec.y*0.48*pow(1.0-v,2))
 	p.y-=0.018*pow(1.0-v,2)
 	return p
@@ -100,6 +109,13 @@ static func sill_surface(side: float,i: int,u: float,v: float,outer: bool=true) 
 	p.x+=side*breadth
 	return p
 
+static func fitted_decoration(parent: Node3D, label: String, backing: String, outline: Array[Vector2], material: Material, outward: Vector3, simple: bool) -> void:
+	var skin: MeshInstance3D = parent.find_child(backing.replace(".","_"), false, false)
+	if simple:
+		skin.mesh = preload("res://vehicle/car_static_reduction.gd").resolve(skin.mesh, "electric")
+		skin.mesh = preload("res://vehicle/car_coarse_reduction.gd").resolve(skin.mesh, "electric")
+	M.fitted_patch(parent, label, skin, outline, material, outward, simple)
+
 static func build(car: CarVisual,parent: Node3D,option: String,i: int) -> void:
 	var paint: Material=car.paint_materials.body
 	var graphite:=CompactFinish.paint(Color("252e33"))
@@ -115,7 +131,9 @@ static func build(car: CarVisual,parent: Node3D,option: String,i: int) -> void:
 	for rear: bool in [false,true]:
 		var end: String="Rear" if rear else "Front"
 		var hint: Vector3=Vector3.BACK if rear else Vector3.FORWARD
-		shell(parent,label+end,64,12,func(u: float,v: float)->Vector3:
+		# Retain the full rear row count around the factory fin envelope.
+		var rows: int = 24 if rear and simple else 12
+		shell(parent,label+end,64,rows,func(u: float,v: float)->Vector3:
 			return cap_surface(i,rear,u,v),func(u: float,v: float)->Vector3:
 			return cap_surface(i,rear,u,v,false),finish,hint,simple)
 		# A full-width lower carbon blade follows the formed shell rather than
@@ -138,23 +156,30 @@ static func build(car: CarVisual,parent: Node3D,option: String,i: int) -> void:
 			return sill_surface(side,i,u,v),func(u: float,v: float)->Vector3:
 			return sill_surface(side,i,u,v,false),finish,Vector3(side,0,0),simple)
 		# One restrained inset per side, with different pressed outlines.
-		M.patch(parent,label+"SillInlay"+str(side),40,4,func(u: float,v: float)->Vector3:
-			var t: float=lerpf(0.04,0.96,u)
-			var edge: float=0.0 if u==0.0 or u==1.0 else sin(PI*u)
-			var low: float=0.15+0.12*u if i in [3,8,9,12,15] else 0.16
-			var high: float=low+(0.26 if i in [5,6,7,11,15] else 0.14)*pow(maxf(0.0,edge),0.65)
-			return sill_surface(side,i,t,lerpf(low,high,v))+Vector3(side*0.0015,0,0),black if coloured else satin,Vector3(side,0,0),simple)
+		var outline: Array[Vector2] = []
+		for index: int in range(33):
+			var u: float = index / 32.0
+			var low: float = 0.15 + 0.12*u if i in [3,8,9,12,15] else 0.16
+			outline.append(Vector2(lerpf(0.04,0.96,u),low))
+		for index: int in range(32,-1,-1):
+			var u: float = index / 32.0
+			var low: float = 0.15 + 0.12*u if i in [3,8,9,12,15] else 0.16
+			var high: float = low + (0.26 if i in [5,6,7,11,15] else 0.14)*pow(maxf(0.0,sin(PI*u)),0.65)
+			outline.append(Vector2(lerpf(0.04,0.96,u),high))
+		fitted_decoration(parent,label+"SillInlay"+str(side),label+"Sill"+str(side)+"Face",outline,black if coloured else satin,Vector3(side,0,0),simple)
 	build_rear_tunnels(car,parent,label,i,black,graphite)
-	M.patch(parent,label+"RearValance",48,8,func(u: float,v: float)->Vector3:
-		var s: float=lerpf(0.08,0.92,u)
-		var rise: float=0.20+(0.44 if i in [5,6,12,15] else 0.32)*pow(sin(PI*u),0.55)
-		return cap_surface(i,true,s,lerpf(0.06,rise,v))+Vector3(0,0,0.0018),black,Vector3.BACK,simple)
+	var valance: Array[Vector2] = [Vector2(0.08,0.06),Vector2(0.92,0.06)]
+	for index: int in range(32,-1,-1):
+		var u: float = index / 32.0
+		var rise: float = 0.20 + (0.44 if i in [5,6,12,15] else 0.32)*pow(maxf(0.0,sin(PI*u)),0.55)
+		valance.append(Vector2(lerpf(0.08,0.92,u),rise))
+	fitted_decoration(parent,label+"RearValance",label+"RearFace",valance,black,Vector3.BACK,simple)
 	# Narrow, fitted front intake with a dark floor and upper formed brow.
-	M.patch(parent,label+"FrontIntake",48,5,func(u: float,v: float)->Vector3:
-		var s: float=lerpf(0.17,0.83,u)
-		var edge: float=0.0 if u==0.0 or u==1.0 else sin(PI*u)
-		var t: float=0.39+0.29*v*pow(edge,0.45)
-		return cap_surface(i,false,s,t)+Vector3(0,0,-0.0018),black,Vector3.FORWARD,simple)
+	var intake: Array[Vector2] = [Vector2(0.17,0.39),Vector2(0.83,0.39)]
+	for index: int in range(32,-1,-1):
+		var u: float = index / 32.0
+		intake.append(Vector2(lerpf(0.17,0.83,u),0.39+0.29*pow(maxf(0.0,sin(PI*u)),0.45)))
+	fitted_decoration(parent,label+"FrontIntake",label+"FrontFace",intake,black,Vector3.FORWARD,simple)
 
 static func corner_surface(side: float,i: int,rear: bool,u: float,v: float,outer: bool=true) -> Vector3:
 	var edge: Vector3=cap_surface(i,rear,0.0 if side<0.0 else 1.0,v,outer)

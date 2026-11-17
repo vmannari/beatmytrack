@@ -19,7 +19,7 @@ static func build(car: CarVisual, paint: Material, trim: Material, bright: Mater
 		mirror(car, side, paint, trim, glass)
 		# Flush pulls sit near the trailing edge of each door, as in the
 		# side reference. Negative Z is the front of the car.
-		for z: float in [-0.16, 0.86]:
+		for z: float in [BODY.cabin_z(BODY.WINDOW_B_FOOT) - 0.16, 0.86]:
 			handle(car, side, z, paint, trim)
 
 static func wheel(car: CarVisual, side: float, axle: float, rubber: Material, graphite: Material, inner: Material, bright: Material) -> void:
@@ -107,11 +107,11 @@ static func handle(car: CarVisual, side: float, z: float, _paint: Material, trim
 		var s: float = sin(angle)
 		var zz: float = z + 0.080 * signf(c) * pow(absf(c), 0.35)
 		var yy: float = BODY.shoulder(z) - 0.082 + 0.016 * signf(s) * pow(absf(s), 0.35)
-		return BODY.side_point(side, zz, yy), 96, 0.0022, trim, Vector3(side,0,0), car.simple_model)
+		return BODY.side_point(side, zz, yy), 40 if car.simple_model else 96, 0.0022, trim, Vector3(side,0,0), car.simple_model)
 	M.fitted_line(car.body, "RefHandlePull" + str(side) + str(z), car.body.find_child("ReferenceSide"+str(side).replace(".","_"),false,false), func(t: float) -> Vector3:
 		var zz: float = z + lerpf(-0.045, 0.045, t)
 		var yy: float = BODY.shoulder(z) - 0.089 - 0.002 * sin(PI * t)
-		return BODY.side_point(side, zz, yy), 16, 0.0016, trim, Vector3(side,0,0), car.simple_model)
+		return BODY.side_point(side, zz, yy), 12 if car.simple_model else 16, 0.0016, trim, Vector3(side,0,0), car.simple_model)
 
 static func mirror(car: CarVisual, side: float, paint: Material, trim: Material, glass: Material) -> void:
 	# A low stalk carries a body-coloured aerodynamic shell with a dark lower rim.

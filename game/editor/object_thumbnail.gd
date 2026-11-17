@@ -61,7 +61,8 @@ func _bake_preview() -> void:
 static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine", color: String = "") -> Button:
 	var button := ObjectThumbnail.new()
 	button.name = "Asset_"+kind
-	button.custom_minimum_size = Vector2(112,90)
+	button.custom_minimum_size = Vector2(112,72)
+	button.size_flags_horizontal = Control.SIZE_FILL
 	button.tooltip_text = title+" / Select to place; adjust with the object controls"
 	if CreatorCatalog.JUMP_ASSETS.has(kind): button.tooltip_text = title+" / Tap the track to place"
 	button.toggle_mode = true
@@ -75,23 +76,27 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	var image := TextureRect.new()
 	image.texture = cached
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
-	image.position = Vector2(4,1)
-	image.size = Vector2(104,62)
+	image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	button.add_child(image)
+	image.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	image.offset_left = 4; image.offset_right = -4
+	image.offset_top = 1; image.offset_bottom = 49
 	button._image = image
 	var label := Label.new()
 	label.text = title
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size",15)
+	label.add_theme_font_size_override("font_size",16)
+	label.add_theme_color_override("font_color",EditorStyle.INK)
 	label.add_theme_font_override("font",EditorStyle.FONT)
-	label.position = Vector2(4,64)
-	label.size = Vector2(104,22)
 	label.clip_text = true
 	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(label)
+	label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	label.offset_left = 4; label.offset_right = -4
+	label.offset_top = 48; label.offset_bottom = 68
 	return button
 
 static func _render_preview(button: Button, kind: String, biome: String, color: String = "") -> SubViewport:

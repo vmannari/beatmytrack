@@ -43,7 +43,7 @@ func _ready() -> void:
 	var density_slider := HSlider.new()
 	density_slider.name = "PopulationDensity"
 	density_slider.min_value = 0; density_slider.max_value = 1; density_slider.step = 0.05
-	density_slider.value = density; density_slider.custom_minimum_size.y = 44
+	density_slider.value = density; density_slider.custom_minimum_size.y = 48
 	column.add_child(density_slider)
 	density_slider.value_changed.connect(func(value: float) -> void: density = value; request_preview())
 	var reach_label: Label = MenuStyle.label("Roadside reach · %d m" % roadside_reach,16)
@@ -52,12 +52,12 @@ func _ready() -> void:
 	var reach_slider := HSlider.new()
 	reach_slider.name = "PopulationReach"
 	reach_slider.min_value = 16; reach_slider.max_value = 32; reach_slider.step = 1
-	reach_slider.value = roadside_reach; reach_slider.custom_minimum_size.y = 44
+	reach_slider.value = roadside_reach; reach_slider.custom_minimum_size.y = 48
 	column.add_child(reach_slider)
 	reach_slider.value_changed.connect(func(value: float) -> void:
 		roadside_reach = value; reach_label.text = "Roadside reach · %d m" % value; request_preview())
 	var shuffle: Button = EditorStyle.button("Shuffle",func() -> void: seed_value += 1; request_preview())
-	shuffle.name = "PopulationShuffle"; shuffle.custom_minimum_size.y = 44
+	shuffle.name = "PopulationShuffle"; shuffle.custom_minimum_size.y = 48
 	column.add_child(shuffle)
 	status = MenuStyle.label("Preparing scenery…",15,true)
 	status.name = "PopulationStatus"; status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -65,15 +65,16 @@ func _ready() -> void:
 	var actions := HBoxContainer.new()
 	column.add_child(actions)
 	var cancel: Button = EditorStyle.button("Cancel",func() -> void: cancel_requested.emit())
-	cancel.name = "PopulationCancel"; cancel.custom_minimum_size.y = 44
+	cancel.name = "PopulationCancel"; cancel.custom_minimum_size.y = 48
 	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(cancel)
 	apply_button = EditorStyle.button("Apply",func() -> void:
 		if ready_to_apply: apply_requested.emit(generated.duplicate(true)))
-	apply_button.name = "PopulationApply"; apply_button.custom_minimum_size.y = 44
+	apply_button.name = "PopulationApply"; apply_button.custom_minimum_size.y = 48
 	apply_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	actions.add_child(apply_button)
 	apply_button.disabled = true
+	EditorStyle.menu_tree(panel)
 	cancel.grab_focus()
 
 func request_preview() -> void:

@@ -6,7 +6,8 @@ func direct_probes() -> void:
 	doc.objects = [object(0,0)]
 	var c: EditorCanvas = canvas(doc,"place"); c.stamp_kind = "crate"
 	tap(c,c.to_screen(Vector2.ZERO))
-	check(c.mode == "place" and doc.objects.size() == 1,"EUI04 occupied placement neither changes mode nor duplicates an object")
+	check(c.mode == "objects" and c.selected_object == 0 and doc.objects.size() == 1,"occupied placement reselects the existing object without duplicating it")
+	c.mode = "place"
 	tap(c,c.to_screen(Vector2(20,0)))
 	check(c.mode == "place" and doc.objects.size() == 2,"EUI04 next empty tap still places")
 	check(c.selected_object == -1,"EUI02 placement does not retain an editable object selection")
@@ -79,7 +80,8 @@ func app_probes() -> void:
 	while not app.startup_complete: await process_frame
 	await show_fixture(); await choose_crate()
 	await click(app.canvas.to_screen(Vector2(0,14)))
-	check(app.canvas.mode == "place" and app.document.objects.size() == 1,"EUI04 actual occupied click preserves placement")
+	check(app.canvas.mode == "objects" and app.canvas.selected_object == 0 and app.document.objects.size() == 1,"actual occupied click reselects the existing object without duplication")
+	await click_named("ObjectPlaceMode")
 	await click(app.canvas.to_screen(Vector2(30,14)))
 	check(app.canvas.mode == "place" and app.document.objects.size() == 2,"EUI04 actual following click places")
 	await show_fixture(); await choose_crate(); await click(app.canvas.to_screen(Vector2(30,14)))

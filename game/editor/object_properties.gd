@@ -19,13 +19,15 @@ func show_state(values: Dictionary, is_selected: bool, property: String) -> void
 	for child: Node in get_children():
 		remove_child(child)
 		child.queue_free()
-	alignment = BoxContainer.ALIGNMENT_CENTER
+	alignment = BoxContainer.ALIGNMENT_BEGIN
 	add_theme_constant_override("separation",6)
-	if state.has("mode"):
+	if state.has("mode") and editing == "":
 		var select: Button = _action("Select","multi_select",func() -> void: _edit("mode","objects"),"ObjectSelectMode",state.mode == "objects")
 		var place: Button = _action("Place","place_single",func() -> void: _edit("mode","place"),"ObjectPlaceMode",state.mode != "objects")
 		select.custom_minimum_size.x = 62
 		place.custom_minimum_size.x = 62
+		place.disabled = selected and bool(state.get("multiple",false))
+		place.tooltip_text = "Place" if not selected else "Copy"
 	if editing in ["scale","rotation","span"]: _adjustment()
 	else: _overview()
 
@@ -35,7 +37,7 @@ func _action(caption: String, glyph: String, action: Callable, node_name: String
 		if revision == _revision: action.call(),chosen)
 	button.name = node_name
 	button.focus_mode = Control.FOCUS_ALL
-	EditorStyle.card(button,chosen)
+	EditorStyle.quiet(button,chosen)
 	add_child(button)
 	return button
 

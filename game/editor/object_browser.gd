@@ -44,7 +44,8 @@ func _ready() -> void:
 	var column := VBoxContainer.new()
 	add_child(column)
 	var top := HBoxContainer.new()
-	column.add_theme_constant_override("separation",8)
+	top.name = "ObjectBrowserNavigation"
+	column.add_theme_constant_override("separation",4)
 	column.add_child(top)
 	categories = _scroll_row(top)
 	for value: String in ["All","Recent"]+CreatorCatalog.CATEGORIES:
@@ -54,7 +55,8 @@ func _ready() -> void:
 		categories.add_child(button)
 	var snapping := OptionButton.new()
 	snapping.name = "ObjectSnap"
-	EditorStyle.apply(snapping); snapping.custom_minimum_size = Vector2(112,44)
+	snapping.fit_to_longest_item = false
+	EditorStyle.apply(snapping); snapping.custom_minimum_size = Vector2(112,48)
 	for label: String in ["Snap: 1 m","Snap: 0.25 m","Snap: off"]: snapping.add_item(label)
 	snapping.select(0 if snap_step == 1.0 else 1 if snap_step > 0 else 2)
 	snapping.item_selected.connect(func(index: int) -> void:
@@ -62,14 +64,14 @@ func _ready() -> void:
 	top.add_child(snapping)
 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
 	populate.name = "PopulateObjects"
-	populate.custom_minimum_size = Vector2(100,44)
+	populate.custom_minimum_size = Vector2(100,48)
 	top.add_child(populate)
 	var paging := HBoxContainer.new()
 	column.add_child(paging)
 	previous=EditorButton.make("","back",func() -> void: page-=1; _tiles())
 	previous.name="PreviousObjects"
 	previous.tooltip_text="Previous objects"
-	previous.custom_minimum_size=Vector2(44,82)
+	previous.custom_minimum_size=Vector2(48,72)
 	paging.add_child(previous)
 	tiles = _scroll_row(paging)
 	tiles.size_flags_horizontal=Control.SIZE_EXPAND_FILL
@@ -77,11 +79,18 @@ func _ready() -> void:
 	next=EditorButton.make("","next",func() -> void: page+=1; _tiles())
 	next.name="NextObjects"
 	next.tooltip_text="Next objects"
-	next.custom_minimum_size=Vector2(44,82)
+	next.custom_minimum_size=Vector2(48,72)
 	paging.add_child(next)
 	resized.connect(func() -> void:
-		var count: int=maxi(1,int((size.x-120)/118))
-		if count!=page_size: page_size=count; page=0; _tiles())
+		var count: int=maxi(1,int((size.x-98)/118))
+		if count!=page_size:
+			var first: int = page*page_size
+			var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
+			var family: Array = CreatorCatalog.family(current)
+			var id: String = str(family[0]) if not family.is_empty() else current
+			for i: int in range(first,mini(entries.size(),first+page_size)):
+				if str(entries[i][0]) == id: first = i; break
+			page_size=count; page=first/page_size; _tiles())
 	visibility_changed.connect(func() -> void:
 		if is_visible_in_tree():
 			if not CreatorCatalog.available(current,biome):
@@ -107,7 +116,9 @@ func _scroll_row(parent: Node) -> HBoxContainer:
 	return row
 
 func _button(text: String, action: Callable) -> Button:
-	return EditorStyle.button(text,action)
+	var button: Button = EditorStyle.button(text,action)
+	EditorStyle.card(button)
+	return button
 
 func set_stamp_rotation(value: float) -> void:
 	stamp_rotation = value
@@ -132,11 +143,11 @@ func _tiles() -> void:
 	for button: Button in categories.get_children(): button.visible = button.text in ["All","Recent"] or not CreatorCatalog.filtered(button.text,"",[],biome).is_empty()
 	if _styled_category != category:
 		_styled_category = category
-		for button: Button in categories.get_children(): EditorStyle.apply(button,button.text==category)
+		for button: Button in categories.get_children(): EditorStyle.card(button,button.text==category)
 	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
-	previous.visible=page>0
-	next.visible=(page+1)*page_size<entries.size()
+	previous.visible=true; previous.disabled=page<=0
+	next.visible=true; next.disabled=(page+1)*page_size>=entries.size()
 	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color,current]
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
 	if key == _tile_key:
@@ -162,6 +173,21 @@ func _tiles() -> void:
 func refresh() -> void:
 	if not is_instance_valid(tiles): return
 	_tiles()
+
+func reveal_current() -> void:
+	var family: Array = CreatorCatalog.family(current)
+	var id: String = str(family[0]) if not family.is_empty() else current
+	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
+	var index: int = -1
+	for i: int in range(entries.size()):
+		if str(entries[i][0]) == id: index = i; break
+	if index < 0:
+		category = "All"
+		entries = CreatorCatalog.filtered(category,"",recent,biome)
+		for i: int in range(entries.size()):
+			if str(entries[i][0]) == id: index = i; break
+	if index >= 0: page = index/maxi(1,page_size)
+	refresh()
 
 func _activate_asset(kind: String) -> void:
 	if not CreatorCatalog.available(kind,biome): return

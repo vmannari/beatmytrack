@@ -86,7 +86,7 @@ func _blank_and_connect() -> void:
 	check(doc.layout.is_empty() and doc.pieces.is_empty() and doc.paint.is_empty(), "blank creation begins with editable terrain and no imposed road loop")
 	check(canvas.get_global_rect().size.is_equal_approx(root.get_visible_rect().size), "the editing canvas fills the landscape viewport")
 	check(canvas.mode == "road", "blank creation opens the Road workflow")
-	for text: String in ["Track","Surfaces","Objects"]:
+	for text: String in ["Road","Surfaces","Objects"]:
 		check(_button(app.get("root_ui"),text) != null, "category rail exposes " + text)
 	var before: Dictionary = doc.duplicate(true)
 	canvas.choose_piece("straight")

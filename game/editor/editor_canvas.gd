@@ -25,6 +25,8 @@ var geometry_drag: String = ""
 var geometry_origin: float = 0.0
 var road_approval_pending: bool = false
 var preparing: bool = false
+## Camera intent is independent of the active tool and its pending previews.
+var navigation_override: bool = false
 var endpoint_drag: int = -1
 var spline_point: int = 2
 var spline_point_drag: int = -1
@@ -73,6 +75,7 @@ var run_draw: PackedVector2Array = []
 var drawing_run: bool = false
 var stamp_scale: float = 1.0
 var stamp_span: float = 8.0
+var stamp_length: float = 0.0
 var stamp_jump_profile: String = ""
 var stamp_container_color: String = ContainerPaint.DEFAULT
 var bump_end_drag: int = -1
@@ -105,6 +108,7 @@ var _object_pick_world := Vector2.INF
 var stamp_kind: String = "tree"
 var stamp_rotation: float = 0.0
 var pending_stamp: bool = false
+var pending_object_selection: int = -1
 var press_position := Vector2.ZERO
 var drag_origin := Vector2.ZERO
 var pointer_origin := Vector2.ZERO
@@ -248,6 +252,7 @@ func cancel_gesture(discard_previews: bool = true) -> void:
 		paint_points = paint_before_gesture.duplicate(true) if paint_mode != "free" else []
 	paint_handle = -1
 	pending_stamp = false
+	pending_object_selection = -1
 	dragging = false
 	panning = false
 	active_pointer = -99
@@ -285,7 +290,9 @@ func _gui_input(event: InputEvent) -> void:
 				active_pointer = -99
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed: _begin(event.position, -1)
-			else: _end(-1)
+			else:
+				_prepare_release(event.position,-1)
+				_end(-1)
 	elif event is InputEventMouseMotion and active_pointer < 0 and active_pointer != -99:
 		_move(event.position)
 	elif event is InputEventScreenTouch:
@@ -307,6 +314,7 @@ func _gui_input(event: InputEvent) -> void:
 				if paint_mode == "free": paint_points.clear()
 				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
 				pending_stamp = false
+				pending_object_selection = -1
 				dragging = false
 		else:
 			var was_pinching: bool = touches.size() >= 2
@@ -323,8 +331,10 @@ func _gui_input(event: InputEvent) -> void:
 				pending_start_flip = false
 				start_drag = false
 				pending_stamp = false
+				pending_object_selection = -1
 				if paint_mode == "free": paint_points.clear()
 				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
+			if not event.canceled: _prepare_release(event.position,event.index)
 			_end(event.index)
 			if was_pinching and touches.size() == 1:
 				# Either finger may lift first. The remaining finger continues
@@ -349,6 +359,28 @@ func _gui_input(event: InputEvent) -> void:
 			touches[event.index] = event.position
 			if active_pointer == event.index: _move(event.position)
 	accept_event()
+
+func _prepare_release(point: Vector2, pointer: int) -> void:
+	if pointer != active_pointer: return
+	# A captured pointer can be released outside the canvas or its confirm
+	# target without a final drag event. Releasing there must not activate it.
+	if not Rect2(Vector2.ZERO,size).has_point(point):
+		cancel_gesture(false)
+		return
+	if pending_piece_accept:
+		var piece: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
+		if piece.is_empty() or not piece_accept_rect(piece).has_point(point): pending_piece_accept = false
+	if pending_paint_accept and not paint_accept_rect().has_point(point): pending_paint_accept = false
+	if pending_start_flip and Vector2(start_controls().flip).distance_to(point) > 28: pending_start_flip = false
+	if pending_stamp and mode == "place":
+		if fit_area.is_valid() and not Rect2(fit_area.call()).has_point(point):
+			cancel_gesture(false)
+			return
+		previous_pointer = point
+	if press_position.distance_to(point) > 12:
+		if mode != "place": pending_stamp = false
+		pending_object_selection = -1
+		pending_road_tap = false
 
 func _rollback_navigation_edit() -> void:
 	bump_end_drag = -1
@@ -378,7 +410,8 @@ func _begin(point: Vector2, pointer: int) -> void:
 	pointer_origin = to_world(point)
 	changed_in_gesture = false
 	_selection_toggle = -1
-	gesture.begin(ghost,preparing)
+	pending_object_selection = -1
+	gesture.begin(ghost,preparing or navigation_override)
 	if _navigation_only:
 		panning = true; dragging = false
 		return
@@ -394,12 +427,12 @@ func _begin(point: Vector2, pointer: int) -> void:
 			bump_before_drag = document.objects[selected_object].duplicate(true)
 			dragging = true
 			return
-	if mode=="place":
-		for object: Dictionary in document.objects:
-			if CreatorObjects.contains(object,to_world(point)):
-				pending_stamp = false
-				hint_changed.emit("Choose Select to edit an existing object.")
-				return
+	if mode == "place":
+		var hits: Array[int] = preload("res://editor/object_editing.gd").candidates(document.objects,point,to_world(point),to_screen)
+		if not hits.is_empty():
+			pending_stamp = false
+			pending_object_selection = hits[0]
+			return
 	start_drag = false
 	pending_start_flip = false
 	if mode == "road" and ghost.is_empty() and document.has("start_line") and not editing_spline():
@@ -487,6 +520,10 @@ func _move(point: Vector2) -> void:
 	if _navigation_only:
 		pan += point-previous_pointer; previous_pointer = point; queue_redraw()
 		return
+	if pending_object_selection >= 0:
+		if press_position.distance_to(point) < OBJECT_DRAG_THRESHOLD: return
+		pending_object_selection = -1
+		panning = true
 	if bump_end_drag >= 0:
 		if press_position.distance_to(point) < 3.0 and not changed_in_gesture: return
 		var changed: Dictionary = SpeedBumpEdit.move_end(bump_before_drag,bump_end_drag,to_world(point))
@@ -549,6 +586,10 @@ func _move(point: Vector2) -> void:
 		queue_redraw()
 		return
 	if pending_stamp:
+		if mode == "place":
+			previous_pointer = point
+			queue_redraw()
+			return
 		if press_position.distance_to(point) > 12:
 			pending_stamp = false
 			panning = true
@@ -641,11 +682,7 @@ func _place(point: Vector2) -> void:
 		if document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS:
 			hint_changed.emit("Use up to %d objects. Select one to move or remove it." % preload("res://editor/creator_limits.gd").MAX_OBJECTS)
 			return
-		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
-		if stamp_scale != 1.0: object["scale"]=stamp_scale
-		if stamp_kind == "speed_bump": object["span"] = stamp_span
-		if stamp_kind == "jump": object["jump_profile"] = stamp_jump_profile if stamp_jump_profile in JumpProfiles.IDS else JumpProfiles.default_for(str(document.theme))
-		if stamp_kind == "container": object["color"] = stamp_container_color
+		var object: Dictionary = placement_object(point)
 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
 		if not admission.is_empty(): hint_changed.emit(admission); return
 		if not admit("objects",document.objects+[object]): return
@@ -659,11 +696,29 @@ func _place(point: Vector2) -> void:
 	selection_changed.emit()
 	queue_redraw()
 
+func placement_object(point: Vector2) -> Dictionary:
+	var position: Vector2 = object_position(to_world(point))
+	var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
+	if stamp_scale != 1.0: object["scale"] = stamp_scale
+	if stamp_kind == "speed_bump": object["span"] = stamp_span
+	if stamp_kind == "jump" and stamp_jump_profile != "legacy": object["jump_profile"] = stamp_jump_profile if stamp_jump_profile in JumpProfiles.IDS else JumpProfiles.default_for(str(document.theme))
+	if stamp_kind == "container": object["color"] = stamp_container_color
+	if stamp_kind in ObjectRuns.CONTINUOUS and stamp_length > 0: object["length"] = stamp_length
+	return object
+
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
 	if _navigation_only:
 		gesture.clear(); dragging = false; panning = false; active_pointer = -99
 		return
+	if pending_object_selection >= 0:
+		if pending_object_selection < document.objects.size():
+			mode = "objects"
+			multi_select = false
+			selected_object = pending_object_selection
+			_object_pick_world = to_world(press_position)
+			selection_changed.emit()
+		pending_object_selection = -1
 	if pending_paint_accept:
 		pending_paint_accept = false
 		confirm_paint()
@@ -702,7 +757,7 @@ func _end(pointer: int) -> void:
 	pending_piece_accept = false
 	if paint_mode == "free": confirm_paint()
 	paint_handle = -1
-	if pending_stamp: _place(press_position)
+	if pending_stamp: _place(previous_pointer if mode == "place" else press_position)
 	if _selection_toggle >= 0 and not changed_in_gesture:
 		selected_objects.erase(_selection_toggle)
 		selected_object = selected_objects.back() if not selected_objects.is_empty() else -1
@@ -797,6 +852,13 @@ func _draw() -> void:
 		var outline := PackedVector2Array()
 		for p: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(p))
 		draw_colored_polygon(outline,Color(0.05,0.8,0.86,0.6))
+	if pending_stamp and mode == "place" and _stamp_available():
+		var outline := PackedVector2Array()
+		for point: Vector2 in CreatorObjects.outline(placement_object(previous_pointer)): outline.append(to_screen(point))
+		if outline.size() >= 3:
+			draw_colored_polygon(outline,Color(0.1,0.78,0.84,0.35))
+			outline.append(outline[0])
+			draw_polyline(outline,EditorStyle.ACCENT,2,true)
 	if issue_marker != Vector2.INF:
 		var marker: Vector2 = to_screen(issue_marker)
 		draw_circle(marker,22,Color("ec4659"),false,3,true)
@@ -812,11 +874,13 @@ func _draw() -> void:
 			draw_string(ThemeDB.fallback_font,callout,issue_text,HORIZONTAL_ALIGNMENT_LEFT,270,16,Color("ffadb5"))
 	var ruler: float = 10.0 if scale_factor() < 15 else 2.0
 	var base := Vector2(size.x-32,size.y-26)
+	if fit_area.is_valid(): base = Rect2(fit_area.call()).end-Vector2(16,8)
 	draw_line(base-Vector2(ruler*scale_factor(),0),base,Color("e5ece8"),2,true)
 	draw_string(ThemeDB.fallback_font,base-Vector2(42,9),"%.1f m" % ruler,HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color("e5ece8"))
 
 func choose_piece(kind: String) -> void:
 	cancel_gesture()
+	navigation_override = false
 	mode = "road"
 	selected_piece = -1
 	piece_kind = kind
@@ -1003,7 +1067,7 @@ func _move_road(point: Vector2) -> void:
 	if pending_piece_accept:
 		if press_position.distance_to(point) <= 8: return
 		pending_piece_accept = false
-	if press_position.distance_to(point) < 3 and not changed_in_gesture: return
+	if press_position.distance_to(point) < OBJECT_DRAG_THRESHOLD and not changed_in_gesture: return
 	if piece.kind == "spline" and (spline_point_drag >= 0 or geometry_drag == "point_width"):
 		_move_spline(point)
 		return
@@ -1060,9 +1124,12 @@ func _move_road(point: Vector2) -> void:
 		if ghost.is_empty(): document_changed.emit()
 		queue_redraw()
 		return
-	var target: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE*0.5)
+	var displacement: Vector2 = (to_world(point)-pointer_origin).snapped(Vector2.ONE*0.5)
+	var original_position: Array = (_gesture_ghost if not ghost.is_empty() else piece_before_drag).get("position",[drag_origin.x,drag_origin.y])
 	var moved: Dictionary = piece.duplicate(true)
-	moved.position = [target.x,target.y]
+	# Preserve untouched encoded coordinates instead of round-tripping them
+	# through Vector2's single-precision components.
+	moved.position = [float(original_position[0])+displacement.x,float(original_position[1])+displacement.y]
 	if not RoadPieces.validate(moved).is_empty():
 		hint_changed.emit("Keep the whole section inside the map.")
 		return
@@ -1513,6 +1580,7 @@ func connect_nearby() -> void:
 	queue_redraw()
 
 func choose_start_line() -> void:
+	navigation_override = false
 	cancel_gesture()
 	ghost.clear()
 	selected_piece = -1

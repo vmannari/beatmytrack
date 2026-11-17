@@ -138,7 +138,8 @@ func _owns_gesture(node: Node, location: Vector2) -> bool:
 
 func _modal_open(node: Node) -> bool:
 	if node == null: return false
-	if node is Window and node.visible: return true
+	# Native tooltips are transparent windows and do not own menu input.
+	if node is Window and node.visible and not node.get_flag(Window.FLAG_MOUSE_PASSTHROUGH): return true
 	if node is CanvasLayer and node.layer > 20 and node.visible and not bool(node.get_meta("menu_input_passthrough",false)): return true
 	for child: Node in node.get_children():
 		if _modal_open(child): return true

@@ -14,7 +14,7 @@ const SUBTITLES: Dictionary = {
 	"hovercraft":"Air-cushion drift", "super_rally":"All-terrain power"
 }
 # Authored ease-of-control comparisons; hover steering is not wheel traction.
-const HANDLING: Dictionary = {"compact":4,"kart":5,"forklift":2,"electric":3,"hovercraft":1,"super_rally":4}
+const HANDLING: Dictionary = {"compact":4,"kart":5,"forklift":4,"electric":3,"hovercraft":2,"super_rally":4}
 const CAPTIONS: Dictionary = {"acceleration":"Acceleration","handling":"Handling","top_speed":"Top speed"}
 static var _measurements: Dictionary = {}
 var vehicle_id: String = ""
@@ -28,6 +28,7 @@ var _rows: VBoxContainer
 var _compact: bool = false
 var _density: float = 1.0
 var _built: bool = false
+var _text_layout_key: Array = []
 
 class RatingBar extends Control:
 	var rating: int = 0:
@@ -130,7 +131,6 @@ func set_vehicle(id: String) -> void:
 		parts.bar.rating = ratings[key]
 		parts.bar.accessibility_name = GameText.message("{stat}: {rating} of 5",{"stat":GameText.message(CAPTIONS[key]),"rating":ratings[key]})
 		parts.row.tooltip_text = GameText.message("{speed} km/h",{"speed":data.top_speed}) if key == "top_speed" else GameText.message("0–60 km/h: {time} s",{"time":"%.1f" % data.acceleration}) if key == "acceleration" and data.acceleration >= 0.0 else GameText.message(SUMMARIES[vehicle_id])
-	reset_size()
 
 func fit_in_preview(dimensions: Vector2) -> void:
 	var compact: bool = dimensions.y < 300.0
@@ -139,9 +139,26 @@ func fit_in_preview(dimensions: Vector2) -> void:
 		_compact = compact
 		_density = density
 		_apply_density()
-	position = Vector2(0,8)
+	position = Vector2(8,8)
 	size.x = clampf(dimensions.x*0.275,248.0 if compact else 288.0,280.0 if compact else 410.0)
+	var layout_key: Array = [size.x,_density,TranslationServer.get_locale()]
+	if layout_key != _text_layout_key:
+		_text_layout_key = layout_key
+		var style: StyleBox = get_theme_stylebox("panel")
+		var text_width: float = size.x-style.get_minimum_size().x
+		_reserve_text_height(_subtitle,SUBTITLES,text_width)
+		_reserve_text_height(_description,SUMMARIES,text_width)
 	size.y = get_combined_minimum_size().y
+
+func _reserve_text_height(label: Label, texts: Dictionary, width: float) -> void:
+	var font: Font = label.get_theme_font("font")
+	var font_size: int = label.get_theme_font_size("font_size")
+	var height: float = 0.0
+	for text: String in texts.values():
+		var translated: String = GameText.message(text)
+		if label == _subtitle: translated = translated.to_upper()
+		height = maxf(height,font.get_multiline_string_size(translated,HORIZONTAL_ALIGNMENT_LEFT,width,font_size).y)
+	label.custom_minimum_size.y = ceilf(height)
 
 func _apply_density() -> void:
 	var style: StyleBoxFlat = MenuStyle.box(Color(0.025,0.05,0.065,0.91),10 if _compact else roundi(18*_density))

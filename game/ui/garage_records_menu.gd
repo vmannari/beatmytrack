@@ -69,11 +69,11 @@ func _ready() -> void:
 	playback.alignment = BoxContainer.ALIGNMENT_CENTER
 	playback.add_theme_constant_override("separation",10)
 	add_child(playback)
-	skip_previous = _transport_button("GaragePreviousRecording","skip_previous",func() -> void: _skip_record(-1))
+	skip_previous = _transport_button("GaragePreviousRecording","skip_previous",func() -> void: _skip_record(-1,true))
 	playback.add_child(skip_previous)
-	transport = _transport_button("GarageRecordTransport","pause",_toggle_play)
+	transport = _transport_button("GarageRecordTransport","pause",_toggle_play.bind(true))
 	playback.add_child(transport)
-	skip_next = _transport_button("GarageNextRecording","skip_next",func() -> void: _skip_record(1))
+	skip_next = _transport_button("GarageNextRecording","skip_next",func() -> void: _skip_record(1,true))
 	playback.add_child(skip_next)
 	var volume_row := HBoxContainer.new()
 	volume_row.add_theme_constant_override("separation",6)
@@ -135,13 +135,13 @@ func _ready() -> void:
 		row.custom_minimum_size.y = 52
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		row.pressed.connect(_select_record.bind(index))
+		row.pressed.connect(_select_record.bind(index,true))
 		track.add_child(row)
 		var included: CheckBox = preload("res://ui/garage_playlist_toggle.gd").new()
 		included.name = "GaragePlaylist_" + item.id
 		included.custom_minimum_size = Vector2(52,52)
 		included.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		included.toggled.connect(_set_in_playlist.bind(item.id))
+		included.toggled.connect(_set_in_playlist.bind(item.id,true))
 		track.add_child(included)
 		playlist_checks.append(included)
 		var content := HBoxContainer.new()
@@ -254,13 +254,15 @@ func _refresh() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(status): _refresh.call_deferred()
 
-func _select_record(index: int) -> void:
+func _select_record(index: int, background: bool = false) -> void:
 	var item: Dictionary = Library.CATALOG[index]
 	if not Library.playable(item.id): return
 	if Library.selected(records.settings).id != item.id or not records.settings.get("music_enabled",true):
 		records.settings.music_record = item.id
 		records.settings.music_enabled = true
-		if not _commit(): return
+		var saved: bool = await _commit_async() if background else _commit()
+		if not saved: return
+	if not is_inside_tree(): return
 	_browse_to(index)
 
 func _browse_to(index: int) -> void:
@@ -273,14 +275,14 @@ func _browse_to(index: int) -> void:
 	flip_motion.tween_property(self,"display_position",float(index),duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	flip_motion.tween_callback(func() -> void: flip_motion = null)
 
-func _skip_record(direction: int) -> void:
+func _skip_record(direction: int, background: bool = false) -> void:
 	var next: Dictionary = Library.next_record(records.settings,Library.selected(records.settings).id,direction)
 	for index: int in range(Library.CATALOG.size()):
 		if Library.CATALOG[index].id == next.id:
-			_select_record(index)
+			_select_record(index,background)
 			return
 
-func _set_in_playlist(included: bool, id: String) -> void:
+func _set_in_playlist(included: bool, id: String, background: bool = false) -> void:
 	var ids: Array[String] = []
 	for item: Dictionary in Library.playlist(records.settings):
 		if item.id != id or included: ids.append(item.id)
@@ -289,10 +291,20 @@ func _set_in_playlist(included: bool, id: String) -> void:
 		_refresh()
 		return
 	records.settings.music_playlist = ids
-	_commit()
+	if background: await _commit_async()
+	else: _commit()
 
 func _commit() -> bool:
-	if records.save_records() != OK:
+	return _saved(records.save_records())
+
+func _commit_async() -> bool:
+	var owner: LocalRecords = records
+	var error: Error = await owner.save_records_async()
+	if not is_inside_tree() or records != owner: return error == OK
+	return _saved(error)
+
+func _saved(error: Error) -> bool:
+	if error != OK:
 		GameSoundtrack.instance().apply_settings(records.settings)
 		_refresh()
 		status.text = "Could not save. Please try again."
@@ -302,9 +314,10 @@ func _commit() -> bool:
 	_refresh()
 	return true
 
-func _toggle_play() -> void:
+func _toggle_play(background: bool = false) -> void:
 	records.settings.music_enabled = not records.settings.get("music_enabled",true)
-	_commit()
+	if background: await _commit_async()
+	else: _commit()
 
 func _preview_volume(value: float) -> void:
 	records.settings.music_volume = value/100.0
@@ -317,7 +330,7 @@ func _update_volume_caption() -> void:
 	volume.tooltip_text = "Music volume · "+volume_value.text
 	volume.accessibility_name = "Music volume"
 
-func _save_volume() -> void: _commit()
+func _save_volume() -> void: await _commit_async()
 
 func finish() -> void:
 	if flip_motion != null:

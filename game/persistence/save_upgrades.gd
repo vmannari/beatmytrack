@@ -7,6 +7,10 @@ static func prepare(data: Variant) -> Dictionary:
 	if not data is Dictionary or data.size() != 3 or not data.get("records") is Dictionary or not data.get("settings") is Dictionary: return {}
 	if not _whole(data.get("schema"),1,2): return {}
 	var pending: bool = int(data.schema) == 1 or data.settings.has("music_records")
+	for field: String in ["simple_car_models","reduced_car_models"]:
+		if data.settings.has(field):
+			if not data.settings[field] is bool: return {}
+			pending = true
 	if data.settings.get("control_layout") is Dictionary and data.settings.control_layout.get("version") == 1: pending = true
 	if data.settings.get("vehicle_liveries") is Dictionary:
 		for value: Variant in data.settings.vehicle_liveries.values():
@@ -25,6 +29,8 @@ static func prepare(data: Variant) -> Dictionary:
 			result.records[key] = {"race_ms":roundi(float(value.race)*1000.0),"flying_ms":roundi(float(value.flying)*1000.0)}
 	result.schema = 2
 	var settings: Dictionary = result.settings
+	settings.erase("simple_car_models")
+	settings.erase("reduced_car_models")
 	if settings.get("control_layout") is Dictionary and settings.control_layout.get("version") == 1:
 		settings.control_layout = upgrade_layout(settings.control_layout)
 		if settings.control_layout.is_empty(): return {}

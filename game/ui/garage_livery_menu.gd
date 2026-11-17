@@ -22,6 +22,8 @@ var _contents: Dictionary = {}
 var _content: VBoxContainer
 var _editing_content: VBoxContainer
 var colour_pickers: Dictionary = {}
+var premium_gallery: VBoxContainer
+var _collection_tabs: Dictionary = {}
 
 func _ready() -> void:
 	name = "GarageLiveryWorkbench"
@@ -104,6 +106,18 @@ func _scroll() -> ScrollContainer:
 	return scroll
 
 func _patterns() -> void:
+	var collections := HBoxContainer.new()
+	collections.name = "LiveryCollections"
+	collections.add_theme_constant_override("separation",6)
+	_content.add_child(collections)
+	for entry: Array in [["standard","Standard"],["premium","Premium"]]:
+		var button: Button = MenuStyle.tab(str(entry[1]),_show_collection.bind(str(entry[0])),page._livery_collection==entry[0])
+		button.name = "LiveryCollection_"+str(entry[0])
+		button.custom_minimum_size.y = 44
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.add_theme_font_size_override("font_size",19)
+		collections.add_child(button)
+		_collection_tabs[entry[0]] = button
 	pattern_shelf = preload("res://ui/garage_parts_list.gd").new()
 	pattern_shelf.caption_row.hide() # The existing Appearance header owns the wallet.
 	pattern_shelf.heading.get_parent().hide() # Patterns need no category heading or selection counter.
@@ -132,10 +146,31 @@ func _patterns() -> void:
 		grid.add_child(row)
 		pattern_tiles[index] = row
 		row.focus_entered.connect(_reveal_pattern,CONNECT_DEFERRED)
+	premium_gallery = preload("res://ui/garage_premium_liveries.gd").new()
+	premium_gallery.page = page
+	_content.add_child(premium_gallery)
+	_sync_collections()
 	_queue_pattern_icons.call_deferred()
+
+func _show_collection(collection: String) -> void:
+	if collection not in ["standard","premium"]: return
+	if collection!=page._livery_collection: page._cancel_cosmetic_preview(false)
+	page._livery_collection = collection
+	refresh()
+
+func _sync_collections() -> void:
+	if not is_instance_valid(premium_gallery): return
+	var premium: bool = page._livery_collection=="premium"
+	pattern_shelf.visible = not premium
+	premium_gallery.visible = premium
+	for id: String in _collection_tabs: Studio.tab(_collection_tabs[id],id==page._livery_collection)
+	premium_gallery.refresh()
 
 func _reveal_pattern() -> void:
 	if page.section!="customise" or page._customise_tab!="livery" or not is_visible_in_tree(): return
+	if page._livery_collection=="premium":
+		if is_instance_valid(premium_gallery): premium_gallery.reveal_selected()
+		return
 	var focused: Control = get_viewport().gui_get_focus_owner()
 	if is_instance_valid(focused) and pattern_scroll.is_ancestor_of(focused):
 		pattern_scroll.ensure_control_visible(focused)
@@ -304,6 +339,7 @@ func _stickers() -> void:
 	footer.add_child(clear)
 
 func refresh() -> void:
+	_sync_collections()
 	var selected_index: int = equipped_index()
 	var preview_index: int = int(page._cosmetic_preview.get("index",selected_index))
 	var previewing: bool = page._cosmetic_preview.get("kind","")=="livery"

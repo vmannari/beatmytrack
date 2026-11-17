@@ -126,3 +126,18 @@ func _present_menu_layout() -> void:
 		entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
 	_layout_presented = true
 
+
+# Retain the historical wash panel after its removal from the live parent.
+func _build_wash_requirement() -> void:
+	var title: Label = MenuStyle.label("WASH REQUIRED",26)
+	title.name = "GarageWashRequired"
+	title.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	tools.add_child(title)
+	var message: Label = MenuStyle.label("This car is dirty. Wash it before changing liveries, colours, stickers or kits.",20)
+	message.name = "GarageWashRequirementMessage"
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tools.add_child(message)
+	var wash: Button = MenuStyle.button("Wash car",_wash_for_customisation,true)
+	wash.name = "GarageWashForCustomisation"
+	tools.add_child(wash)
+

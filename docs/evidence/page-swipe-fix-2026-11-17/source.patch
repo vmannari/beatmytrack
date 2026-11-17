@@ -1,0 +1,236 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 01b358e64408f26594755de14a80499e220a078e..c60b108acbd9106420069ab7cd71d0865e8247de 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- PAGE-SWIPE-FIX-20261117 -->
++## Page swipes restored (2026-11-17)
++PSF01-PSF02: decorative achievement layer uses existing input-passthrough metadata; native mouse-transparent tooltip windows no longer count as modals. Real dialogs and modal layers still block navigation. Focused headless17/0, Compatibility21/0, desktop Mobile21/0 at1280/960 and production parser583/0 pass; eight native views retained. Original legacy-suite4/nil-tween, intermediate tooltip/fixture and screenshot-path failures retained; unrelated race-mode suite stopped after183s without a summary. Exact private source checkpoint preserves preceding App edits and shared index; standard retention applies. [Changes, commands, evidence and limits](docs/PAGE_SWIPE_FIX_2026_11_17.md). Reload and physical-device acceptance remain; no device test/export/deployment/live mutation or owner-save/process action.
++<!-- /PAGE-SWIPE-FIX-20261117 -->
++
+ <!-- EDITOR-COHESION-20261116 -->
+ ## Editor composition and object flow refined after owner review (2026-11-16)
+ EC01-EC04 supersede the rejected fragmented visual result: one continuous header, inline save state, one contextual dock, camera commands in the header and Publish in the document menu. Objects open a temporary picker, collapse after choice, preview/aim before release, and reselect occupied objects without duplicates. Place reuses selected colour/scale/rotation/span/profile/custom length; selected rotation leaves the dormant brush alone. Paging slots and active-family reveal remain stable. New native223/0 per desktop renderer, workflow253/0, surfaces53/0, retained interactions155/0, earlier UX124/0 headless and production parser583/0 pass. Thirty-five native before/after views and a reversible private source checkpoint preserve preceding work/index; prior kerb/translation findings remain. Owner appearance and Android acceptance remain; no owner-save/process, export, service or deployment action. [Revision, views, checks and limits](docs/EDITOR_COHESION_2026_11_16.md).
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 16b6e1543b953a4c8aed4463a1c12752c4011ec9..b4b8d21a2919341e3c5dfa030d8470ab708cd6a4 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- PAGE-SWIPE-FIX-20261117 -->
++## Page swipes restored (2026-11-17)
++PSF01-PSF02: decorative achievement layer uses existing input-passthrough metadata; native mouse-transparent tooltip windows no longer count as modals. Real dialogs and modal layers still block navigation. Focused headless17/0, Compatibility21/0, desktop Mobile21/0 at1280/960 and production parser583/0 pass; eight native views retained. Original legacy-suite4/nil-tween, intermediate tooltip/fixture and screenshot-path failures retained; unrelated race-mode suite stopped after183s without a summary. Exact private source checkpoint preserves preceding App edits and shared index; standard retention applies. [Changes, commands, evidence and limits](docs/PAGE_SWIPE_FIX_2026_11_17.md). Reload and physical-device acceptance remain; no device test/export/deployment/live mutation or owner-save/process action.
++<!-- /PAGE-SWIPE-FIX-20261117 -->
++
+ <!-- EDITOR-COHESION-20261116 -->
+ ## Editor composition and object flow refined after owner review (2026-11-16)
+ EC01-EC04 supersede the rejected fragmented visual result: one continuous header, inline save state, one contextual dock, camera commands in the header and Publish in the document menu. Objects open a temporary picker, collapse after choice, preview/aim before release, and reselect occupied objects without duplicates. Place reuses selected colour/scale/rotation/span/profile/custom length; selected rotation leaves the dormant brush alone. Paging slots and active-family reveal remain stable. New native223/0 per desktop renderer, workflow253/0, surfaces53/0, retained interactions155/0, earlier UX124/0 headless and production parser583/0 pass. Thirty-five native before/after views and a reversible private source checkpoint preserve preceding work/index; prior kerb/translation findings remain. Owner appearance and Android acceptance remain; no owner-save/process, export, service or deployment action. [Revision, views, checks and limits](docs/EDITOR_COHESION_2026_11_16.md).
+diff --git a/docs/PAGE_SWIPE_FIX_2026_11_17.md b/docs/PAGE_SWIPE_FIX_2026_11_17.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..60cc2fd454692f12c418a1bb9e28ca7f831a7fdc
+--- /dev/null
++++ b/docs/PAGE_SWIPE_FIX_2026_11_17.md
+@@ -0,0 +1,53 @@
++# Page swipes restored — 2026-11-17
++
++PSF01 restores horizontal menu navigation. The persistent achievement overlay at layer 30 was treated as a modal even with its banner hidden. App now marks that decorative layer with the existing `menu_input_passthrough` metadata. Native tooltip windows also reached the modal check; the check now respects `Window.FLAG_MOUSE_PASSTHROUGH`.
++
++PSF02 preserves real modal blocking. The existing recursive search still discovers dialogs inside a passthrough layer and ordinary modal canvas layers. No gesture distances, carousel ownership, navigation order or layout changed.
++
++Changed sources: `game/core/app.gd` (two added lines), `game/ui/menu_page_swipe.gd` (tooltip check and comment), and `game/tests/test_page_swipe_notifications.gd`. Earlier changes in App remain outside this task's patch.
++
++## Verification
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. All new test runs used separate task-local APPDATA/LOCALAPPDATA directories and isolated records/cloud roots, with the API URL empty.
++
++| Check | Result |
++| --- | --- |
++| Initial focused reproduction, before either fix | 16 checks / 11 failures |
++| Achievement-only intermediate | 16 / 6; tooltip window remained a blocker |
++| Final focused headless | 17 / 0 |
++| Final focused desktop Compatibility | 21 / 0 |
++| Final focused desktop Mobile/Vulkan | 21 / 0 |
++| Exportable production parser | 583 scripts / 0 failures |
++| Scoped whitespace check | Passed |
++| Existing race-mode input suite | Stopped after 183 seconds; only `APP_READY`, no assertion summary |
++
++The final focused test dispatches viewport touches at 1280×720 and 960×540. It checks left/right Race/Create navigation, a visible award, an input-transparent tooltip, a dialog nested beneath the passthrough overlay, an ordinary modal layer, and navigation after closing modals. Four screenshots per renderer are retained under [evidence](evidence/page-swipe-fix-2026-11-17/).
++
++Initial attempts remain recorded: the legacy `test_menu_page_swipe.gd` reported four failed assertions and a nil-tween `pause` error during reproduction. Its expectation of three warmed neighbors also conflicts with the existing cold-Garage exclusion. It is not claimed as passing. An explicit synthetic tooltip held open across swipes intercepted popup input; the final fixture tests its modal classification before hiding it. The first Mobile run passed navigation but failed four screenshot writes because the output URI was not globalized; the fixture now resolves it to a filesystem path and the repeat passes.
++
++## Commands
++
++Initial repository entry point:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -CommandTimeoutSeconds 240
++```
++
++Subsequent runs used the same verified pinned executable directly, with separate task-local `APPDATA` and `LOCALAPPDATA` directories:
++
++```powershell
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_page_swipe_notifications.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --script res://tests/test_page_swipe_notifications.gd -- --output=docs/evidence/page-swipe-fix-2026-11-17/gl_compatibility
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --script res://tests/test_page_swipe_notifications.gd -- --output=res://../docs/evidence/page-swipe-fix-2026-11-17/mobile
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_editor_shipping_parse.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_race_mode_input.gd
++git diff --check -- game/core/app.gd game/ui/menu_page_swipe.gd
++python build/page-swipe-fix-2026-11-17/finalize.py
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clean_build.ps1 -Apply
++```
++
++The Compatibility output initially resolved beneath `game/`; its four task-owned screenshots were moved to the documented evidence directory. The final fixture globalizes resource paths.
++
++## Limits and checkpoint
++
++Reload/restart is needed to load the updated scripts. Physical-device input was not tested; desktop Mobile is a renderer test, not an Android-device claim. No export, deployment, live service mutation or owner-process/save action was performed. The unrelated race-mode run and task checkpoint receipt are recorded with the evidence. Concurrent work and the shared Git index are preserved. Standard build retention applies.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 464ac0bd81058987a184ba36580f9481aa5e3c4e..fdc62ea8f4c2cfe1d92cb7e9f3380f5d862e881f 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- PAGE-SWIPE-FIX-20261117 -->
++## Page swipes restored (2026-11-17)
++PSF01-PSF02: decorative achievement layer uses existing input-passthrough metadata; native mouse-transparent tooltip windows no longer count as modals. Real dialogs and modal layers still block navigation. Focused headless17/0, Compatibility21/0, desktop Mobile21/0 at1280/960 and production parser583/0 pass; eight native views retained. Original legacy-suite4/nil-tween, intermediate tooltip/fixture and screenshot-path failures retained; unrelated race-mode suite stopped after183s without a summary. Exact private source checkpoint preserves preceding App edits and shared index; standard retention applies. [Changes, commands, evidence and limits](docs/PAGE_SWIPE_FIX_2026_11_17.md). Reload and physical-device acceptance remain; no device test/export/deployment/live mutation or owner-save/process action.
++<!-- /PAGE-SWIPE-FIX-20261117 -->
++
+ <!-- EDITOR-COHESION-20261116 -->
+ ## Editor composition and object flow refined after owner review (2026-11-16)
+ EC01-EC04 supersede the rejected fragmented visual result: one continuous header, inline save state, one contextual dock, camera commands in the header and Publish in the document menu. Objects open a temporary picker, collapse after choice, preview/aim before release, and reselect occupied objects without duplicates. Place reuses selected colour/scale/rotation/span/profile/custom length; selected rotation leaves the dormant brush alone. Paging slots and active-family reveal remain stable. New native223/0 per desktop renderer, workflow253/0, surfaces53/0, retained interactions155/0, earlier UX124/0 headless and production parser583/0 pass. Thirty-five native before/after views and a reversible private source checkpoint preserve preceding work/index; prior kerb/translation findings remain. Owner appearance and Android acceptance remain; no owner-save/process, export, service or deployment action. [Revision, views, checks and limits](docs/EDITOR_COHESION_2026_11_16.md).
+diff --git a/game/core/app.gd b/game/core/app.gd
+index ffa0fb18ecefd52899f9191408b3be9ae3ec4713..bfd8aad1dff1f32638b73e81a6da41603eff91fb 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -487,6 +487,8 @@ func _ready() -> void:
+ 	var achievement_layer := CanvasLayer.new()
+ 	achievement_layer.name = "AchievementOverlayLayer"
+ 	achievement_layer.layer = 30
++	# Decorative awards must not count as a modal that blocks page swipes.
++	achievement_layer.set_meta("menu_input_passthrough", true)
+ 	add_child(achievement_layer)
+ 	achievement_notification = preload("res://ui/achievement_notification.gd").new()
+ 	achievement_notification.app = self
+diff --git a/game/tests/test_page_swipe_notifications.gd b/game/tests/test_page_swipe_notifications.gd
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c5984eee132769239d1294d9e5af727a69a02b4
+--- /dev/null
++++ b/game/tests/test_page_swipe_notifications.gd
+@@ -0,0 +1,105 @@
++extends SceneTree
++## Real App touches must pass through the persistent achievement overlay.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String = ""
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + message)
++
++func touch(point: Vector2, pressed: bool) -> void:
++	var event := InputEventScreenTouch.new()
++	event.position = point
++	event.pressed = pressed
++	root.push_input(event, true)
++
++func swipe(point: Vector2, distance: float) -> void:
++	touch(point, true)
++	var event := InputEventScreenDrag.new()
++	event.position = point + Vector2(distance, 0)
++	root.push_input(event, true)
++	touch(event.position, false)
++	await settle()
++
++func settle() -> void:
++	for i: int in range(8): await process_frame
++	await create_timer(0.65).timeout
++
++func capture(title: String) -> void:
++	if output.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	DirAccess.make_dir_recursive_absolute(output)
++	check(root.get_texture().get_image().save_png(output.path_join(title + ".png")) == OK, "capture " + title)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = ProjectSettings.globalize_path(argument.trim_prefix("--output="))
++	var directory: String = "user://page_swipe_notifications_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory)
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.race_area_mode = "free"
++	app._show_screen("tracks")
++	await settle()
++	var overlay: CanvasLayer = app.get_node("AchievementOverlayLayer")
++	var handler: Node = app.root_ui.get_node("MenuPageSwipe")
++	check(overlay.visible, "persistent achievement layer exists and is visible")
++	check(not handler._modal_open(app), "idle notification layer does not block navigation")
++	# Native tooltips are mouse-transparent windows, rather than modal dialogs.
++	var tooltip := PopupPanel.new()
++	tooltip.set_flag(Window.FLAG_MOUSE_PASSTHROUGH, true)
++	app.root_ui.add_child(tooltip)
++	tooltip.show()
++	check(tooltip.visible and not handler._modal_open(tooltip), "input-transparent tooltip does not block navigation")
++	tooltip.hide()
++	tooltip.queue_free()
++	await settle()
++	for dimensions: Vector2i in [Vector2i(1280,720), Vector2i(960,540)]:
++		root.size = dimensions
++		await settle()
++		var point: Vector2 = app.root_ui.find_child("MenuHeader",true,false).get_child(0).get_global_rect().get_center()
++		await swipe(point, -90)
++		check(app.screen == "biome", "left swipe opens Create at " + str(dimensions))
++		await capture("create-%d" % dimensions.x)
++		await swipe(point, 90)
++		check(app.screen == "tracks", "right swipe returns to Race at " + str(dimensions))
++		# A visible award is decorative too; it must not disable the whole menu.
++		app.achievement_notification._card.show()
++		check(not handler._modal_open(app), "visible award does not become a modal")
++		await swipe(point, -90)
++		check(app.screen == "biome", "page swipe works while award is visible")
++		app.achievement_notification._card.hide()
++		# Passthrough on the notification layer must still inspect real modals.
++		var dialog := AcceptDialog.new()
++		overlay.add_child(dialog)
++		dialog.popup_centered()
++		await swipe(point, 90)
++		check(app.screen == "biome", "dialog beneath passthrough layer blocks swipe")
++		dialog.queue_free()
++		await settle()
++		var drawer := CanvasLayer.new()
++		drawer.layer = 40
++		app.root_ui.add_child(drawer)
++		await swipe(point, 90)
++		check(app.screen == "biome", "ordinary modal layer still blocks swipe")
++		drawer.queue_free()
++		await settle()
++		await swipe(point, 90)
++		check(app.screen == "tracks", "closing modal restores swipe")
++		await capture("race-%d" % dimensions.x)
++	app.queue_free()
++	await process_frame
++	print("PAGE_SWIPE_NOTIFICATIONS: %d checks, %d failures" % [checks, failures])
++	quit(0 if failures == 0 else 1)
+diff --git a/game/ui/menu_page_swipe.gd b/game/ui/menu_page_swipe.gd
+index bd80d0bb9854f3d6fb6b971675a3d166d387dcf9..af166d39971049690c09cf418f8f17d9ecfffbd8 100644
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -138,7 +138,8 @@ func _owns_gesture(node: Node, location: Vector2) -> bool:
+ 
+ func _modal_open(node: Node) -> bool:
+ 	if node == null: return false
+-	if node is Window and node.visible: return true
++	# Native tooltips are transparent windows and do not own menu input.
++	if node is Window and node.visible and not node.get_flag(Window.FLAG_MOUSE_PASSTHROUGH): return true
+ 	if node is CanvasLayer and node.layer > 20 and node.visible and not bool(node.get_meta("menu_input_passthrough",false)): return true
+ 	for child: Node in node.get_children():
+ 		if _modal_open(child): return true

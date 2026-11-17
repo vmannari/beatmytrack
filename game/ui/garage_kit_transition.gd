@@ -69,6 +69,12 @@ func _collect(node: Node3D, outgoing: bool) -> void:
 func _copy(source: Material, outgoing: bool) -> ShaderMaterial:
 	var identity: String = str(source.get_instance_id())+str(outgoing)
 	if _copies.has(identity): return _copies[identity]
+	# Copy uniforms explicitly into a fresh material. Resource duplication can
+	# reset matrix uniforms, moving body-space paint on offset parts such as pods.
+	var values: Dictionary = {}
+	if source is ShaderMaterial:
+		for uniform: Dictionary in source.shader.get_shader_uniform_list():
+			values[uniform.name] = source.get_shader_parameter(uniform.name)
 	var code: String = source.shader.code if source is ShaderMaterial else STANDARD
 	if source is BaseMaterial3D:
 		if source.shading_mode==BaseMaterial3D.SHADING_MODE_UNSHADED:
@@ -98,8 +104,10 @@ float kit_edge = (1.0-smoothstep(0.0,kit_band,abs(kit_height-kit_cut)))*step(0.0
 		modified = modified.insert(modified.find(";")+1,"\nuniform float kit_progress = 0.0;\nuniform bool kit_outgoing = false;\nuniform vec2 kit_height_range;\nvarying float kit_height;\n")
 		shader.code = modified
 		shaders[code] = shader
-	var material: ShaderMaterial = source.duplicate() as ShaderMaterial if source is ShaderMaterial else ShaderMaterial.new()
+	var material := ShaderMaterial.new()
 	material.shader = shaders[code]
+	for parameter: String in values:
+		material.set_shader_parameter(parameter,values[parameter])
 	material.render_priority = source.render_priority
 	material.set_shader_parameter("kit_outgoing",outgoing)
 	if source is BaseMaterial3D:

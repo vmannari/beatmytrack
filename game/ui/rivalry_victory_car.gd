@@ -1,7 +1,6 @@
 extends Control
 ## Static transparent render of the player's actual car and local cosmetics.
 var vehicle_id: String = "compact"
-var simple_model: bool = true # Retained widget API; production rendering always uses reduced models.
 var podium_presentation: bool = false
 var fit_to_frame: bool = false
 var cooperative_build: bool = false

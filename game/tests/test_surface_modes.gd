@@ -9,6 +9,11 @@ func check(value: bool, label: String) -> void:
 func tap(canvas: EditorCanvas, p: Vector2) -> void:
 	canvas._begin(canvas.to_screen(p),-1)
 	canvas._end(-1)
+func wait_editor(app: Node) -> void:
+	var deadline: int = Time.get_ticks_msec()+60000
+	while Time.get_ticks_msec()<deadline and (not is_instance_valid(app.canvas) or app.canvas.preparing or app.editor_preview_thread != null or app.editor_world._building):
+		await process_frame
+	check(is_instance_valid(app.canvas) and not app.canvas.preparing and app.editor_preview_thread == null and not app.editor_world._building,"actual editor preparation completes before surface input")
 func shot(label: String) -> void:
 	if not capture: return
 	for frame: int in range(3): await RenderingServer.frame_post_draw
@@ -30,8 +35,8 @@ func run() -> void:
 	var doc: Dictionary = TrackDocument.create_default()
 	app.set("document",doc)
 	app.set("editor_view",{})
-	app.call("_show_screen","create")
-	await process_frame
+	await app.call("_show_screen","create")
+	await wait_editor(app)
 	app.call("_editor_category","paint")
 	var canvas: EditorCanvas = app.get("canvas")
 	check(app.get("root_ui").find_child("ConfirmPiece",true,false)==null,"bottom-right confirmation removed")
@@ -197,8 +202,8 @@ func run() -> void:
 	app.set("document",verge_doc)
 	app.canvas = null; app.editor_pending_tools.clear()
 	app.set("editor_view",{})
-	app.call("_show_screen","create")
-	await process_frame
+	await app.call("_show_screen","create")
+	await wait_editor(app)
 	app.call("_editor_category","paint")
 	canvas = app.get("canvas")
 	canvas.zoom_by(1.3,canvas.to_screen(Vector2(0,0)))
@@ -209,8 +214,8 @@ func run() -> void:
 	app.set("document",unpainted_doc)
 	app.canvas = null; app.editor_pending_tools.clear()
 	app.set("editor_view",{})
-	app.call("_show_screen","create")
-	await process_frame
+	await app.call("_show_screen","create")
+	await wait_editor(app)
 	canvas = app.get("canvas")
 	canvas.zoom = 1.0
 	canvas.pan = Vector2.ZERO
@@ -223,7 +228,7 @@ func run() -> void:
 	browser.refresh()
 	check(not CreatorCatalog.family("oil").is_empty() and CreatorCatalog.label("oil")=="Oil spill","oil spill belongs to object catalog")
 	browser.choose("oil")
-	check(browser.visible and not (app.get("surface_toolbar") as Control).visible,"oil placement stays in Objects")
+	check(not browser.visible and app.object_controls_panel.is_visible_in_tree() and canvas.mode == "place" and canvas.stamp_kind == "oil" and not (app.get("surface_toolbar") as Control).visible,"oil placement stays in Objects with the picker collapsed to its placement controls")
 	canvas = app.get("canvas")
 	var old_count: int = canvas.document.objects.size()
 	tap(canvas,Vector2(0,-20))

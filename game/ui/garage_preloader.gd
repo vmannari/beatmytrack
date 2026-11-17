@@ -142,7 +142,7 @@ func _process(_delta: float) -> void:
 		if current!=_pin:
 			_reset()
 			_pin=current
-			_wanted.assign(preload("res://ui/garage_studio_assets.gd").paths(current.vehicle,current.simple,current.parts))
+			_wanted.assign(load("res://ui/garage_studio_assets.gd").paths(current.vehicle,current.simple,current.parts))
 			if current.paint.pattern!="plain": _wanted.append(LiveryCatalog.ROOT+current.paint.pattern+".svg")
 			if current.paint.stickers.hood.id!="none" or current.paint.stickers.roof.id!="none": _wanted.append(LiveryCatalog.ROOT+"stickers.svg")
 	for path: String in _wanted:

@@ -122,6 +122,7 @@ var _part_indicator: Control
 var _customisation_camera := preload("res://ui/garage_customisation_camera.gd").new()
 var _selection_camera := preload("res://ui/garage_selection_camera.gd").new()
 var _customise_tab: String = "livery"
+var _livery_collection: String = "standard"
 var _sticker_surface: String = "hood"
 var _sticker_board: Control
 var _sticker_choice: OptionButton
@@ -1406,7 +1407,7 @@ func _select_kit_category(category: String) -> void:
 		var tab: Button = kit_categories[id]
 		_style_kit_category(tab,id==category)
 	_build_kit_cards()
-	_customisation_camera.focus(showroom,"body")
+	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
 
 func _build_kit_cards() -> void:
 	for child: Node in kit_cards.get_children():
@@ -1464,7 +1465,7 @@ func _preview_kit(category: String, option: String) -> void:
 		GameText.bind(_preview_hint,"PREVIEW · {part}",{"part":tr(VehicleCustomisation.label(category,vehicle_id))})
 	_preview_hint.visible = not _cosmetic_preview.is_empty()
 	showroom.apply_customisation(value,true)
-	_customisation_camera.focus(showroom,"body")
+	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
 	_condition_presented = showroom.weathering.snapshot()
 	# The callout marks the modification without tinting its paint or materials.
 	showroom.invalidate_render()
@@ -1507,6 +1508,7 @@ func _cancel_cosmetic_preview(refresh: bool = true, restore_appearance: bool = t
 
 func _equip_cosmetic_preview() -> void:
 	if _cosmetic_preview.is_empty() or not is_visible_in_tree(): return
+	if _cosmetic_preview.get("kind","")=="premium_livery": return
 	if not _require_clean_car(): return
 	var value: Dictionary = _cosmetic_preview.duplicate(true)
 	var serial: int = _preview_serial
@@ -1613,6 +1615,21 @@ func _preview_livery(index: int) -> void:
 		_cosmetic_preview = {"kind":"livery","index":index,"scope":"" if economy == null else economy.scope}
 		_preview_hint.text = "PREVIEW · Pattern"
 	_preview_hint.visible = not _cosmetic_preview.is_empty()
+	showroom.apply_livery(value,true)
+	_customisation_camera.focus(showroom,"body")
+	livery_menu.refresh()
+
+func _preview_premium_livery(id: String) -> void:
+	if section!="customise" or _customise_tab!="livery" or _livery_collection!="premium": return
+	var choices: Array = LiveryCatalog.premium_for(vehicle_id)
+	var matches: Array = choices.filter(func(item: Dictionary) -> bool: return item.id==id)
+	if matches.is_empty() or not _require_clean_car(): return
+	_cancel_cosmetic_preview(false,false)
+	var item: Dictionary = matches[0]
+	var value: Dictionary = draft.duplicate(true)
+	value.pattern = id
+	for slot: int in range(VehicleLivery.SLOTS.size()): value.colors[VehicleLivery.SLOTS[slot]] = item.colours[slot]
+	_cosmetic_preview = {"kind":"premium_livery","id":id,"scope":"" if economy==null else economy.scope}
 	showroom.apply_livery(value,true)
 	_customisation_camera.focus(showroom,"body")
 	livery_menu.refresh()
@@ -1884,6 +1901,8 @@ func _process(delta: float) -> void:
 		_workbench_focus_pending = false
 		if section in ["customise","tuning"] and not _customisation_locked:
 			var focus: String = _sticker_surface if section=="customise" and _customise_tab=="stickers" else "body"
+			if section=="tuning" and VehicleCustomisation.supported(vehicle_id):
+				focus = "body_kit" if kit_category=="body" else kit_category
 			_customisation_camera.focus(showroom,focus)
 			if section=="tuning" and VehicleCustomisation.supported(vehicle_id): _reveal_kit_after_resize()
 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()

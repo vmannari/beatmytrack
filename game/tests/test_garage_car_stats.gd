@@ -6,6 +6,7 @@ var failures: int = 0
 var output: String
 var page: GaragePage
 var measurements: Dictionary = {}
+var panel_heights: Dictionary = {}
 
 func _initialize() -> void: run.call_deferred()
 func check(ok: bool, caption: String) -> void:
@@ -43,6 +44,10 @@ func check_content(id: String) -> void:
 
 func check_layout() -> void:
 	var panel: Control = page._car_stats
+	var layout_key: String = str(root.size)+TranslationServer.get_locale()
+	if not panel_heights.has(layout_key): panel_heights[layout_key] = panel.size.y
+	check(is_equal_approx(panel.size.y,float(panel_heights[layout_key])),"stats height stays constant across cars "+layout_key)
+	check(is_equal_approx(panel.position.x,panel.position.y) and panel.position.x > 0.0,"stats left inset matches top inset")
 	check(page.preview.get_global_rect().encloses(panel.get_global_rect()),"stats fit inside preview "+str(root.size))
 	check(panel.get_global_rect().encloses(page._car_stats._description.get_global_rect()),"description fits panel "+str(root.size))
 	var title_rect: Rect2 = page.heading.get_global_rect()

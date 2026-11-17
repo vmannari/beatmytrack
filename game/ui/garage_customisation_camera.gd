@@ -12,6 +12,7 @@ var _focus_elevation: float
 var _home_yaw: float
 var _home_elevation: float
 var _home_zoom: float
+var _target_yaw: float
 var _body_key: Array = []
 var _body_bounds: AABB
 var _body_corners := PackedVector3Array()
@@ -79,16 +80,22 @@ func focus(showroom: CarShowroom, category: String) -> void:
 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
 	var whole_body: bool = category in ["body","body_kit"] and not (category=="body_kit" and showroom.car.vehicle_id=="forklift")
 	if not whole_body: distance *= maxf(1.0,0.95/maxf(0.4,aspect))
-	var frame: Transform3D = showroom.car.global_transform
+	# Keep the camera on the door side and turn the chosen part towards it.
+	var home_direction: Vector3 = _home.basis.z.normalized()
+	var horizontal := Vector3(home_direction.x,0,home_direction.z).normalized()
+	_target_yaw = showroom.yaw
+	if category != "body":
+		var world_direction: Vector3 = showroom.car.global_basis.orthonormalized()*direction.normalized()
+		var turn: float = wrapf(atan2(horizontal.x,horizontal.z)-atan2(world_direction.x,world_direction.z),-PI,PI)
+		_target_yaw += turn
+	var frame: Transform3D = _car_frame(showroom,_target_yaw)
 	_local_target = local_target*HandlingConfig.BODY_SCALE
 	if whole_body: _local_target = _model_bounds(showroom.car).get_center()
-	_direction = frame.basis.orthonormalized()*direction.normalized()
+	var elevation: float = asin(direction.normalized().y)
 	if category == "body":
 		# Paint needs a raised view: the low Garage angle wastes vertical space.
-		var home_direction: Vector3 = _home.basis.z.normalized()
-		var elevation: float = maxf(asin(home_direction.y),deg_to_rad(30.0))
-		var horizontal := Vector3(home_direction.x,0,home_direction.z).normalized()
-		_direction = horizontal*cos(elevation)+Vector3.UP*sin(elevation)
+		elevation = maxf(asin(home_direction.y),deg_to_rad(30.0))
+	_direction = horizontal*cos(elevation)+Vector3.UP*sin(elevation)
 	target = frame*_local_target
 	if whole_body: distance = _fit_body(showroom,_model_bounds(showroom.car),target,_direction)
 	_distance = distance
@@ -104,15 +111,22 @@ func _animate(showroom: CarShowroom, destination: Transform3D) -> void:
 	if showroom.camera_motion != null: showroom.camera_motion.kill()
 	var start: Transform3D = showroom.camera.transform
 	showroom.camera_motion = showroom.create_tween()
-	showroom.camera_motion.tween_method(_blend.bind(showroom,start,destination),0.0,1.0,0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	showroom.camera_motion.tween_method(_blend.bind(showroom,start,destination,showroom.yaw,_target_yaw),0.0,1.0,0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+
+func _car_frame(showroom: CarShowroom, yaw: float) -> Transform3D:
+	var frame: Transform3D = showroom.car.global_transform
+	var pivot: Vector3 = showroom.turntable.global_position
+	var turn := Basis(Vector3.UP,yaw-showroom.yaw)
+	return Transform3D(turn*frame.basis,pivot+turn*(frame.origin-pivot))
 
 func _resize_focus(showroom: CarShowroom) -> void:
 	# A resize can refit distance without discarding the player's angle or zoom.
 	var moving: bool = showroom.camera_motion!=null and showroom.camera_motion.is_running()
+	if not moving: _target_yaw = showroom.yaw
 	var direction: Vector3 = _direction if moving else showroom.camera.basis.z.normalized()
 	var previous_aspect: float = float(_viewport_size.x)/maxf(1.0,_viewport_size.y)
 	var aspect: float = showroom.size.x/maxf(1.0,showroom.size.y)
-	target = showroom.car.global_transform*_local_target
+	target = _car_frame(showroom,_target_yaw)*_local_target
 	if focused_category in ["body","body_kit"] and not (focused_category=="body_kit" and showroom.car.vehicle_id=="forklift"):
 		_distance = _fit_body(showroom,_model_bounds(showroom.car),target,direction)
 	else:
@@ -155,6 +169,7 @@ func _fit_body(showroom: CarShowroom, bounds: AABB, center: Vector3, direction: 
 	var reserved_height: float = 128.0 if focused_category=="body" else 144.0
 	var vertical: float = clampf(1.0-reserved_height/maxf(1.0,showroom.size.y),0.52,0.82)
 	var distance: float = 2.0
+	var frame: Transform3D = _car_frame(showroom,_target_yaw)
 	var corners: PackedVector3Array = _body_corners if focused_category=="body" else PackedVector3Array()
 	# Whole-box corners include empty air above the nose and beyond the roof.
 	# Paint fits each visible mesh; the low Body kits framing stays unchanged.
@@ -163,12 +178,15 @@ func _fit_body(showroom: CarShowroom, bounds: AABB, center: Vector3, direction: 
 			for y: float in [bounds.position.y,bounds.end.y]:
 				for z: float in [bounds.position.z,bounds.end.z]: corners.append(Vector3(x,y,z))
 	for corner: Vector3 in corners:
-		var point: Vector3 = basis.transposed()*(showroom.car.global_transform*corner-center)
+		var point: Vector3 = basis.transposed()*(frame*corner-center)
 		distance = maxf(distance,point.z+maxf(absf(point.x)/(tangent*aspect*0.88),absf(point.y)/(tangent*vertical))+0.1)
 	return distance
 
-func _blend(weight: float, showroom: CarShowroom, start: Transform3D, destination: Transform3D) -> void:
+func _blend(weight: float, showroom: CarShowroom, start: Transform3D, destination: Transform3D, start_yaw: float, end_yaw: float) -> void:
 	if not is_instance_valid(showroom) or not showroom.is_inside_tree(): return
+	showroom.yaw = lerpf(start_yaw,end_yaw,weight)
+	showroom.turntable.rotation.y = showroom.yaw-CarShowroom.GARAGE_CAMERA_YAW
+	target = showroom.car.global_transform*_local_target
 	showroom.camera.transform = start.interpolate_with(destination,weight)
 	showroom._update_roof()
 	showroom.invalidate_render()

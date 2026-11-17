@@ -1,0 +1,33 @@
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+index 9a04314d3..ba300de63 100644
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -72,7 +72,8 @@ const SearchDrawer = preload("res://ui/track_search_drawer.gd")
+ var search_dialog: SearchDrawer
+ var _tile_start: int = -1
+ var _query_signature: String = ""
+-var tile_stride: int = 202
++const TRACK_CARD_STRIDE: float = 202.0
++var tile_stride: int = int(TRACK_CARD_STRIDE)
+ var gallery_slot: Control
+ var _cloud_catalog_state: Array = []
+ var _page_dirty: bool = false
+@@ -263,7 +264,8 @@ func _layout_list() -> void:
+ 	var anchor: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns-_list_column_offset
+ 	var width: float = maxf(1.0,list_content.size.x)
+ 	var previous_columns: int = _list_columns
+-	_list_columns = maxi(1,floori((width+12.0)/236.0))
++	# Use the selected-track carousel's count before reserving scrollbar space.
++	_list_columns = maxi(1,floori((track_list.size.x+12.0)/TRACK_CARD_STRIDE))
+ 	_list_column_offset = posmod(-_window_shift,_list_columns) if _window_generation >= 0 else 0
+ 	_list_stride = Vector2(floorf((width+12.0)/_list_columns),204)
+ 	list_grid.columns = _list_columns
+@@ -734,7 +736,7 @@ func _layout_gallery() -> void:
+ 	if not is_instance_valid(grid): return
+ 	gallery.call("_stop_snap")
+ 	var first: int = roundi(float(gallery.scroll_horizontal)/tile_stride)
+-	var slots: int = maxi(1,floori((gallery_slot.size.x+12.0)/202.0))
++	var slots: int = maxi(1,floori((gallery_slot.size.x+12.0)/TRACK_CARD_STRIDE))
+ 	tile_stride = floori((gallery_slot.size.x+12.0)/slots)
+ 	gallery.position.x = (gallery_slot.size.x-(slots*tile_stride-12))*0.5
+ 	gallery.size = Vector2(slots*tile_stride-12,140)

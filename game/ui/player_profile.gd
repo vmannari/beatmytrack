@@ -120,7 +120,6 @@ func _ready() -> void:
 	preview = load("res://ui/rivalry_victory_car.gd").new()
 	preview.name = "PlayerProfileCar"
 	preview.vehicle_id = vehicle_id
-	preview.simple_model = true
 	preview.podium_presentation = true
 	preview.fit_to_frame = true
 	var appearance: Dictionary = driver.get("appearance",{})

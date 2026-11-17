@@ -88,6 +88,31 @@ func run() -> void:
 	while not page.showroom.showroom_ready: await process_frame
 	page._finish_menu_move()
 	await frames(8)
+	# GCS01: every replacement must retain the room's camera, including wide
+	# cars and the tall Forklift. Check both default and player-adjusted views.
+	for adjusted: bool in [false,true]:
+		if adjusted:
+			page.showroom.set_zoom(0.87)
+			page.showroom.elevation += 0.08
+			page.showroom.yaw += 0.3
+			page.showroom._orbit()
+		var fixed_camera: Transform3D = page.showroom.camera.transform
+		var fixed_offset: float = page.showroom.camera.h_offset
+		for index: int in range(VehicleCatalog.IDS.size()):
+			page.preview_car(index)
+			check(page.showroom.camera.transform.is_equal_approx(fixed_camera),"camera stays still on replacement "+VehicleCatalog.IDS[index]+" adjusted="+str(adjusted))
+			page.showroom.finish_car_transition()
+			await frames(4)
+			check(page.showroom.camera.transform.is_equal_approx(fixed_camera) and is_equal_approx(page.showroom.camera.h_offset,fixed_offset),"camera stays still after reveal "+VehicleCatalog.IDS[index]+" adjusted="+str(adjusted))
+			if not adjusted and DisplayServer.get_name() != "headless":
+				for frame: int in range(8):
+					page.showroom.invalidate_render()
+					await process_frame
+				await RenderingServer.frame_post_draw
+				check(root.get_texture().get_image().save_png(output.path_join("fixed-"+VehicleCatalog.IDS[index]+".png")) == OK,"capture shared framing "+VehicleCatalog.IDS[index])
+	page.preview_car(0)
+	page.showroom.finish_car_transition()
+	page.builds.clear()
 	page.showroom.set_zoom(0.87)
 	var camera: Transform3D = page.showroom.camera.transform
 	var showroom: CarShowroom = page.showroom

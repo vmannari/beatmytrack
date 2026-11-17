@@ -1,0 +1,118 @@
+diff --git a/docs/GARAGE_CAMERA_STILL_2026_11_16.md b/docs/GARAGE_CAMERA_STILL_2026_11_16.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b36bc9d3789ab7dbfb83b2743f55c2d021897b7e
+--- /dev/null
++++ b/docs/GARAGE_CAMERA_STILL_2026_11_16.md
+@@ -0,0 +1,56 @@
++# Garage camera stays still when browsing cars (2026-11-16)
++
++GCS01: selecting a different car must preserve the Garage room view. GCS02:
++player zoom and tilt remain usable, and browsing retains its existing selection,
++saved appearance and cancellation behavior.
++
++`game/ui/garage_selection_camera.gd` previously chose three camera distances and
++two target heights by vehicle ID. Forklift, Volt and Hover therefore moved the
++camera when replacing the car. Selection now uses one shared distance multiplier
++(0.96) and target height (1.40 plus deck height), retaining the preceding Forklift
++framing so its mast fits. The existing zoom, elevation and responsive panel offset
++still apply. This changes only the car-selection composition.
++
++`game/tests/test_garage_selection_feedback.gd` now checks all six cars immediately
++after replacement and after the reveal, at both the default view and an adjusted
++zoom/tilt/rotation. Native runs capture all six cars from the shared view. Existing
++mouse/touch feedback, latest-choice cancellation, confirmation and saved-state
++assertions remain in place.
++
++Actual checks used the pinned Godot 4.7.2 build through `scripts/dev.ps1`, isolated
++APPDATA/LOCALAPPDATA under `build/garage-camera-still-20261116`, and empty
++`BMT_API_URL`/`BMT_DEV_AUTH_KEY`. Full invocations, durations and exits are retained
++in [command receipts](evidence/garage-camera-still-2026-11-16/).
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_selection_feedback.gd -CommandTimeoutSeconds 240
++# Native variants add: -Graphical -RenderingMethod gl_compatibility
++# or: -Graphical -RenderingMethod mobile
++# Captures use: -TestArgument --evidence-root=<isolated-evidence-directory>
++```
++
++The original camera fails 12 of 44 checks, specifically Forklift/Volt/Hover in
++both default and adjusted views. The corrected camera passes **44/0 headless**
++and **53/0 on each desktop renderer (Compatibility and Mobile)**, including the
++original selection assertions. All three final runs exit cleanly.
++The initial test-authoring attempt passed an unsupported argument to
++`invalidate_render`; that parse rejection is retained as `before.log`. The
++corrected test requests each settling redraw explicitly; assertions were not
++weakened.
++
++Reviewed native examples: [Rally](evidence/garage-camera-still-2026-11-16/compatibility/fixed-compact.png)
++and [Forklift](evidence/garage-camera-still-2026-11-16/compatibility/fixed-forklift.png).
++The door, workbench and room stay aligned while the cars retain their actual
++relative sizes. Six default-view captures per renderer are retained.
++
++The exact task-start runtime/test sources are used for the private source
++checkpoint; unrelated working changes and the main Git index remain outside it.
++The reversible patch and byte-exact verification are recorded in
++`evidence/garage-camera-still-2026-11-16/source-checkpoint.json`. Generated build
++identity changes from the development wrapper are excluded. Standard build
++retention applies to disposable profiles and the private checkpoint.
++
++Reload and owner appearance review remain. No physical-device test was performed;
++desktop Mobile rendering is not Android qualification. Owner saves and existing
++processes were not changed. No vehicle geometry, handling, backend, export or
++deployment changes belong to this fix.
+diff --git a/game/tests/test_garage_selection_feedback.gd b/game/tests/test_garage_selection_feedback.gd
+index 0b92fed1e2bc4ff2fc77c0f3de69e89fa5b6298b..fab2b744d6622ff0b082f7028e261bc560123eaf 100644
+--- a/game/tests/test_garage_selection_feedback.gd
++++ b/game/tests/test_garage_selection_feedback.gd
+@@ -88,6 +88,31 @@ func run() -> void:
+ 	while not page.showroom.showroom_ready: await process_frame
+ 	page._finish_menu_move()
+ 	await frames(8)
++	# GCS01: every replacement must retain the room's camera, including wide
++	# cars and the tall Forklift. Check both default and player-adjusted views.
++	for adjusted: bool in [false,true]:
++		if adjusted:
++			page.showroom.set_zoom(0.87)
++			page.showroom.elevation += 0.08
++			page.showroom.yaw += 0.3
++			page.showroom._orbit()
++		var fixed_camera: Transform3D = page.showroom.camera.transform
++		var fixed_offset: float = page.showroom.camera.h_offset
++		for index: int in range(VehicleCatalog.IDS.size()):
++			page.preview_car(index)
++			check(page.showroom.camera.transform.is_equal_approx(fixed_camera),"camera stays still on replacement "+VehicleCatalog.IDS[index]+" adjusted="+str(adjusted))
++			page.showroom.finish_car_transition()
++			await frames(4)
++			check(page.showroom.camera.transform.is_equal_approx(fixed_camera) and is_equal_approx(page.showroom.camera.h_offset,fixed_offset),"camera stays still after reveal "+VehicleCatalog.IDS[index]+" adjusted="+str(adjusted))
++			if not adjusted and DisplayServer.get_name() != "headless":
++				for frame: int in range(8):
++					page.showroom.invalidate_render()
++					await process_frame
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(output.path_join("fixed-"+VehicleCatalog.IDS[index]+".png")) == OK,"capture shared framing "+VehicleCatalog.IDS[index])
++	page.preview_car(0)
++	page.showroom.finish_car_transition()
++	page.builds.clear()
+ 	page.showroom.set_zoom(0.87)
+ 	var camera: Transform3D = page.showroom.camera.transform
+ 	var showroom: CarShowroom = page.showroom
+diff --git a/game/ui/garage_selection_camera.gd b/game/ui/garage_selection_camera.gd
+index 7e2a337b6eb7ef6816a5b4c91d0f08485ed68c27..aff619ac4f4aa50939fb817ac82c2190f6f87ce3 100644
+--- a/game/ui/garage_selection_camera.gd
++++ b/game/ui/garage_selection_camera.gd
+@@ -18,11 +18,11 @@ func sync(view: CarShowroom, enabled: bool, panel_ratio: float) -> void:
+ func _orbit() -> void:
+ 	if not is_instance_valid(_showroom) or not is_instance_valid(_showroom.camera): return
+ 	var view: CarShowroom = _showroom
+-	var tall: bool = view.vehicle_id == "forklift"
+-	var wide: bool = view.vehicle_id in ["electric","hovercraft"]
+-	var distance: float = view.garage_distance*view.zoom*(0.96 if tall else 0.68 if wide else 0.56)
++	# One room composition for every car, with clearance for the Forklift mast.
++	# Browsing only replaces the car; tilt and zoom remain player-controlled.
++	var distance: float = view.garage_distance*view.zoom*0.96
+ 	var angle: float = view.elevation+0.04
+-	var target := Vector3(0,(1.40 if tall else 0.52)+GarageEnvironment.DECK_HEIGHT,0)
++	var target := Vector3(0,1.40+GarageEnvironment.DECK_HEIGHT,0)
+ 	var point: Vector3 = target+Vector3(0,sin(angle)*distance,-cos(angle)*distance)
+ 	view.camera.transform = Transform3D(Basis.IDENTITY,point).looking_at(target)
+ 	view.camera.h_offset = -_ratio*3.8

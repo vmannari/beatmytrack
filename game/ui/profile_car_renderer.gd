@@ -54,7 +54,6 @@ static func make_preview(vehicle: String, paint: Dictionary, parts: Dictionary) 
 	result.vehicle_id = vehicle
 	result.livery = paint.duplicate(true)
 	result.customisation = parts.duplicate(true)
-	result.simple_model = true
 	result.podium_presentation = true
 	result.fit_to_frame = true
 	return result

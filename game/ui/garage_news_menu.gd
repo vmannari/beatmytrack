@@ -804,7 +804,6 @@ func _construct_news_photo(epoch: int) -> void:
 	view.vehicle_id = data.vehicle
 	view.livery = VehicleLivery.normalize(data.appearance.livery,data.vehicle)
 	view.customisation = data.appearance.customisation.duplicate(true)
-	view.simple_model = true
 	view.podium_presentation = true
 	view.fit_to_frame = true
 	view.cooperative_build = true

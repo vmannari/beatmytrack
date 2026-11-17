@@ -1,0 +1,277 @@
+diff --git a/game/tests/test_garage_parts_camera.gd b/game/tests/test_garage_parts_camera.gd
+index 8d13731..6a07916 100644
+--- a/game/tests/test_garage_parts_camera.gd
++++ b/game/tests/test_garage_parts_camera.gd
+@@ -1,10 +1,23 @@
+ extends "res://tests/test_customisation_carousel.gd"
+-## GPC01-GPC03: Parts retains the Appearance view at every turntable angle.
++## GPC04-GPC06: close-ups rotate the pedestal while the camera faces the door.
++var _expected_horizontal := Vector2.ZERO
++var _minimum_heading_dot: float = 1.0
++var _motion_frames: int = 0
++
++func settle() -> void:
++	while page._workbench_focus_pending or page._menu_motion != null or (page.showroom.camera_motion != null and page.showroom.camera_motion.is_running()):
++		if _expected_horizontal != Vector2.ZERO:
++			var direction: Vector3 = page.showroom.camera.basis.z
++			_minimum_heading_dot = minf(_minimum_heading_dot,Vector2(direction.x,direction.z).normalized().dot(_expected_horizontal))
++			_motion_frames += 1
++		await process_frame
++	for frame: int in range(12): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
+ 	GameSoundtrack.instance().music_enabled = false
+-	output = "res://../docs/evidence/garage-parts-camera-2026-11-15/native"
++	output = "res://../docs/evidence/garage-part-closeups-2026-11-16/native"
+ 	for arg: String in OS.get_cmdline_user_args():
+ 		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
+ 	output = ProjectSettings.globalize_path(output)
+@@ -31,6 +44,7 @@ func run() -> void:
+ 		var id: String = view.vehicle_id
+ 		var saved: Dictionary = page.records.settings.duplicate(true)
+ 		for turn: float in [0.0,1.7,-2.4]:
++			_expected_horizontal = Vector2.ZERO
+ 			page._show_section("cars")
+ 			await settle()
+ 			view.yaw = CarShowroom.GARAGE_CAMERA_YAW+turn
+@@ -39,48 +53,102 @@ func run() -> void:
+ 			page._show_section("customise")
+ 			await settle()
+ 			var appearance: Transform3D = view.camera.transform
+-			if car_index==0 and turn==1.7: await capture("appearance-turned")
++			_expected_horizontal = Vector2(appearance.basis.z.x,appearance.basis.z.z).normalized()
++			var appearance_distance: float = appearance.origin.distance_to(page._customisation_camera.target)
++			if turn==1.7: await capture(id+"-appearance")
+ 			page._show_section("tuning")
+ 			await settle()
+-			check(view.camera.transform.is_equal_approx(appearance),id+": Parts entry matches Appearance at turn "+str(turn))
++			check(page._customisation_camera.focused_category==("body_kit" if page.kit_category=="body" else page.kit_category),id+": Parts opens the selected close-up")
+ 			for category: String in VehicleCustomisation.CATEGORIES:
+ 				page._select_kit_category(category)
+ 				await settle()
+-				check(view.camera.transform.is_equal_approx(appearance),id+": category keeps camera "+category)
++				var closeup: Transform3D = view.camera.transform
++				var category_yaw: float = view.yaw
++				check(Vector2(closeup.basis.z.x,closeup.basis.z.z).normalized().dot(_expected_horizontal)>0.9999,id+": close-up faces the door "+category)
++				var point: Vector2 = view.camera.unproject_position(page._customisation_camera.target)
++				check(point.distance_to(Vector2(view.showroom_viewport.size)*0.5)<3.0,id+": selected region is centred "+category)
++				var local_direction: Vector3 = view.car.global_basis.orthonormalized().inverse()*closeup.basis.z
++				if category=="aero": check(local_direction.z>0.35,id+": rear aero turns towards the camera")
++				if category=="hood": check(local_direction.z>0.35 if id=="forklift" else local_direction.z< -0.35,id+": hood turns towards the camera")
++				if category=="rims": check(local_direction.x>0.25,id+": wheel side turns towards the camera")
++				if category!="body": check(closeup.origin.distance_to(page._customisation_camera.target)<appearance_distance,id+": selected region zooms closer "+category)
+ 				var options: Array = VehicleCustomisation.options(category,id)
+ 				if options.size()>1:
+ 					page._preview_kit(category,str(options[1][0]))
+ 					await settle()
+-					check(view.camera.transform.is_equal_approx(appearance),id+": preview keeps camera "+category)
++					check(view.camera.transform.is_equal_approx(closeup) and is_equal_approx(view.yaw,category_yaw),id+": preview retains the category close-up "+category)
+ 					check(view.customisation[category]==options[1][0],id+": selected part remains visible "+category)
+-				if car_index==0 and turn==1.7: await capture("parts-turned-"+category)
+-			view.yaw += 0.6
+-			view.elevation += 0.07
+-			view.zoom *= 0.95
+-			view._orbit()
+-			var adjusted: Transform3D = view.camera.transform
++				if turn==1.7: await capture(id+"-parts-"+category)
+ 			page._select_kit_category("hood")
++			await settle()
++			view.rotate_view(Vector2(35,4))
++			view.zoom_by(0.95)
++			var adjusted: Transform3D = view.camera.transform
+ 			page._preview_kit("hood",str(VehicleCustomisation.options("hood",id)[0][0]))
+ 			await settle()
+ 			check(view.camera.transform.is_equal_approx(adjusted),id+": selection retains manual orbit and zoom")
+ 			page._show_section("customise")
+ 			await settle()
+-			check(view.camera.transform.is_equal_approx(adjusted),id+": return to Appearance keeps adjusted view")
++			check(page._customisation_camera.focused_category=="body",id+": Appearance returns to the whole car")
++			check(Vector2(view.camera.basis.z.x,view.camera.basis.z.z).normalized().dot(_expected_horizontal)>0.9999,id+": Appearance faces the door")
+ 			page._show_section("tuning")
+ 			await settle()
+-			check(view.camera.transform.is_equal_approx(adjusted),id+": Parts reentry keeps adjusted view")
++			var reentry: Transform3D = view.camera.transform
++			check(page._customisation_camera.focused_category=="hood",id+": Parts reentry restores the hood close-up")
+ 			root.size = Vector2i(960,540)
+ 			root.content_scale_size = root.size
+ 			await settle()
+-			check(view.camera.basis.is_equal_approx(adjusted.basis),id+": compact resize retains camera direction")
++			check(view.camera.basis.is_equal_approx(reentry.basis),id+": compact resize retains camera direction")
+ 			root.size = Vector2i(1280,720)
+ 			root.content_scale_size = root.size
+ 			await settle()
+ 			check(page.records.settings==saved and shop.purchases==0,id+": browsing does not save or purchase")
++			page._select_kit_category("aero")
++			await process_frame
++			page._select_kit_category("rims")
++			await settle()
++			check(page._customisation_camera.focused_category=="rims",id+": rapid category changes finish on the requested part")
++			_expected_horizontal = Vector2.ZERO
+ 			page._show_section("cars")
+ 			await settle()
+ 			check(view.camera.transform.is_equal_approx(home),id+": leaving editing restores Garage camera")
++			check(is_equal_approx(view.yaw,CarShowroom.GARAGE_CAMERA_YAW+turn),id+": leaving editing restores the car rotation")
++	await interrupted_focus()
++	check(_motion_frames>0 and _minimum_heading_dot>0.9999,"animated camera keeps the door direction throughout "+str(_motion_frames)+" frames, minimum dot "+str(_minimum_heading_dot))
+ 	host.queue_free()
+ 	for frame: int in range(6): await process_frame
+ 	print("GARAGE_PARTS_CAMERA: "+str(checks)+" checks, "+str(failures)+" failures")
+ 	quit(1 if failures else 0)
++
++func interrupted_focus() -> void:
++	var view: CarShowroom = page.showroom
++	var home: Transform3D = view.camera.transform
++	var home_yaw: float = view.yaw
++	page._show_section("customise")
++	await settle()
++	_expected_horizontal = Vector2(view.camera.basis.z.x,view.camera.basis.z.z).normalized()
++	page._show_section("tuning")
++	await process_frame
++	page._select_kit_category("aero")
++	await process_frame
++	root.size = Vector2i(960,540)
++	root.content_scale_size = root.size
++	await settle()
++	var point: Vector2 = view.camera.unproject_position(page._customisation_camera.target)
++	check(point.distance_to(Vector2(view.showroom_viewport.size)*0.5)<3.0,"resize during rotation finishes with the selected part centred")
++	page._select_kit_category("rims")
++	await process_frame
++	view.rotate_view(Vector2(16,3))
++	var dragged_yaw: float = view.yaw
++	await settle()
++	check(is_equal_approx(view.yaw,dragged_yaw),"drag during rotation cancels the automatic turn")
++	point = view.camera.unproject_position(page._customisation_camera.target)
++	check(point.distance_to(Vector2(view.showroom_viewport.size)*0.5)<3.0,"drag during rotation keeps the selected part centred")
++	page._select_kit_category("hood")
++	await process_frame
++	_expected_horizontal = Vector2.ZERO
++	page._show_section("cars")
++	await settle()
++	check(view.camera.transform.is_equal_approx(home) and is_equal_approx(view.yaw,home_yaw),"leaving mid-turn restores the preceding car and camera poses")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+index e751b49..1a9c127 100644
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -12,6 +12,7 @@ var _focus_elevation: float
+ var _home_yaw: float
+ var _home_elevation: float
+ var _home_zoom: float
++var _target_yaw: float
+ var _body_key: Array = []
+ var _body_bounds: AABB
+ var _body_corners := PackedVector3Array()
+@@ -79,16 +80,22 @@ func focus(showroom: CarShowroom, category: String) -> void:
+ 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
+ 	var whole_body: bool = category in ["body","body_kit"] and not (category=="body_kit" and showroom.car.vehicle_id=="forklift")
+ 	if not whole_body: distance *= maxf(1.0,0.95/maxf(0.4,aspect))
+-	var frame: Transform3D = showroom.car.global_transform
++	# Keep the camera on the door side and turn the chosen part towards it.
++	var home_direction: Vector3 = _home.basis.z.normalized()
++	var horizontal := Vector3(home_direction.x,0,home_direction.z).normalized()
++	_target_yaw = showroom.yaw
++	if category != "body":
++		var world_direction: Vector3 = showroom.car.global_basis.orthonormalized()*direction.normalized()
++		var turn: float = wrapf(atan2(horizontal.x,horizontal.z)-atan2(world_direction.x,world_direction.z),-PI,PI)
++		_target_yaw += turn
++	var frame: Transform3D = _car_frame(showroom,_target_yaw)
+ 	_local_target = local_target*HandlingConfig.BODY_SCALE
+ 	if whole_body: _local_target = _model_bounds(showroom.car).get_center()
+-	_direction = frame.basis.orthonormalized()*direction.normalized()
++	var elevation: float = asin(direction.normalized().y)
+ 	if category == "body":
+ 		# Paint needs a raised view: the low Garage angle wastes vertical space.
+-		var home_direction: Vector3 = _home.basis.z.normalized()
+-		var elevation: float = maxf(asin(home_direction.y),deg_to_rad(30.0))
+-		var horizontal := Vector3(home_direction.x,0,home_direction.z).normalized()
+-		_direction = horizontal*cos(elevation)+Vector3.UP*sin(elevation)
++		elevation = maxf(asin(home_direction.y),deg_to_rad(30.0))
++	_direction = horizontal*cos(elevation)+Vector3.UP*sin(elevation)
+ 	target = frame*_local_target
+ 	if whole_body: distance = _fit_body(showroom,_model_bounds(showroom.car),target,_direction)
+ 	_distance = distance
+@@ -104,15 +111,22 @@ func _animate(showroom: CarShowroom, destination: Transform3D) -> void:
+ 	if showroom.camera_motion != null: showroom.camera_motion.kill()
+ 	var start: Transform3D = showroom.camera.transform
+ 	showroom.camera_motion = showroom.create_tween()
+-	showroom.camera_motion.tween_method(_blend.bind(showroom,start,destination),0.0,1.0,0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
++	showroom.camera_motion.tween_method(_blend.bind(showroom,start,destination,showroom.yaw,_target_yaw),0.0,1.0,0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
++
++func _car_frame(showroom: CarShowroom, yaw: float) -> Transform3D:
++	var frame: Transform3D = showroom.car.global_transform
++	var pivot: Vector3 = showroom.turntable.global_position
++	var turn := Basis(Vector3.UP,yaw-showroom.yaw)
++	return Transform3D(turn*frame.basis,pivot+turn*(frame.origin-pivot))
+ 
+ func _resize_focus(showroom: CarShowroom) -> void:
+ 	# A resize can refit distance without discarding the player's angle or zoom.
+ 	var moving: bool = showroom.camera_motion!=null and showroom.camera_motion.is_running()
++	if not moving: _target_yaw = showroom.yaw
+ 	var direction: Vector3 = _direction if moving else showroom.camera.basis.z.normalized()
+ 	var previous_aspect: float = float(_viewport_size.x)/maxf(1.0,_viewport_size.y)
+ 	var aspect: float = showroom.size.x/maxf(1.0,showroom.size.y)
+-	target = showroom.car.global_transform*_local_target
++	target = _car_frame(showroom,_target_yaw)*_local_target
+ 	if focused_category in ["body","body_kit"] and not (focused_category=="body_kit" and showroom.car.vehicle_id=="forklift"):
+ 		_distance = _fit_body(showroom,_model_bounds(showroom.car),target,direction)
+ 	else:
+@@ -155,6 +169,7 @@ func _fit_body(showroom: CarShowroom, bounds: AABB, center: Vector3, direction:
+ 	var reserved_height: float = 128.0 if focused_category=="body" else 144.0
+ 	var vertical: float = clampf(1.0-reserved_height/maxf(1.0,showroom.size.y),0.52,0.82)
+ 	var distance: float = 2.0
++	var frame: Transform3D = _car_frame(showroom,_target_yaw)
+ 	var corners: PackedVector3Array = _body_corners if focused_category=="body" else PackedVector3Array()
+ 	# Whole-box corners include empty air above the nose and beyond the roof.
+ 	# Paint fits each visible mesh; the low Body kits framing stays unchanged.
+@@ -163,12 +178,15 @@ func _fit_body(showroom: CarShowroom, bounds: AABB, center: Vector3, direction:
+ 			for y: float in [bounds.position.y,bounds.end.y]:
+ 				for z: float in [bounds.position.z,bounds.end.z]: corners.append(Vector3(x,y,z))
+ 	for corner: Vector3 in corners:
+-		var point: Vector3 = basis.transposed()*(showroom.car.global_transform*corner-center)
++		var point: Vector3 = basis.transposed()*(frame*corner-center)
+ 		distance = maxf(distance,point.z+maxf(absf(point.x)/(tangent*aspect*0.88),absf(point.y)/(tangent*vertical))+0.1)
+ 	return distance
+ 
+-func _blend(weight: float, showroom: CarShowroom, start: Transform3D, destination: Transform3D) -> void:
++func _blend(weight: float, showroom: CarShowroom, start: Transform3D, destination: Transform3D, start_yaw: float, end_yaw: float) -> void:
+ 	if not is_instance_valid(showroom) or not showroom.is_inside_tree(): return
++	showroom.yaw = lerpf(start_yaw,end_yaw,weight)
++	showroom.turntable.rotation.y = showroom.yaw-CarShowroom.GARAGE_CAMERA_YAW
++	target = showroom.car.global_transform*_local_target
+ 	showroom.camera.transform = start.interpolate_with(destination,weight)
+ 	showroom._update_roof()
+ 	showroom.invalidate_render()
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index 270f6e7..c2f4767 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1407,7 +1407,7 @@ func _select_kit_category(category: String) -> void:
+ 		var tab: Button = kit_categories[id]
+ 		_style_kit_category(tab,id==category)
+ 	_build_kit_cards()
+-	_customisation_camera.focus(showroom,"body")
++	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 
+ func _build_kit_cards() -> void:
+ 	for child: Node in kit_cards.get_children():
+@@ -1465,7 +1465,7 @@ func _preview_kit(category: String, option: String) -> void:
+ 		GameText.bind(_preview_hint,"PREVIEW · {part}",{"part":tr(VehicleCustomisation.label(category,vehicle_id))})
+ 	_preview_hint.visible = not _cosmetic_preview.is_empty()
+ 	showroom.apply_customisation(value,true)
+-	_customisation_camera.focus(showroom,"body")
++	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 	# The callout marks the modification without tinting its paint or materials.
+ 	showroom.invalidate_render()
+@@ -1901,6 +1901,8 @@ func _process(delta: float) -> void:
+ 		_workbench_focus_pending = false
+ 		if section in ["customise","tuning"] and not _customisation_locked:
+ 			var focus: String = _sticker_surface if section=="customise" and _customise_tab=="stickers" else "body"
++			if section=="tuning" and VehicleCustomisation.supported(vehicle_id):
++				focus = "body_kit" if kit_category=="body" else kit_category
+ 			_customisation_camera.focus(showroom,focus)
+ 			if section=="tuning" and VehicleCustomisation.supported(vehicle_id): _reveal_kit_after_resize()
+ 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()

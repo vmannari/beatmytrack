@@ -9,6 +9,9 @@ const SIZE := Icons.SIZE
 const FILE_LIMIT: int = 14
 var records: LocalRecords
 var allowed: Callable
+# Cached PNGs can load during account/menu preparation without a native capture.
+# Standalone tools inherit `allowed` unless they supply a separate read policy.
+var read_allowed: Callable
 # App admits captures in settled idle menus after the live Garage is hidden.
 # Standalone tools retain their explicitly supplied `allowed` capture policy.
 var capture_allowed: Callable
@@ -150,9 +153,11 @@ func prepare_selected() -> bool:
 
 func _process(_delta: float) -> void:
 	var permitted: bool = allowed.is_valid() and bool(allowed.call())
+	var reads_permitted: bool = bool(read_allowed.call()) if read_allowed.is_valid() else permitted
+	var completion_permitted: bool = reads_permitted if _io_kind == "read" else permitted
 	# Keep at most the existing completed job until its consumer is eligible.
 	# Invalid owner/appearance results can be discarded without GPU publication.
-	if _io != null and _io.done and (permitted or _io_job.is_empty() or _io_job.get("epoch",-1)!=_epoch):
+	if _io != null and _io.done and (completion_permitted or _io_job.is_empty() or _io_job.get("epoch",-1)!=_epoch):
 		var result: Dictionary = _io.result if _io.result is Dictionary else {}
 		_io = null
 		if _valid(_io_job):
@@ -169,7 +174,7 @@ func _process(_delta: float) -> void:
 		if not _current.is_empty():
 			if _valid(_current): _jobs.push_front(_current)
 			_release()
-		if not permitted:
+		if not permitted and not reads_permitted:
 			_wait_for_opportunity()
 			return
 	if not _current.is_empty() and not _valid(_current): _release()
@@ -216,11 +221,14 @@ func _process(_delta: float) -> void:
 			if not _valid(job): continue
 			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
 			if job.read:
+				if not reads_permitted:
+					_jobs.append(job)
+					continue
 				_io_job = job
 				_io_kind = "read"
 				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
 			else:
-				if not _can_capture(job):
+				if not permitted or not _can_capture(job):
 					_jobs.append(job)
 					continue
 				_current = job
@@ -287,6 +295,7 @@ func _exit_tree() -> void:
 	_jobs.clear()
 	records = null
 	allowed = Callable()
+	read_allowed = Callable()
 	capture_allowed = Callable()
 
 static func _read(cancelled: Callable, path: String) -> Dictionary:
